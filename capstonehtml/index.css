@@ -1,0 +1,714 @@
+/* ==========================================================================
+   Premium Brand Variables & Theme Baseline Setup
+   ========================================================================== */
+:root {
+    --bg-taupe-beige: #F4EFEA;
+    --bg-warm-cream: #FAF7F2;
+    --card-white: #FFFFFF;
+    --text-charcoal: #2E2A27;
+    --text-muted: #7A726C;
+    --btn-brown: #5C5047;
+    --btn-brown-hover: #463C35;
+    --accent-sand: #EAE1D4;
+    --shadow-soft: 0 12px 32px rgba(92, 80, 71, 0.06);
+    --shadow-card: 0 4px 16px rgba(92, 80, 71, 0.03);
+    --radius-large: 24px;
+    --radius-medium: 14px;
+    --radius-small: 8px;
+    --font-serif: 'Playfair Display', Georgia, serif;
+    --font-sans: 'Plus Jakarta Sans', system-ui, sans-serif;
+    --transition-smooth: all 0.35s cubic-bezier(0.25, 1, 0.5, 1);
+}
+
+* {
+    box-sizing: border-box;
+    margin: 0;
+    padding: 0;
+}
+
+html {
+    scroll-behavior: smooth;
+}
+
+body {
+    background-color: var(--bg-taupe-beige);
+    color: var(--text-charcoal);
+    font-family: var(--font-sans);
+    line-height: 1.6;
+    overflow-x: hidden;
+    position: relative;
+}
+
+/* Subtle Paw Print Decorative Accents via pure CSS */
+.paw-decor {
+    position: absolute;
+    width: 140px;
+    height: 140px;
+    opacity: 0.04;
+    pointer-events: none;
+    z-index: 1;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='%235C5047'%3E%3Cpath d='M12 14c-1.66 0-3 1.34-3 3s1.34 3 3 3 3-1.34 3-3-1.34-3-3-3zm-4.5-3c1.1 0 2-.9 2-2s-.9-2-2-2-2 .9-2 2 .9 2 2 2zm9 0c1.1 0 2-.9 2-2s-.9-2-2-2-2 .9-2 2 .9 2 2 2zm-6.5-2c1.1 0 2-.9 2-2s-.9-2-2-2-2 .9-2 2 .9 2 2 2zm4 0c1.1 0 2-.9 2-2s-.9-2-2-2-2 .9-2 2 .9 2 2 2z'/%3E%3C/svg%3E");
+    background-repeat: no-repeat;
+}
+.decor-top-right { top: 40px; right: 40px; transform: rotate(15deg); }
+.decor-mid-left { top: 50%; left: 20px; transform: rotate(-25deg); width: 180px; height: 180px; }
+
+/* ==========================================================================
+   Component Elements & Typography Layouts
+   ========================================================================== */
+h1, h2, h3, .serif-heading {
+    font-family: var(--font-serif);
+    font-weight: 600;
+    color: var(--text-charcoal);
+    letter-spacing: -0.02em;
+}
+
+a {
+    color: inherit;
+    text-decoration: none;
+    transition: var(--transition-smooth);
+}
+
+.topic-tag {
+    display: inline-block;
+    background-color: var(--accent-sand);
+    color: var(--btn-brown);
+    font-size: 0.8rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    padding: 6px 16px;
+    border-radius: 30px;
+    margin-bottom: 1.5rem;
+}
+
+/* Formatted Button Sets */
+.btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    padding: 14px 32px;
+    font-size: 0.95rem;
+    font-weight: 600;
+    border-radius: 40px;
+    transition: var(--transition-smooth);
+    cursor: pointer;
+    border: none;
+}
+
+.btn-primary {
+    background-color: var(--btn-brown);
+    color: var(--card-white);
+    box-shadow: 0 4px 12px rgba(92, 80, 71, 0.15);
+}
+
+.btn-primary:hover {
+    background-color: var(--btn-brown-hover);
+    transform: translateY(-2px);
+}
+
+.btn-secondary {
+    background-color: var(--card-white);
+    color: var(--btn-brown);
+    border: 1px solid var(--accent-sand);
+}
+
+.btn-secondary:hover {
+    background-color: var(--bg-warm-cream);
+    transform: translateY(-2px);
+}
+
+.text-btn:hover {
+    color: var(--btn-brown-hover);
+    opacity: 0.8;
+}
+
+/* ==========================================================================
+   Header Navigation Interface
+   ========================================================================== */
+.navbar-container {
+    max-width: 1280px;
+    margin: 20px auto 0 auto;
+    padding: 0 24px;
+}
+
+.indexnav {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    background-color: var(--card-white);
+    padding: 16px 36px;
+    border-radius: 100px;
+    box-shadow: var(--shadow-card);
+}
+
+.indexnav .logo a {
+    font-family: var(--font-serif);
+    font-weight: 700;
+    font-size: 1.3rem;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.nav-links {
+    display: flex;
+    list-style: none;
+    gap: 36px;
+}
+
+.nav-links a {
+    font-size: 0.95rem;
+    font-weight: 500;
+    color: var(--text-muted);
+}
+
+.nav-links a:hover {
+    color: var(--text-charcoal);
+}
+
+.indexaction {
+    display: flex;
+    align-items: center;
+    gap: 20px;
+}
+
+/* ==========================================================================
+   Hero Landing Framework Layout
+   ========================================================================== */
+.hero-section {
+    max-width: 1280px;
+    margin: 40px auto;
+    padding: 0 24px;
+}
+
+.hero-container {
+    background-color: var(--bg-warm-cream);
+    border-radius: var(--radius-large);
+    padding: 80px 60px;
+    display: grid;
+    grid-template-columns: 1.1fr 0.9fr;
+    gap: 40px;
+    align-items: center;
+    box-shadow: var(--shadow-soft);
+    position: relative;
+    overflow: hidden;
+}
+
+.hero-title {
+    font-size: 3.5rem;
+    line-height: 1.15;
+    margin-bottom: 1.5rem;
+}
+
+.hero-subtitle {
+    font-size: 1.1rem;
+    color: var(--text-muted);
+    margin-bottom: 2.5rem;
+    max-width: 540px;
+}
+
+.hero-actions {
+    display: flex;
+    gap: 16px;
+}
+
+/* Hero Asset and Floating Cards System */
+.hero-visual-area {
+    position: relative;
+    height: 420px;
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    overflow: visible;
+}
+
+.abstract-shape {
+    position: absolute;
+    width: 320px;
+    height: 320px;
+    background-color: var(--accent-sand);
+    border-radius: 41% 59% 40% 60% / 65% 43% 57% 35%;
+    opacity: 0.6;
+    animation: shapeMorph 10s ease-in-out infinite alternate;
+}
+
+@keyframes shapeMorph {
+    0% { border-radius: 41% 59% 40% 60% / 65% 43% 57% 35%; }
+    100% { border-radius: 60% 40% 62% 38% / 40% 60% 40% 60%; }
+}
+
+.pet-cutout-frame {
+    position: relative;
+    z-index: 1;
+    img {
+        display: block;
+        max-width: 100%;
+        height: auto;
+        max-height: 380px;
+    }
+}
+
+
+.floating-card {
+    position: absolute;
+    z-index: 2;
+    background: var(--card-white);
+    border-radius: var(--radius-small);
+    padding: 10px 14px;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    box-shadow: var(--shadow-card);
+}
+.floating-card h4 { font-size: 0.85rem; font-weight: 700; color: var(--text-charcoal); }
+.floating-card p { font-size: 0.75rem; color: var(--text-muted); }
+.card-icon { font-size: 1.2rem; }
+
+.card-1 { top: 20px; left: -10px; }
+.card-2 { bottom: 60px; left: 20px; }
+.card-3 { right: -10px; top: 50%; transform: translateY(-50%); }
+
+/* Horizontal System Metrics Panel */
+.metrics-bar {
+    display: flex;
+    background-color: var(--card-white);
+    padding: 30px;
+    border-radius: var(--radius-medium);
+    margin-top: 30px;
+    box-shadow: var(--shadow-card);
+    justify-content: space-around;
+    align-items: center;
+    text-align: center;
+}
+
+.metric-item h3 { font-family: var(--font-serif); font-size: 2rem; color: var(--btn-brown); }
+.metric-item p { font-size: 0.9rem; color: var(--text-muted); font-weight: 500; }
+.metric-divider { width: 1px; height: 40px; background-color: var(--accent-sand); }
+
+/* ==========================================================================
+   Continuous Running Logo Ticker Section
+   ========================================================================== */
+.logo-ticker {
+    background-color: var(--btn-brown);
+    color: var(--bg-warm-cream);
+    padding: 20px 0;
+    overflow: hidden;
+    position: relative;
+    width: 100%;
+}
+
+.ticker-track {
+    display: flex;
+    align-items: center;
+    white-space: nowrap;
+    width: max-content;
+    animation: scrollingLoop 35s linear infinite;
+}
+
+.ticker-item {
+    font-size: 1rem;
+    font-weight: 600;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+}
+
+.ticker-dot {
+    width: 6px;
+    height: 6px;
+    background-color: var(--accent-sand);
+    border-radius: 50%;
+    margin: 0 40px;
+    display: inline-block;
+}
+
+@keyframes scrollingLoop {
+    0% { transform: translate3d(0, 0, 0); }
+    100% { transform: translate3d(-50%, 0, 0); }
+}
+
+/* ==========================================================================
+   Global Section Structure Elements
+   ========================================================================== */
+.section-container {
+    max-width: 1280px;
+    margin: 100px auto;
+    padding: 0 24px;
+}
+
+.section-header {
+    text-align: center;
+    max-width: 700px;
+    margin: 0 auto 50px auto;
+}
+
+.section-title {
+    font-size: 2.5rem;
+    line-height: 1.2;
+    margin-bottom: 1rem;
+}
+
+.section-subtitle {
+    color: var(--text-muted);
+    font-size: 1.05rem;
+}
+
+/* About Us Layout Blocks */
+.about-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 30px;
+}
+
+.about-card {
+    background-color: var(--card-white);
+    border-radius: var(--radius-large);
+    padding: 50px;
+    box-shadow: var(--shadow-card);
+}
+
+.card-badge {
+    display: inline-block;
+    padding: 4px 12px;
+    font-size: 0.75rem;
+    font-weight: 700;
+    border-radius: 4px;
+    margin-bottom: 1.5rem;
+}
+.card-badge.alert { background-color: #FDF2F2; color: #9B1C1C; }
+.card-badge.success { background-color: #F3FBF7; color: #117B4D; }
+
+.about-card h3 { font-size: 1.8rem; margin-bottom: 1.5rem; line-height: 1.3; }
+.about-card p { color: var(--text-muted); margin-bottom: 1.5rem; }
+
+.styled-list {
+    list-style: none;
+    margin-top: 20px;
+}
+
+.styled-list li {
+    margin-bottom: 12px;
+    position: relative;
+    padding-left: 24px;
+    font-size: 0.95rem;
+}
+
+.styled-list li::before {
+    content: "🐾";
+    position: absolute;
+    left: 0;
+    font-size: 0.85rem;
+}
+
+.fit-box {
+    margin-top: 30px;
+    background-color: var(--bg-warm-cream);
+    padding: 24px;
+    border-radius: var(--radius-medium);
+}
+
+.fit-box h4 { font-size: 0.9rem; font-weight: 700; margin-bottom: 12px; text-transform: uppercase; color: var(--btn-brown); }
+.fit-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; font-weight: 500; font-size: 0.95rem; }
+
+/* ==========================================================================
+   Horizontal Process Steps Workflow Section
+   ========================================================================== */
+.alternate-bg {
+    background-color: var(--bg-warm-cream);
+    padding: 80px 24px;
+    max-width: 100%;
+    border-radius: var(--radius-large);
+}
+
+.workflow-steps-container {
+    display: grid;
+    grid-template-columns: repeat(6, 1fr);
+    gap: 20px;
+    max-width: 1240px;
+    margin: 40px auto 0 auto;
+}
+
+.step-node {
+    background-color: var(--card-white);
+    padding: 24px;
+    border-radius: var(--radius-medium);
+    box-shadow: var(--shadow-card);
+    border-top: 3px solid var(--accent-sand);
+    transition: var(--transition-smooth);
+}
+
+.step-node:hover {
+    transform: translateY(-4px);
+    border-top-color: var(--btn-brown);
+}
+
+.step-number {
+    font-family: var(--font-serif);
+    font-size: 1.5rem;
+    color: var(--accent-sand);
+    font-weight: 700;
+    margin-bottom: 12px;
+}
+
+.step-node h4 { font-size: 0.95rem; font-weight: 700; margin-bottom: 8px; }
+.step-node p { font-size: 0.8rem; color: var(--text-muted); line-height: 1.4; }
+
+/* ==========================================================================
+   Interactive Module Selector System (Pure CSS Tabs Layout)
+   ========================================================================== */
+.platform-shell {
+    background-color: var(--card-white);
+    padding: 40px;
+    border-radius: var(--radius-large);
+    box-shadow: var(--shadow-soft);
+}
+
+.platform-tabs-navigation {
+    display: flex;
+    justify-content: center;
+    gap: 12px;
+    border-bottom: 1px solid var(--bg-taupe-beige);
+    padding-bottom: 24px;
+    margin-bottom: 40px;
+}
+
+.tab-trigger {
+    padding: 12px 28px;
+    border-radius: 30px;
+    font-weight: 600;
+    font-size: 0.95rem;
+    cursor: pointer;
+    color: var(--text-muted);
+    background-color: var(--bg-warm-cream);
+    transition: var(--transition-smooth);
+}
+
+.tab-trigger:hover {
+    background-color: var(--accent-sand);
+    color: var(--text-charcoal);
+}
+
+.hidden-radio {
+    display: none;
+}
+
+.platform-panel {
+    display: none;
+    animation: contentFadeIn 0.4s ease-in-out forwards;
+}
+
+@keyframes contentFadeIn {
+    from { opacity: 0; transform: translateY(8px); }
+    to { opacity: 1; transform: translateY(0); }
+}
+
+/* Tab Selection Mechanics Mapping States */
+#tab-whatsapp:checked ~ .platform-tabs-navigation [for="tab-whatsapp"],
+#tab-booking:checked ~ .platform-tabs-navigation [for="tab-booking"],
+#tab-profile:checked ~ .platform-tabs-navigation [for="tab-profile"],
+#tab-care:checked ~ .platform-tabs-navigation [for="tab-care"],
+#tab-analytics:checked ~ .platform-tabs-navigation [for="tab-analytics"] {
+    background-color: var(--btn-brown);
+    color: var(--card-white);
+    box-shadow: 0 4px 12px rgba(92, 80, 71, 0.15);
+}
+
+#tab-whatsapp:checked ~ .platform-panels-content .panel-whatsapp,
+#tab-booking:checked ~ .platform-panels-content .panel-booking,
+#tab-profile:checked ~ .platform-panels-content .panel-profile,
+#tab-care:checked ~ .platform-panels-content .panel-care,
+#tab-analytics:checked ~ .platform-panels-content .panel-analytics {
+    display: block;
+}
+
+/* Custom Panel Inner Structuring */
+.panel-layout {
+    display: grid;
+    grid-template-columns: 1.1fr 0.9fr;
+    gap: 50px;
+    align-items: center;
+}
+
+.panel-mini-tag {
+    color: var(--btn-brown);
+    font-size: 0.8rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+}
+
+.panel-copy h3 { font-size: 2rem; margin: 8px 0 16px 0; line-height: 1.25; }
+.panel-copy p { color: var(--text-muted); margin-bottom: 24px; }
+
+.panel-list {
+    list-style: none;
+}
+
+.panel-list li {
+    padding-left: 20px;
+    position: relative;
+    margin-bottom: 10px;
+    font-size: 0.95rem;
+    font-weight: 500;
+}
+
+.panel-list li::before {
+    content: "✓";
+    position: absolute;
+    left: 0;
+    color: var(--btn-brown);
+    font-weight: 700;
+}
+
+/* Rounded Browser Mockup Component */
+.mock-browser {
+    background-color: var(--bg-warm-cream);
+    border-radius: var(--radius-medium);
+    border: 1px solid var(--accent-sand);
+    overflow: hidden;
+    box-shadow: var(--shadow-card);
+}
+
+.browser-header {
+    background-color: var(--accent-sand);
+    padding: 12px 20px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 0.75rem;
+    font-weight: 700;
+    color: var(--text-muted);
+}
+
+.browser-header .dot {
+    width: 8px;
+    height: 8px;
+    background-color: rgba(9c, 80, 71, 0.2);
+    border-radius: 50%;
+}
+
+.browser-header span:last-child { margin-left: auto; }
+.browser-body { padding: 24px; min-height: 220px; display: flex; }
+.browser-body.column { flex-direction: column; }
+.browser-body.flex-center { align-items: center; justify-content: center; }
+
+/* Embedded Mock Preview Styles */
+.chat-container { display: flex; flex-direction: column; gap: 12px; justify-content: flex-start;}
+.chat-bubble { padding: 10px 14px; border-radius: var(--radius-medium); font-size: 0.8rem; max-width: 85%; }
+.chat-bubble.user { background-color: var(--card-white); align-self: flex-start; color: var(--text-charcoal); }
+.chat-bubble.system { background-color: var(--btn-brown); color: var(--card-white); align-self: flex-end; }
+
+.action-card-inline {
+    background-color: var(--card-white);
+    border-left: 3px solid var(--btn-brown);
+    padding: 10px;
+    border-radius: 4px;
+    font-size: 0.8rem;
+    margin-top: 8px;
+}
+.action-card-inline h5 { font-weight: 700; }
+
+.table-container { flex-direction: column; gap: 8px; width: 100%; }
+.mini-row { display: flex; justify-content: space-between; padding: 10px; background-color: var(--card-white); border-radius: var(--radius-small); font-size: 0.8rem; font-weight: 500; }
+.mini-row.header { background-color: transparent; font-weight: 700; color: var(--text-muted); padding-bottom: 2px; }
+.status-pill { padding: 2px 8px; border-radius: 12px; font-size: 0.7rem; font-weight: 700; }
+.status-pill.confirmed { background-color: #F3FBF7; color: #117B4D; }
+.status-pill.pending { background-color: #FFFDF5; color: #B45309; }
+.status-pill.active { background-color: #EFF6FF; color: #1E40AF; }
+
+.profile-preview-card { text-align: center; background: var(--card-white); padding: 20px; border-radius: var(--radius-medium); box-shadow: var(--shadow-card); width: 100%; max-width: 240px;}
+.avatar-ring { font-size: 2rem; width: 50px; height: 50px; background: var(--bg-warm-cream); display: flex; align-items: center; justify-content: center; border-radius: 50%; margin: 0 auto 10px auto; }
+.profile-preview-card h4 { font-size: 1rem; }
+.tag-row-chips { display: flex; flex-wrap: wrap; gap: 6px; justify-content: center; margin-top: 12px; }
+.chip { background-color: var(--bg-taupe-beige); font-size: 0.7rem; padding: 3px 8px; border-radius: 10px; font-weight: 600; }
+
+.update-preview-box { background: var(--card-white); padding: 18px; border-radius: var(--radius-medium); font-size: 0.85rem; width: 100%; }
+.update-header-meta { display: flex; justify-content: space-between; margin-bottom: 8px; font-size: 0.75rem; color: var(--text-muted); }
+
+.bar-chart-container { display: flex; align-items: flex-end; justify-content: center; gap: 14px; height: 120px; width: 100%; max-width: 260px; margin-bottom: 12px;}
+.bar { width: 24px; height: var(--h); background-color: var(--btn-brown); border-radius: 4px 4px 0 0; opacity: 0.85; }
+.chart-label { font-size: 0.75rem; font-weight: 600; text-align: center; }
+
+/* ==========================================================================
+   Smooth FAQ Details Accordion Interface
+   ================================z========================================== */
+.faq-accordion-wrapper {
+    max-width: 800px;
+    margin: 0 auto;
+}
+
+.faq-item {
+    background-color: var(--card-white);
+    border-radius: var(--radius-medium);
+    margin-bottom: 16px;
+    padding: 10px 10px;
+    box-shadow: var(--shadow-card);
+    overflow: hidden;
+    transition: var(--transition-smooth);
+}
+
+.faq-question {
+    font-size: 1.05rem;
+    font-weight: 600;
+    padding: 14px 18px;
+    cursor: pointer;
+    list-style: none;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+}
+
+.faq-question::-webkit-details-marker {
+    display: none;
+}
+
+.faq-question::after {
+    content: "＋";
+    font-size: 1rem;
+    color: var(--btn-brown);
+    transition: transform 0.25s ease;
+}
+
+.faq-item[open] .faq-question::after {
+    transform: rotate(45deg);
+}
+
+.faq-answer {
+    padding: 4px 18px 18px 18px;
+    color: var(--text-muted);
+    font-size: 0.95rem;
+    border-top: 1px solid var(--bg-warm-cream);
+    margin-top: 6px;
+}
+
+/* ==========================================================================
+   Footer Component Container Style
+   ========================================================================== */
+.footer-container {
+    background-color: var(--btn-brown);
+    color: var(--accent-sand);
+    padding: 40px 24px;
+    text-align: center;
+    font-size: 0.9rem;
+    font-weight: 500;
+    margin-top: 120px;
+}
+
+/* ==========================================================================
+   Responsive Adaptability Layout Breakpoints
+   ========================================================================== */
+@media (max-width: 1024px) {
+    .hero-container, .panel-layout, .about-grid { grid-template-columns: 1fr; gap: 40px; }
+    .hero-container { padding: 40px 30px; text-align: center; }
+    .hero-subtitle { margin-left: auto; margin-right: auto; }
+    .hero-actions { justify-content: center; }
+    .workflow-steps-container { grid-template-columns: repeat(3, 1fr); }
+}
+
+@media (max-width: 768px) {
+    .nav-links, .indexaction { display: none; }
+    .hero-title { font-size: 2.4rem; }
+    .workflow-steps-container { grid-template-columns: repeat(2, 1fr); }
+    .platform-tabs-navigation { flex-wrap: wrap; }
+    .platform-shell { padding: 20px; }
+}
