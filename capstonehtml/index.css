@@ -330,16 +330,136 @@ a {
 /* ==========================================================================
    Global Section Structure Elements
    ========================================================================== */
-.section-container {
-    max-width: 1280px;
-    margin: 100px auto;
-    padding: 0 24px;
+
+.section-wrapper {
+    width: 100%;
+    overflow: hidden;
 }
+
+.section-container {
+    width: 100%;
+    padding: 70px clamp(24px, calc((100% - 1160px) / 2), 200px);
+    background-color: var(--card-white);
+    display: flex;
+    flex-direction: column;
+    gap: 40px;
+    position: relative;
+    overflow: visible;
+}
+
+.features-block {
+    background-color: var(--bg-warm-cream);
+    border-radius: var(--radius-large);
+    overflow: hidden;
+}
+
+.feature-content {
+    display: grid;
+    grid-template-columns: 1.1fr 0.9fr;
+    gap: 40px;
+    align-items: center;
+    padding: 50px;
+}
+
+.feature-content:not(:last-child) {
+    position: relative;
+}
+
+.feature-content:not(:last-child)::after {
+    content: '';
+    position: absolute;
+    bottom: 0;
+    left: 10%;
+    width: 80%;
+    height: 1px;
+    background-color: var(--accent-sand);
+}
+
+.about-pic {
+    overflow: visible;
+}
+
+.about-pic img,
+.feature-content > img {
+    width: 100%;
+    height: auto;
+    display: block;
+    border-radius: var(--radius-large);
+}
+
+.overflow-right {
+    margin-right: -60px;
+}
+
+.overflow-right img {
+    border-radius: var(--radius-large) 0 0 var(--radius-large);
+}
+
+/* Table-style list containers */
+.ui-card,
+.ui-list {
+    border: 1px solid var(--accent-sand);
+    border-radius: var(--radius-medium);
+    overflow: hidden;
+    margin-top: 1.5rem;
+    font-size: 0.88rem;
+}
+
+.ui-top {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 10px 16px;
+    background-color: var(--accent-sand);
+    font-weight: 700;
+    font-size: 0.78rem;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--btn-brown);
+}
+
+.ui-list ol {
+    list-style: none;
+    counter-reset: row-counter;
+    padding: 0;
+    margin: 0;
+}
+
+.ui-list li {
+    counter-increment: row-counter;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 10px 16px;
+    border-bottom: 1px solid var(--accent-sand);
+    color: var(--text-charcoal);
+}
+
+.ui-list li:last-child {
+    border-bottom: none;
+}
+
+.ui-list li::before {
+    content: counter(row-counter);
+    background-color: var(--accent-sand);
+    color: var(--btn-brown);
+    font-weight: 700;
+    font-size: 0.75rem;
+    min-width: 22px;
+    height: 22px;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+}
+
+
 
 .section-header {
     text-align: center;
     max-width: 700px;
-    margin: 0 auto 50px auto;
+    margin: 0 auto;
 }
 
 .section-title {
@@ -363,7 +483,9 @@ a {
 .about-card {
     background-color: var(--card-white);
     border-radius: var(--radius-large);
-    padding: 50px;
+    max-width: 1280px;
+    margin: 20px auto 0 auto;
+    padding: 0 24px;
     box-shadow: var(--shadow-card);
 }
 
@@ -415,17 +537,22 @@ a {
    ========================================================================== */
 .alternate-bg {
     background-color: var(--bg-warm-cream);
-    padding: 80px 24px;
-    max-width: 100%;
-    border-radius: var(--radius-large);
 }
 
 .workflow-steps-container {
     display: grid;
-    grid-template-columns: repeat(6, 1fr);
+    grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
     gap: 20px;
-    max-width: 1240px;
-    margin: 40px auto 0 auto;
+}
+
+.steps-4 {
+    grid-template-columns: repeat(4, 1fr);
+    max-width: 860px;
+    margin: 0 auto;
+}
+
+.steps-6 {
+    grid-template-columns: repeat(6, 1fr);
 }
 
 .step-node {
@@ -697,18 +824,63 @@ a {
 /* ==========================================================================
    Responsive Adaptability Layout Breakpoints
    ========================================================================== */
+
+/* --- Tablet: 1024px and below --- */
 @media (max-width: 1024px) {
-    .hero-container, .panel-layout, .about-grid { grid-template-columns: 1fr; gap: 40px; }
-    .hero-container { padding: 40px 30px; text-align: center; }
+    .hero-container {
+        grid-template-columns: 1fr;
+        padding: 50px 40px;
+        text-align: center;
+    }
+    .hero-visual-area { display: none; }
     .hero-subtitle { margin-left: auto; margin-right: auto; }
     .hero-actions { justify-content: center; }
-    .workflow-steps-container { grid-template-columns: repeat(3, 1fr); }
+
+    .section-container { padding: 50px 40px; }
+
+    .feature-content {
+        grid-template-columns: 1fr;
+        padding: 36px;
+    }
+    .feature-content:not(:last-child)::after { left: 5%; width: 90%; }
+
+    .panel-layout, .about-grid { grid-template-columns: 1fr; gap: 32px; }
+    .steps-4 { grid-template-columns: repeat(2, 1fr); max-width: 100%; }
+    .steps-6 { grid-template-columns: repeat(3, 1fr); }
+    .section-title { font-size: 2rem; }
 }
 
+/* --- Mobile: 768px and below --- */
 @media (max-width: 768px) {
     .nav-links, .indexaction { display: none; }
-    .hero-title { font-size: 2.4rem; }
-    .workflow-steps-container { grid-template-columns: repeat(2, 1fr); }
-    .platform-tabs-navigation { flex-wrap: wrap; }
+
+    .hero-container { padding: 40px 24px; }
+    .hero-title { font-size: 2.2rem; }
+    .hero-actions { flex-direction: column; align-items: center; }
+
+    .section-container { padding: 40px 24px; }
+    .section-title { font-size: 1.75rem; }
+
+    .feature-content { padding: 28px 20px; gap: 24px; }
+    .feature-text { gap: 12px; }
+
+    .metrics-bar { flex-direction: column; gap: 20px; padding: 24px; }
+    .metric-divider { width: 60%; height: 1px; }
+
+    .steps-4, .steps-6 { grid-template-columns: repeat(2, 1fr); max-width: 100%; gap: 12px; }
+    .platform-tabs-navigation { flex-wrap: wrap; gap: 8px; padding-bottom: 16px; }
     .platform-shell { padding: 20px; }
+    .tab-trigger { padding: 10px 18px; font-size: 0.85rem; }
+}
+
+/* --- Small mobile: 480px and below --- */
+@media (max-width: 480px) {
+    .hero-title { font-size: 1.85rem; }
+    .section-title { font-size: 1.5rem; }
+    .section-container { padding: 32px 16px; }
+    .feature-content { padding: 24px 16px; }
+    .steps-4, .steps-6 { grid-template-columns: 1fr; }
+    .btn { padding: 12px 24px; font-size: 0.9rem; }
+    .topic-tag { font-size: 0.72rem; }
+    .ui-card, .ui-list { font-size: 0.82rem; }
 }
