@@ -170,7 +170,7 @@ a {
 }
 
 .hero-title {
-    font-size: 3.5rem;
+    font-size: clamp(1.85rem, 4.5vw, 3.5rem);
     line-height: 1.15;
     margin-bottom: 1.5rem;
 }
@@ -915,12 +915,22 @@ a {
 @media (max-width: 1024px) {
     .hero-container {
         grid-template-columns: 1fr;
-        padding: 50px 40px;
+        padding: 56px 48px 48px;
         text-align: center;
     }
-    .hero-visual-area { display: none; }
     .hero-subtitle { margin-left: auto; margin-right: auto; }
     .hero-actions { justify-content: center; }
+
+    /* Tablet: show the pet image compactly, hide decorative cards & blob */
+    .hero-visual-area {
+        height: auto;
+        justify-content: center;
+        overflow: hidden;
+        margin-top: 8px;
+    }
+    .abstract-shape { display: none; }
+    .floating-card  { display: none; }
+    .pet-cutout-frame img { max-height: 280px; margin: 0 auto; }
 
     .section-container { padding: 48px 32px; }
 
@@ -949,9 +959,9 @@ a {
     .mobile-nav.open { max-height: 420px; }
 
     /* Hero */
-    .hero-section { margin: 16px auto; }
-    .hero-container { padding: 40px 24px; }
-    .hero-title { font-size: 2.2rem; }
+    .hero-section { margin: 12px auto; }
+    .hero-container { padding: 44px 28px 36px; }
+    .hero-visual-area { display: none; }
     .hero-actions { flex-direction: column; align-items: center; }
 
     /* Sections */
@@ -996,8 +1006,7 @@ a {
 
     /* Hero */
     .hero-section { padding: 0 12px; }
-    .hero-container { padding: 32px 20px; }
-    .hero-title { font-size: 1.85rem; }
+    .hero-container { padding: 36px 20px 28px; }
     .hero-actions { flex-direction: column; align-items: stretch; }
     .hero-actions .btn { width: 100%; justify-content: center; }
 

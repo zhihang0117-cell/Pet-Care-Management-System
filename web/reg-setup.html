@@ -8,247 +8,160 @@
       <a class="logo" href="index.html"><span class="logo-mark">🐾</span><b>Pawfect AI</b></a>
     </div>
   </header>
-
+<!--Intro & Status-->
   <main class="config-page">
    <div class="container">
-    <div class="app-top">
-     <div>
-      <h1>
-       Business Profile Configuration
-      </h1>
-      <p class="muted">
-       Complete the business profile, service setup, invoice/tax format, booking page and WhatsApp API connection after account creation.
-      </p>
-     </div>
-     <button class="btn btn-yellow" onclick="loadSampleConfig()">
-      Load Sample
-     </button>
-    </div>
-    <div class="setup-alert">
-     <b>
-      Complete business configuration after account creation:
-     </b>
-     Complete service setup, invoice/tax format, booking page and WhatsApp API connection before opening the staff portal.
-    </div>
-    <div class="v10-setup-progress">
-     <div>
-      1 Register
-     </div>
-     <div class="active">
-      2 Service Configuration
-     </div>
-     <div>
-      3 Login
-     </div>
-    </div>
-    <section class="panel">
-     <div class="panel-head">
-      <h3>
-       Selected Services
-      </h3>
-      <span class="small" id="selectedServicesText">✂️ Grooming · 🏨 Boarding / Hotel · 🌞 Daycare</span>
-     </div>
-     <div class="panel-body">
-      <div class="service-config-grid" id="selectedServiceCards"><div class="service-config-card"><h3>✂️ Grooming</h3><p class="muted">Set the default booking rule used by the dashboard and customer booking page.</p><label>Default Capacity / Slot Rule</label><input value="90 minutes per full groom"></div><div class="service-config-card"><h3>🏨 Boarding / Hotel</h3><p class="muted">Set the default booking rule used by the dashboard and customer booking page.</p><label>Default Capacity / Slot Rule</label><input value="Room availability required"></div><div class="service-config-card"><h3>🌞 Daycare</h3><p class="muted">Set the default booking rule used by the dashboard and customer booking page.</p><label>Default Capacity / Slot Rule</label><input value="Daily capacity limit required"></div></div>
-     </div>
-    </section>
-    <section class="panel">
-     <div class="panel-head">
-      <h3>
-       Business Profile
-      </h3>
-     </div>
-     <div class="panel-body">
-      <div class="form-grid">
-       <div class="full">
-        <label>
-         Logo
-        </label>
-        <input accept="image/*" id="cfg_logo" type="file">
+        <div class="app-top">
+            <div>
+              <h1>Business Profile Set Up</h1>
+              <p class="muted">Complete the business profile, service setup, invoice/tax format and WhatsApp API connection before enter the portal.</p>
+              <br> Field with <span>*</span> are required.
+            </div>
+          </div>
+        <div class="v10-setup-progress">
+            <div>1 Register</div>
+            <div class="active">2 Service Configuration</div>
+            <div>3 Enter</div>
+          </div>
+
+<!--Business Profile-->
+    <section class="businessprofile">
+      <legend class="profile-header">Business Profile</legend>
+        <div class="businessprofile-body>">
+                  <div class="field">
+                    <label>Logo</label>
+                    <input id='logo', name="logo" accept="image/*" id="cfg_logo" type="file">
+                  </div>
+            <div>
+                <label>Business / Company Name <span class="req">*</span></label>
+                <input id="businessname", type="text" placeholder="Happy Paws Sdn Bhd" required>
        </div>
        <div>
-        <label>
-         Business / Company Name
-        </label>
-        <input id="cfg_businessName">
+        <label>Country<span class="req">*</span></label>
+        <select id="country">
+         <option>Malaysia</option>
+         <option>Singapore</option>
+         <option>Thailand</option>
+        </select>
        </div>
+       
        <div>
-        <label>
-         Brand Name
-        </label>
-        <input id="cfg_brandName">
+        <label>Street</label>
+        <input id="street", city="street" type="text" placeholder="No. 123, Jalan Happy Paws">
        </div>
+       
+       <div>
+        <label>City</label>
+        <input id="city">
+       </div>
+
+       <div>
+        <label>State</label>
+        <input id="state">
+       </div>
+
+       <div>
+        <label>ZIP / Postcode<span class="req">*</span></label>
+        <input id="zip">
+       </div>
+
        <div class="full">
         <label>
          Business Description
         </label>
-        <textarea id="cfg_description">Premium grooming, hotel and daycare service for dogs and cats.</textarea>
+        <textarea id="cfg_description" placeholder="Premium grooming, hotel and daycare service for dogs and cats."></textarea>
        </div>
-       <div>
-        <label>
-         Street
-        </label>
-        <input id="cfg_street">
-       </div>
-       <div>
-        <label>
-         City
-        </label>
-        <input id="cfg_city">
-       </div>
-       <div>
-        <label>
-         State
-        </label>
-        <input id="cfg_state">
-       </div>
-       <div>
-        <label>
-         ZIP / Postcode
-        </label>
-        <input id="cfg_zip">
-       </div>
+       
       </div>
-     </div>
     </section>
-    <section class="panel">
-     <div class="panel-head">
-      <h3>
-       Business Hours
-      </h3>
+<!--Business Hours-->
+    <section class="field">
+     <div >
+      <legend>Business Hours<span class="req">*</span></legend>
      </div>
      <div class="panel-body">
-      <div class="hours-grid" id="hoursGrid"><div><label>Mon</label><input id="hour_Mon" value="09:30 AM - 06:30 PM"></div><div><label>Tue</label><input id="hour_Tue" value="09:30 AM - 06:30 PM"></div><div><label>Wed</label><input id="hour_Wed" value="09:30 AM - 06:30 PM"></div><div><label>Thu</label><input id="hour_Thu" value="09:30 AM - 06:30 PM"></div><div><label>Fri</label><input id="hour_Fri" value="09:30 AM - 06:30 PM"></div><div><label>Sat</label><input id="hour_Sat" value="10:00 AM - 05:00 PM"></div><div><label>Sun</label><input id="hour_Sun" value="Closed"></div></div>
+      <div class="hours-grid" id="hoursGrid">
+        <div>
+        <label>Mon</label><input id="hour_Mon" value="09:30 AM - 06:30 PM" required></div>
+        <div><label>Tue</label><input id="hour_Tue" value="09:30 AM - 06:30 PM" required></div>
+        <div><label>Wed</label><input id="hour_Wed" value="09:30 AM - 06:30 PM" required></div>
+        <div><label>Thu</label><input id="hour_Thu" value="09:30 AM - 06:30 PM" required></div>
+        <div><label>Fri</label><input id="hour_Fri" value="09:30 AM - 06:30 PM" required></div>
+        <div><label>Sat</label><input id="hour_Sat" value="10:00 AM - 05:00 PM" required></div>
+        <div><label>Sun</label><input id="hour_Sun" value="Closed" required></div>
+      </div>
       <div style="margin-top:16px">
        <label>
         Closed Dates / Emergency Holiday
        </label>
-       <textarea id="cfg_closedDates">28/07/2026 - Staff training day\n31/08/2026 - Public holiday</textarea>
+       <textarea id="cfg_closedDates" placeholder="28/07/2026 - Staff training day\n31/08/2026 - Public holiday"></textarea>
       </div>
      </div>
     </section>
-    <section class="panel">
+
+<!--Payment Methods & Unit Measure-->
+    <section class="field">
      <div class="panel-head">
-      <h3>
-       Payment Methods
-      </h3>
+      <legend>Payment Methods<span class="req">*</span></legend>
      </div>
      <div class="panel-body">
       <div class="addons">
        <label class="addon">
         <input checked="" id="pay_cash" type="checkbox">
-        <div>
-         Cash
-         <span>
-          Front desk payment
-         </span>
-        </div>
+         Cash<span>Front desk payment<span>
        </label>
+
        <label class="addon">
         <input checked="" id="pay_card" type="checkbox">
-        <div>
-         Card Terminal
-         <span>
-          Physical card reader
-         </span>
-        </div>
+         Card Terminal<span>Physical card reader</span>
+  
        </label>
        <label class="addon">
         <input checked="" id="pay_qr" type="checkbox">
-        <div>
          QR / E-wallet
-         <span>
-          DuitNow, Touch n Go, GrabPay
-         </span>
-        </div>
        </label>
+
        <label class="addon">
         <input id="pay_online" type="checkbox">
-        <div>
-         Online Payment
-         <span>
-          Stripe / ToyyibPay / Billplz placeholder
-         </span>
-        </div>
+         Online Payment<span>(Stripe / ToyyibPay / Billplz placeholder)</span>
        </label>
+
       </div>
+
       <div class="form-grid" style="margin-top:18px">
        <div>
-        <label>
-         Payment Gateway
-        </label>
-        <select id="cfg_gateway">
-         <option>
-          Not connected yet
-         </option>
-         <option>
-          Stripe
-         </option>
-         <option>
-          Billplz
-         </option>
-         <option>
-          ToyyibPay
-         </option>
-         <option>
-          Manual QR Upload
-         </option>
+        <label>Invoice Prefix<span class="req">*</span></label>
+        <select id="cfg_invoicePrefix" required>
+         <option>PAW</option>
+         <option>HP</option>
+         <option>INV</option>
+         <option>MEOW</option>
         </select>
        </div>
+
        <div>
-        <label>
-         Invoice Prefix
-        </label>
-        <select id="cfg_invoicePrefix">
-         <option>
-          PAW
-         </option>
-         <option>
-          HP
-         </option>
-         <option>
-          INV
-         </option>
-         <option>
-          MEOW
-         </option>
-        </select>
-       </div>
-       <div>
-        <label>
-         Tax Format
-        </label>
-        <select id="cfg_taxName">
-         <option>
-          SST 0%
-         </option>
-         <option>
-          SST 6%
-         </option>
-         <option>
-          GST 9%
-         </option>
-         <option>
-          No Tax
-         </option>
+        <label>Tax Format<span class="req">*</span></label>
+        <select id="cfg_taxName" required>
+         <option>SST 0%</option>
+         <option>SST 6%</option>
+         <option>GST 9% </option>
+         <option>No Tax</option>
         </select>
        </div>
       </div>
-     </div>
-    </section>
-    <section class="panel">
-     <div class="panel-head">
-      <h3>
-       Localization
+
+<div class="panel-head">
+      <legend>
+       Localization<span class="req">*</span>
       </h3>
      </div>
      <div class="panel-body">
       <div class="form-grid">
        <div>
         <label>
-         Language
+         Language<span class="req">*</span>
         </label>
-        <select id="cfg_language">
+        <select id="cfg_language" required>
          <option>
           English
          </option>
@@ -260,150 +173,86 @@
          </option>
         </select>
        </div>
+       
        <div>
-        <label>
-         Country
-        </label>
-        <select id="cfg_country">
-         <option>
-          Malaysia
-         </option>
-         <option>
-          Singapore
-         </option>
-         <option>
-          Thailand
-         </option>
+        <label>Timezone<span class="req">*</span></label>
+        <select id="timezone" required>
+         <option>Kuala_Lumpur(GMT+8)</option>
+         <option>Singapore(GMT+8)</option>
+         <option>Bangkok(GMT+7)</option>
         </select>
        </div>
+
        <div>
-        <label>
-         Timezone
-        </label>
-        <select id="cfg_timezone">
-         <option>
-          Asia/Kuala_Lumpur
-         </option>
-         <option>
-          Asia/Singapore
-         </option>
-         <option>
-          Asia/Bangkok
-         </option>
+        <label>Currency<span class="req">*</span></label>
+        <select id="currency" required>
+         <option>MYR (RM)</option>
+         <option>SGD (S$)</option>
+         <option>THB (฿)</option>
         </select>
        </div>
+
        <div>
-        <label>
-         Currency
-        </label>
-        <select id="cfg_currency">
-         <option>
-          MYR (RM)
-         </option>
-         <option>
-          SGD (S$)
-         </option>
-         <option>
-          THB (฿)
-         </option>
+        <label>Weight Unit<span class="req">*</span></label>
+        <select id="weight" required>
+         <option>kg</option>
+         <option>lb</option>
         </select>
-       </div>
+      </div>
+
        <div>
-        <label>
-         Weight Unit
-        </label>
-        <select id="cfg_weight">
-         <option>
-          kg
-         </option>
-         <option>
-          lb
-         </option>
+        <label>Height Unit<span class="req">*</span></label>
+        <select id="height" required>
+         <option>cm</option>
+         <option>inch</option>
         </select>
-       </div>
-       <div>
-        <label>
-         Height Unit
-        </label>
-        <select id="cfg_height">
-         <option>
-          cm
-         </option>
-         <option>
-          inch
-         </option>
-        </select>
-       </div>
-       <div>
-        <label>
-         Date / Time Format
-        </label>
-        <input id="cfg_format" value="DD/MM/YYYY · 12-hour">
        </div>
       </div>
      </div>
+     </div>
     </section>
-    <section class="panel">
+  
+    
+        <section class="panel">
      <div class="panel-head">
       <h3>
-       Booking Page + WhatsApp API
+       Selected Services
       </h3>
+      <span class="small" id="selectedServicesText">✂️ Grooming · 🏨 Boarding / Hotel · 🌞 Daycare</span>
      </div>
+     <div class="panel-body">
+      <div class="service-config-grid" id="selectedServiceCards"><div class="service-config-card"><h3>✂️ Grooming</h3><p class="muted">Set the default booking rule used by the dashboard and customer booking page.</p><label>Default Capacity / Slot Rule</label><input value="90 minutes per full groom"></div><div class="service-config-card"><h3>🏨 Boarding / Hotel</h3><p class="muted">Set the default booking rule used by the dashboard and customer booking page.</p><label>Default Capacity / Slot Rule</label><input value="Room availability required"></div><div class="service-config-card"><h3>🌞 Daycare</h3><p class="muted">Set the default booking rule used by the dashboard and customer booking page.</p><label>Default Capacity / Slot Rule</label><input value="Daily capacity limit required"></div></div>
+     </div>
+    </section>
+    
+ <!--Booking Page & WhatsApp API-->   
+    <section class="panel">
+     <div class="panel-head">
+      <legend>Booking Page + WhatsApp API</legend>
+     </div>
+     
      <div class="panel-body">
       <div class="form-grid">
        <div>
         <label>
          Booking Page URL
         </label>
-        <input id="cfg_bookingUrl" value="pawfect.ai/happypaws">
+        <input type="url" id="cfg_bookingUrl" value="pawfect.ai/happypaws">
+       </div>
+       
+       <div>
+        <label>WhatsApp Business Number</label>
+        <input type="tel" id="cfg_whatsapp">
        </div>
        <div>
-        <label>
-         WhatsApp Business Number
-        </label>
-        <input id="cfg_whatsapp">
-       </div>
-       <div>
-        <label>
-         WhatsApp API Status
-        </label>
-        <select id="cfg_whatsappStatus">
-         <option>
-          Demo placeholder
-         </option>
-         <option>
-          Meta WhatsApp Cloud API
-         </option>
-         <option>
-          Twilio WhatsApp
-         </option>
-         <option>
-          Manual WhatsApp link only
-         </option>
+        <label>Booking Confirmation Rule<span class="req">*</span></label>
+        <select id="cfg_confirmRule" required>
+         <option value="">Select a rule</option>
+         <option>Auto-confirm if available</option>
+         <option>Deposit required before confirmation</option>
         </select>
        </div>
-       <div>
-        <label>
-         Booking Confirmation Rule
-        </label>
-        <select id="cfg_confirmRule">
-         <option>
-          Staff approval for all bookings
-         </option>
-         <option>
-          Auto-confirm if available
-         </option>
-         <option>
-          Deposit required before confirmation
-         </option>
-        </select>
-       </div>
-       <div class="full">
-        <label>
-         AI Knowledge Base Summary
-        </label>
-        <textarea id="cfg_aiPolicy">Use business services, prices, opening hours, payment rules, cancellation policy and care requirements as RAG knowledge source.</textarea>
-       </div>
+       
       </div>
       <div class="actions">
        <button class="btn btn-primary" onclick="saveServiceConfiguration()">
