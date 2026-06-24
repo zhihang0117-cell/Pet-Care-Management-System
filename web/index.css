@@ -1353,3 +1353,709 @@ select {
     .setup-actions { flex-direction: column; }
     .setup-actions .btn { justify-content: center; }
 }
+
+/* ==========================================================================
+   Dashboard — Shared utility
+   ========================================================================== */
+.hidden { display: none !important; }
+
+/* ==========================================================================
+   Dashboard — Layout (sidebar + main)
+   ========================================================================== */
+.dash-page {
+    background-color: var(--bg-taupe-beige);
+    min-height: 100vh;
+}
+
+.dash-layout {
+    display: grid;
+    grid-template-columns: 240px 1fr;
+    min-height: 100vh;
+}
+
+/* Sidebar */
+.dash-sidebar {
+    background-color: #2C2420;
+    border-right: none;
+    display: flex;
+    flex-direction: column;
+    padding: 24px 16px;
+    position: sticky;
+    top: 0;
+    height: 100vh;
+    overflow-y: auto;
+}
+
+/* Brand block */
+.dash-brand {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 12px 8px 20px;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+    margin-bottom: 20px;
+}
+
+.dash-brand-avatar {
+    width: 44px;
+    height: 44px;
+    background: linear-gradient(145deg, #BF8C24 0%, #F5D05C 50%, #C49220 100%);
+    border-radius: var(--radius-medium);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 1.3rem;
+    flex-shrink: 0;
+    box-shadow: 0 2px 10px rgba(191, 140, 36, 0.40);
+}
+
+.dash-brand-text {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    min-width: 0;
+}
+
+.dash-brand-name {
+    font-family: var(--font-serif);
+    font-size: 1rem;
+    font-weight: 700;
+    color: #F0E4D0;
+    line-height: 1.2;
+}
+
+.dash-brand-sub {
+    font-size: 0.72rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: rgba(240, 228, 208, 0.45);
+}
+
+/* Sidebar nav */
+.dash-nav {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    flex: 1;
+}
+
+.dash-nav-link {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 11px 14px;
+    border-radius: var(--radius-medium);
+    font-size: 0.875rem;
+    font-weight: 500;
+    color: rgba(240, 228, 208, 0.50);
+    transition: var(--transition-smooth);
+    white-space: nowrap;
+}
+
+.dash-nav-link:hover {
+    background-color: rgba(255, 255, 255, 0.07);
+    color: rgba(240, 228, 208, 0.90);
+}
+
+.dash-nav-link.active {
+    background-color: rgba(240, 228, 208, 0.10);
+    color: #F0E4D0;
+    font-weight: 600;
+}
+
+.dash-sidebar-footer {
+    padding-top: 16px;
+    border-top: 1px solid rgba(255, 255, 255, 0.08);
+    margin-top: 16px;
+}
+
+.dash-sidebar-footer .btn {
+    background-color: rgba(255, 255, 255, 0.07);
+    border-color: rgba(255, 255, 255, 0.12);
+    color: rgba(240, 228, 208, 0.55);
+}
+
+.dash-sidebar-footer .btn:hover {
+    background-color: rgba(255, 255, 255, 0.12);
+    color: rgba(240, 228, 208, 0.90);
+}
+
+/* Main content */
+.dash-main {
+    padding: 28px 28px 48px;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 20px;
+}
+
+/* ==========================================================================
+   Dashboard — Booking sections
+   ========================================================================== */
+.bk-section {
+    background-color: var(--bg-warm-cream);
+    border-radius: var(--radius-large);
+    box-shadow: var(--shadow-soft);
+    padding: 24px 28px;
+}
+
+.bk-section-slim { padding: 20px 28px; }
+
+.bk-page-title {
+    font-family: var(--font-serif);
+    font-size: 1.75rem;
+    font-weight: 700;
+    color: var(--text-charcoal);
+    margin-bottom: 16px;
+}
+
+/* Tab group & buttons */
+.bk-tab-group {
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+}
+
+.tab-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 8px 18px;
+    border-radius: 40px;
+    border: 1.5px solid var(--accent-sand);
+    background-color: var(--card-white);
+    font-family: var(--font-sans);
+    font-size: 0.875rem;
+    font-weight: 600;
+    color: var(--text-muted);
+    cursor: pointer;
+    transition: var(--transition-smooth);
+}
+
+.tab-btn:hover {
+    border-color: var(--btn-brown);
+    color: var(--text-charcoal);
+}
+
+.tab-btn.active {
+    background-color: var(--btn-brown);
+    border-color: var(--btn-brown);
+    color: #fff;
+}
+
+/* View header row */
+.bk-view-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 12px;
+    margin-bottom: 20px;
+    flex-wrap: wrap;
+}
+
+.bk-view-actions {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+
+.bk-date-toggle {
+    display: flex;
+    border: 1.5px solid var(--accent-sand);
+    border-radius: 40px;
+    overflow: hidden;
+}
+
+.bk-date-toggle .tab-btn {
+    border: none;
+    border-radius: 0;
+    border-right: 1.5px solid var(--accent-sand);
+}
+
+.bk-date-toggle .tab-btn:last-child {
+    border-right: none;
+}
+
+/* ==========================================================================
+   Dashboard — KPI cards
+   ========================================================================== */
+.bk-kpi-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+    gap: 16px;
+}
+
+.metric-card {
+    background-color: var(--card-white);
+    border: 1px solid var(--accent-sand);
+    border-radius: var(--radius-medium);
+    padding: 20px;
+    transition: box-shadow 0.25s ease;
+}
+
+.metric-card:hover { box-shadow: var(--shadow-soft); }
+
+.metric-card h3 {
+    font-family: var(--font-sans);
+    font-size: 0.78rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--text-muted);
+    margin: 0 0 10px;
+}
+
+.metric-card p {
+    font-size: 2rem;
+    font-weight: 800;
+    color: var(--text-charcoal);
+    margin: 0;
+    line-height: 1;
+}
+
+/* ==========================================================================
+   Dashboard — Kanban
+   ========================================================================== */
+.bk-kanban-board {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(220px, 1fr));
+    gap: 16px;
+    overflow-x: auto;
+}
+
+.kanban-column {
+    background-color: var(--bg-taupe-beige);
+    border-radius: var(--radius-medium);
+    padding: 14px;
+    min-height: 400px;
+}
+
+.kanban-column h3 {
+    font-family: var(--font-sans);
+    font-size: 0.85rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--text-muted);
+    margin: 0 0 14px;
+}
+
+.booking-card {
+    background-color: var(--card-white);
+    border-radius: var(--radius-medium);
+    border: 1px solid var(--accent-sand);
+    padding: 14px;
+    margin-bottom: 10px;
+    cursor: grab;
+    transition: box-shadow 0.2s ease, transform 0.2s ease;
+}
+
+.booking-card:hover {
+    box-shadow: var(--shadow-soft);
+    transform: translateY(-2px);
+}
+
+.booking-card strong {
+    display: block;
+    font-size: 0.9rem;
+    margin-bottom: 4px;
+    color: var(--text-charcoal);
+}
+
+.booking-card small {
+    font-size: 0.78rem;
+    color: var(--text-muted);
+    line-height: 1.6;
+}
+
+.booking-card-top { margin-bottom: 8px; }
+
+/* ==========================================================================
+   Dashboard — Calendar
+   ========================================================================== */
+.bk-cal-toolbar {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    margin-bottom: 16px;
+}
+
+.bk-cal-title h3 {
+    font-family: var(--font-serif);
+    font-size: 1.1rem;
+    font-weight: 700;
+    color: var(--text-charcoal);
+    margin: 0 0 2px;
+}
+
+.bk-cal-title p {
+    font-size: 0.78rem;
+    color: var(--text-muted);
+    margin: 0;
+}
+
+.bk-cal-controls {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    width: 100%;
+    flex-wrap: wrap;
+}
+
+.bk-cal-nav,
+.bk-cal-filter {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex-wrap: wrap;
+}
+
+.bk-cal-controls .btn {
+    padding: 8px 14px;
+    font-size: 0.82rem;
+    border-radius: 40px;
+    min-width: unset;
+    line-height: 1;
+}
+
+.bk-select,
+.bk-date-input {
+    padding: 6px 8px;
+    border-radius: var(--radius-small);
+    border: 1.5px solid var(--accent-sand);
+    background-color: var(--card-white);
+    font-family: var(--font-sans);
+    font-size: 0.78rem;
+    color: var(--text-charcoal);
+    outline: none;
+    transition: border-color 0.2s ease;
+}
+
+.bk-select     { width: auto; min-width: 100px; }
+.bk-date-input { width: 106px; height: 32px; }
+
+.bk-select:focus,
+.bk-date-input:focus { border-color: var(--btn-brown); }
+
+.bk-date-label {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    font-size: 0.75rem;
+    font-weight: 600;
+    color: var(--text-muted);
+}
+
+.bk-cal-wrap {
+    overflow-x: auto;
+    border: 1px solid var(--accent-sand);
+    border-radius: var(--radius-medium);
+    background-color: var(--card-white);
+}
+
+/* Calendar grid — JS sets class names */
+.calendar-grid {
+    display: grid;
+    min-width: max-content;
+}
+
+.calendar-daily-grid  { grid-template-columns: 100px minmax(580px, 1fr); min-width: 720px; }
+.calendar-weekly-grid { grid-template-columns: 90px repeat(7, 170px); }
+.calendar-month-grid  { grid-template-columns: repeat(7, minmax(140px, 1fr)); min-width: 980px; }
+
+.calendar-cell,
+.calendar-head,
+.time-cell {
+    border-right: 1px solid var(--accent-sand);
+    border-bottom: 1px solid var(--accent-sand);
+    padding: 10px;
+    box-sizing: border-box;
+    font-family: var(--font-sans);
+    font-size: 0.82rem;
+}
+
+.calendar-head,
+.time-cell {
+    background-color: var(--bg-warm-cream);
+    font-weight: 700;
+    color: var(--text-muted);
+}
+
+.calendar-cell {
+    background-color: var(--card-white);
+    min-height: 90px;
+    vertical-align: top;
+}
+
+.daily-booking-cell { min-height: 100px; }
+.month-day-cell     { min-height: 160px; }
+
+.month-day-header {
+    font-weight: 700;
+    font-size: 0.8rem;
+    color: var(--text-muted);
+    margin-bottom: 8px;
+}
+
+.other-month { opacity: 0.4; }
+
+.today-column { background-color: #FFF8E8; }
+.today-column.calendar-head { background-color: #FFF0C8; }
+
+.calendar-booking {
+    background-color: var(--accent-sand);
+    border-left: 3px solid var(--btn-brown);
+    border-radius: var(--radius-small);
+    padding: 7px 9px;
+    cursor: grab;
+    font-size: 0.78rem;
+    margin-bottom: 6px;
+    color: var(--text-charcoal);
+}
+
+.calendar-booking strong { display: block; font-size: 0.8rem; margin-bottom: 2px; }
+.calendar-booking .status-tag { margin-top: 5px; }
+
+.add-slot-btn {
+    width: 100%;
+    padding: 8px;
+    border: 1.5px dashed var(--btn-brown);
+    border-radius: var(--radius-small);
+    background-color: transparent;
+    color: var(--btn-brown);
+    font-family: var(--font-sans);
+    font-size: 0.78rem;
+    font-weight: 600;
+    cursor: pointer;
+    margin-top: 6px;
+    transition: background-color 0.2s ease;
+    opacity: 0.7;
+}
+
+.add-slot-btn:hover { background-color: var(--accent-sand); opacity: 1; }
+
+.slot-full-note {
+    font-size: 0.72rem;
+    color: var(--text-muted);
+    font-weight: 600;
+    margin-top: 6px;
+    text-align: center;
+}
+
+/* ==========================================================================
+   Dashboard — Status tags
+   ========================================================================== */
+.status-tag {
+    display: inline-flex;
+    align-items: center;
+    padding: 3px 10px;
+    border-radius: 30px;
+    font-size: 0.72rem;
+    font-weight: 700;
+    letter-spacing: 0.03em;
+    white-space: nowrap;
+}
+
+.status-pending   { background: #FEF3C7; color: #92400E; }
+.status-scheduled { background: #DBEAFE; color: #1E40AF; }
+.status-done      { background: #D1FAE5; color: #065F46; }
+.status-no_show   { background: #FEE2E2; color: #991B1B; }
+
+/* ==========================================================================
+   Dashboard — Listing view
+   ========================================================================== */
+.bk-listing-toolbar {
+    margin-bottom: 16px;
+}
+
+.bk-search {
+    width: 100%;
+    max-width: 360px;
+    padding: 10px 16px;
+    border-radius: 40px;
+    border: 1.5px solid var(--accent-sand);
+    background-color: var(--card-white);
+    font-family: var(--font-sans);
+    font-size: 0.875rem;
+    color: var(--text-charcoal);
+    outline: none;
+    transition: border-color 0.2s ease;
+}
+
+.bk-search:focus { border-color: var(--btn-brown); }
+
+.bk-table-wrap {
+    overflow-x: auto;
+    border-radius: var(--radius-medium);
+    border: 1px solid var(--accent-sand);
+}
+
+.bk-table {
+    width: 100%;
+    border-collapse: collapse;
+    background-color: var(--card-white);
+    font-family: var(--font-sans);
+    font-size: 0.85rem;
+}
+
+.bk-table th,
+.bk-table td {
+    padding: 12px 14px;
+    border-bottom: 1px solid var(--accent-sand);
+    text-align: left;
+}
+
+.bk-table th {
+    background-color: var(--bg-warm-cream);
+    font-size: 0.75rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--text-muted);
+}
+
+.bk-table tbody tr:hover { background-color: var(--bg-warm-cream); cursor: pointer; }
+.bk-table tbody tr:last-child td { border-bottom: none; }
+
+.status-select {
+    padding: 5px 10px;
+    border-radius: 8px;
+    border: 1.5px solid var(--accent-sand);
+    font-family: var(--font-sans);
+    font-size: 0.8rem;
+    font-weight: 600;
+    background-color: var(--card-white);
+    color: var(--text-charcoal);
+    cursor: pointer;
+}
+
+.edit-btn {
+    padding: 6px 14px;
+    border-radius: 20px;
+    border: 1.5px solid var(--accent-sand);
+    background-color: var(--card-white);
+    font-family: var(--font-sans);
+    font-size: 0.8rem;
+    font-weight: 600;
+    color: var(--btn-brown);
+    cursor: pointer;
+    transition: var(--transition-smooth);
+}
+
+.edit-btn:hover {
+    background-color: var(--btn-brown);
+    border-color: var(--btn-brown);
+    color: #fff;
+}
+
+/* ==========================================================================
+   Dashboard — Booking modal
+   ========================================================================== */
+.bk-modal-backdrop {
+    position: fixed;
+    inset: 0;
+    background: rgba(46, 42, 39, 0.5);
+    display: none;
+    align-items: center;
+    justify-content: center;
+    z-index: 200;
+    padding: 20px;
+}
+
+.bk-modal {
+    width: min(720px, 100%);
+    max-height: 90vh;
+    overflow-y: auto;
+    background-color: var(--card-white);
+    border-radius: var(--radius-large);
+    padding: 36px 40px;
+    box-shadow: 0 24px 64px rgba(92, 80, 71, 0.18);
+}
+
+.bk-modal h2 {
+    font-family: var(--font-serif);
+    font-size: 1.4rem;
+    margin: 0 0 24px;
+    color: var(--text-charcoal);
+}
+
+.bk-modal .form-group label {
+    font-size: 0.78rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--text-muted);
+}
+
+.bk-modal .form-group input,
+.bk-modal .form-group select,
+.bk-modal .form-group textarea {
+    padding: 10px 14px;
+    border-radius: var(--radius-small);
+    border: 1.5px solid var(--accent-sand);
+    font-family: var(--font-sans);
+    font-size: 0.9rem;
+    color: var(--text-charcoal);
+    background-color: var(--bg-warm-cream);
+    outline: none;
+    transition: border-color 0.2s ease;
+    width: 100%;
+    box-sizing: border-box;
+}
+
+.bk-modal .form-group input:focus,
+.bk-modal .form-group select:focus,
+.bk-modal .form-group textarea:focus { border-color: var(--btn-brown); background-color: var(--card-white); }
+
+.bk-modal-actions {
+    display: flex;
+    gap: 10px;
+    flex-wrap: wrap;
+    margin-top: 24px;
+    padding-top: 20px;
+    border-top: 1px solid var(--accent-sand);
+}
+
+.bk-danger-btn {
+    border-color: #E5887A !important;
+    color: #B44 !important;
+}
+
+.bk-danger-btn:hover {
+    background-color: #FEE2E2 !important;
+    border-color: #B44 !important;
+}
+
+/* ==========================================================================
+   Dashboard — Responsive
+   ========================================================================== */
+@media (max-width: 960px) {
+    .dash-layout { grid-template-columns: 200px 1fr; }
+    .dash-brand-name { font-size: 0.9rem; }
+}
+
+@media (max-width: 768px) {
+    .dash-layout { grid-template-columns: 1fr; }
+    .dash-sidebar {
+        position: static;
+        height: auto;
+        flex-direction: row;
+        flex-wrap: wrap;
+        padding: 12px 16px;
+        gap: 12px;
+        border-right: none;
+        border-bottom: 1px solid var(--accent-sand);
+    }
+    .dash-brand { padding: 0; border-bottom: none; margin-bottom: 0; }
+    .dash-nav { flex-direction: row; flex-wrap: wrap; gap: 4px; flex: unset; }
+    .dash-nav-link { font-size: 0.78rem; padding: 6px 10px; }
+    .dash-sidebar-footer { padding-top: 0; border-top: none; margin-top: 0; }
+    .dash-main { padding: 16px; }
+    .bk-kanban-board { grid-template-columns: repeat(4, 260px); }
+    .form-grid-2 { grid-template-columns: 1fr; }
+    .bk-modal { padding: 24px 20px; }
+    .bk-cal-controls { justify-content: flex-start; }
+    .bk-cal-nav, .bk-cal-filter { flex-wrap: wrap; }
+}

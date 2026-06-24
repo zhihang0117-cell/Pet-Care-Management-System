@@ -1,0 +1,228 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Daily Overview | Pawfect AI</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Playfair+Display:wght@600;700&family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="index.css">
+</head>
+
+<body class="dash-page">
+<div class="dash-layout">
+
+  <!-- ── Sidebar ─────────────────────────────────────────────── -->
+  <aside class="dash-sidebar">
+
+    <div class="dash-brand">
+      <div class="dash-brand-avatar">🐾</div>
+      <div class="dash-brand-text">
+        <span class="dash-brand-name">Pawfect AI</span>
+        <span class="dash-brand-sub">Staff portal</span>
+      </div>
+    </div>
+
+    <nav class="dash-nav">
+      <a class="dash-nav-link" href="dailyoverview.html">🏠 &nbsp;&nbsp;Daily Overview</a>
+      <a class="dash-nav-link active" href="booking.html">📅&nbsp;&nbsp;Booking Dashboard</a>
+      <a class="dash-nav-link" href="profile.html">🐾 Customer &amp; Pet Profile</a>
+      <a class="dash-nav-link" href="enquiries.html">💬&nbsp;&nbsp;Enquiries (WhatsApp)</a>
+      <a class="dash-nav-link" href="payment.html">💳&nbsp;&nbsp;Payment</a>
+      <a class="dash-nav-link" href="loyalty.html">🎁&nbsp;&nbsp;Loyalty</a>
+      <a class="dash-nav-link" href="staff.html">👥&nbsp;&nbsp;Staff Management</a>
+      <a class="dash-nav-link" href="dashboard.html">📊&nbsp;&nbsp;Analytical Dashboard</a>
+      <a class="dash-nav-link" href="setting.html">⚙️&nbsp;&nbsp;Settings</a>
+    </nav>
+
+    <div class="dash-sidebar-footer">
+      <a href="login.html" class="btn btn-secondary" style="width:100%;justify-content:center;font-size:0.88rem;">Logout</a>
+    </div>
+
+  </aside>
+
+  <!-- ── Main content ─────────────────────────────────────────── -->
+  <main class="dash-main">
+
+    <!-- Header + Service Filter -->
+    <section class="bk-section">
+      <h1 class="bk-page-title">Booking Dashboard</h1>
+      <div class="bk-tab-group" id="serviceFilterTabs">
+        <button class="tab-btn active" data-filter="all">All</button>
+        <button class="tab-btn" data-filter="grooming">✂️ Grooming</button>
+        <button class="tab-btn" data-filter="boarding">🏨 Boarding</button>
+        <button class="tab-btn" data-filter="daycare">🌞 Daycare</button>
+      </div>
+    </section>
+
+    <!-- KPI Cards -->
+    <section class="bk-section bk-section-slim">
+      <div class="bk-kpi-grid" id="metricCards"></div>
+    </section>
+
+    <!-- Views -->
+    <section class="bk-section">
+      <div class="bk-view-header">
+        <div class="bk-tab-group" id="viewTabs">
+          <button class="tab-btn active" data-view="kanban">Kanban</button>
+          <button class="tab-btn" data-view="calendar">Calendar</button>
+          <button class="tab-btn" data-view="listing">Listing</button>
+        </div>
+        <div class="bk-view-actions" id="kanbanQuickActions">
+          <div class="bk-date-toggle">
+            <button class="tab-btn active" id="todayBtn">Today</button>
+            <button class="tab-btn"        id="allBtn">All</button>
+          </div>
+          <button class="btn btn-primary" id="addBookingBtn">+ Add Booking</button>
+        </div>
+      </div>
+
+      <!-- Kanban -->
+      <div id="kanbanView">
+        <div class="bk-kanban-board" id="kanbanBoard"></div>
+      </div>
+
+      <!-- Calendar -->
+      <div id="calendarView" class="hidden">
+        <div class="bk-cal-toolbar">
+          <div class="bk-cal-title">
+            <h3>Calendar Schedule</h3>
+            <p>Use ← / Today / → to navigate. Switch between Daily, Weekly and Monthly.</p>
+          </div>
+          <div class="bk-cal-controls">
+            <div class="bk-cal-nav">
+              <button class="btn btn-secondary" id="prevCalendarBtn">← Prev</button>
+              <button class="btn btn-primary"   id="todayCalendarBtn">Today</button>
+              <button class="btn btn-secondary" id="nextCalendarBtn">Next →</button>
+            </div>
+            <div class="bk-cal-filter">
+              <select class="bk-select" id="calendarMode">
+                <option value="daily">Daily</option>
+                <option value="weekly" selected>Weekly</option>
+                <option value="monthly">Monthly</option>
+              </select>
+              <label class="bk-date-label">Start <input class="bk-date-input" type="date" id="calendarStartDate" /></label>
+              <label class="bk-date-label">End <input class="bk-date-input" type="date" id="calendarEndDate" /></label>
+              <button class="btn btn-primary"   id="applyCalendarFilter">Apply</button>
+              <button class="btn btn-secondary" id="clearCalendarFilter">Clear</button>
+            </div>
+          </div>
+        </div>
+        <div class="bk-cal-wrap" id="calendarWrap">
+          <div class="calendar-grid" id="calendarGrid"></div>
+        </div>
+      </div><!-- /calendarView -->
+
+      <!-- Listing -->
+      <div id="listingView" class="hidden">
+        <div class="bk-listing-toolbar">
+          <input class="bk-search" type="text" id="listingSearchInput"
+            placeholder="Search by pet, customer or staff…" />
+        </div>
+        <div class="bk-table-wrap">
+          <table class="bk-table">
+            <thead>
+              <tr>
+                <th>Customer</th><th>Pet</th><th>Service</th><th>Staff</th>
+                <th>Date</th><th>Time</th><th>Duration</th><th>Status</th>
+                <th>Amount</th><th>Room</th><th></th>
+              </tr>
+            </thead>
+            <tbody id="listingTableBody"></tbody>
+          </table>
+        </div>
+      </div>
+
+    </section>
+  </main>
+</div>
+
+<!-- ── Booking Modal ─────────────────────────────────────────── -->
+<div class="bk-modal-backdrop" id="bookingModal">
+  <div class="bk-modal">
+    <h2>Booking Details</h2>
+    <form id="bookingForm">
+      <input type="hidden" id="bookingId" />
+      <div class="form-grid-2">
+        <div class="form-group">
+          <label>Customer Name</label>
+          <input type="text" id="customerName" required />
+        </div>
+        <div class="form-group">
+          <label>Pet Name</label>
+          <input type="text" id="petName" required />
+        </div>
+        <div class="form-group">
+          <label>Service Type</label>
+          <select id="serviceType" required>
+            <option value="grooming">Grooming</option>
+            <option value="boarding">Boarding</option>
+            <option value="daycare">Daycare</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label>Required Service</label>
+          <select id="requiredService" required></select>
+        </div>
+        <div class="form-group">
+          <label>Staff Name</label>
+          <select id="staffName" required></select>
+        </div>
+        <div class="form-group room-field hidden">
+          <label>Room</label>
+          <select id="roomName"></select>
+        </div>
+        <div class="form-group">
+          <label>Date</label>
+          <input type="date" id="bookingDate" required />
+        </div>
+        <div class="form-group">
+          <label>Time</label>
+          <input type="time" id="bookingTime" required />
+        </div>
+        <div class="form-group boarding-field hidden">
+          <label>Check-in Date</label>
+          <input type="date" id="checkInDate" />
+        </div>
+        <div class="form-group boarding-field hidden">
+          <label>Check-out Date</label>
+          <input type="date" id="checkOutDate" />
+        </div>
+        <div class="form-group">
+          <label>Duration (min)</label>
+          <input type="number" id="duration" min="1" required />
+        </div>
+        <div class="form-group">
+          <label>Status</label>
+          <select id="bookingStatus">
+            <option value="pending">Pending Service</option>
+            <option value="scheduled">Scheduled</option>
+            <option value="done">Done</option>
+            <option value="no_show">No Show</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label>Amount (RM)</label>
+          <input type="number" id="amount" min="0" step="0.01" readonly />
+        </div>
+        <div class="form-group full">
+          <label>Special Note</label>
+          <textarea id="specialNote" rows="3"></textarea>
+        </div>
+      </div>
+      <div class="bk-modal-actions">
+        <button type="submit"  class="btn btn-primary">Save Booking</button>
+        <button type="button"  class="btn btn-secondary" id="doneServiceBtn">✓ Done Service</button>
+        <button type="button"  class="btn btn-secondary bk-danger-btn" id="noShowBtn">No Show</button>
+        <button type="button"  class="btn btn-secondary bk-danger-btn" id="cancelBookingBtn">✕ Cancel Booking</button>
+        <button type="button"  class="btn btn-secondary" id="openPetProfileBtn">🐾 Pet Profile</button>
+        <button type="button"  class="btn btn-secondary" id="closeModalBtn">Close</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<script src="common.js"></script>
+</body>
+</html>
