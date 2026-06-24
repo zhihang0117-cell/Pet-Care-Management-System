@@ -17,16 +17,33 @@
             </div>
             <ul class="nav-links">
             <li><a href="#aboutus">About us</a></li>
+            <li><a href="#workflow"">How It Works</a></li>
             <li><a href="#modules">Module</a></li>
-            <li><a href="#workflow">Workflow</a></li>
+            <li><a href="#regworkflow">Register Workflow</a></li>
             <li><a href="#faq">FAQ</a></li>
             </ul>
 
             <div class="indexaction">
-                <a href="login.html" class="btn-link text-btn">Login</a></button> 
-                <a href="register.html" class="btn btn-secondary">Register</a></button> 
+                <a href="login.html" class="btn-link text-btn">Login</a></button>
+                <a href="register.html" class="btn btn-secondary">Register</a></button>
             </div>
+            <button class="hamburger" id="hamburger" aria-label="Toggle menu" aria-expanded="false">
+                <span></span><span></span><span></span>
+            </button>
         </nav>
+        <div class="mobile-nav" id="mobileNav" aria-hidden="true">
+            <ul>
+                <li><a href="#aboutus">About us</a></li>
+                <li><a href="#workflow">How It Works</a></li>
+                <li><a href="#modules">Module</a></li>
+                <li><a href="#regworkflow">Register Workflow</a></li>
+                <li><a href="#faq">FAQ</a></li>
+            </ul>
+            <div class="mobile-nav-actions">
+                <a href="login.html" class="btn btn-secondary">Login</a>
+                <a href="register.html" class="btn btn-primary">Register</a>
+            </div>
+        </div>
     </header>
 
     <main>
@@ -120,11 +137,11 @@
 <!--About Us-->
 <div class="section-wrapper">
 <section class="section-container" id="aboutus">
-  <header class="section-header">
-  <span class="topic-tag">About Us</span>
-  </header>
 
-<div class="features-block">
+<div class="content-block content-block-flush">
+  <div class="content-block-header">
+    <span class="topic-tag">About Us</span>
+  </div>
 <div class="feature-content">
   
   <div class="feature-text">
@@ -181,14 +198,15 @@
 <!--How System Works-->
  <!-- HOW IT WORKS -->
  <section class="section-container alternate-bg" id="workflow">
-            <div class="section-header">
+          <div class="content-block">
+ <div class="section-header">
                 <span class="topic-tag">How it Works</span>
                 <h2 class="section-title">From WhatsApp message to structured business record.</h2>
                 <p class="section-subtitle"> PAwfect AI converts scattered customer conversations into trackable actions,
           so staff can manage daily pet care operations with fewer manual checks.</p>
-            </div>   
+            </div>
 
-          <div class="workflow-steps-container steps-4">
+            <div class="workflow-steps-container steps-4">
                 <div class="step-node">
                     <div class="step-number">01</div>
                     <h4>Customer Sends WhatsApp Message</h4>
@@ -210,17 +228,17 @@
                    <p>Bookings, loyalty decisions, payment-sensitive cases, and special care requests can be approved before final action.</p>
                 </div>
             </div>
+          </div>
         </section>
 
  <!-- PLATFORM / MODULES -->
     <section class="section-container" id="modules">
-            <div class="section-header">
+            <div class="content-block platform-shell">
+                <div class="section-header">
                 <span class="topic-tag">Module</span>
                 <h2 class="section-title">Smart tools for smoother care management</h2>
                 <p class="section-subtitle">Interact with our architectural modules below to preview how our workflow supports your business daily.</p>
             </div>
-
-            <div class="platform-shell">
                 <input type="radio" name="platform-tab" id="tab-whatsapp" checked class="hidden-radio">
                 <input type="radio" name="platform-tab" id="tab-booking" class="hidden-radio">
                 <input type="radio" name="platform-tab" id="tab-profile" class="hidden-radio">
@@ -388,14 +406,14 @@
         </section>
 
     <!-- Setup Workflow-->
-<section class="section-container alternate-bg" id="workflow">
-            <div class="section-header">
-                <span class="topic-tag">Functional Flow</span>
+<section class="section-container alternate-bg" id="regworkflow">
+            <div class="content-block">
+                <div class="section-header">
+                <span class="topic-tag">Register Flow</span>
                 <h2 class="section-title">From simple setup to unified platform control</h2>
                 <p class="section-subtitle">How new and established pet brands onboard into the structured operations suite.</p>
             </div>
-
-            <div class="workflow-steps-container steps-6">
+              <div class="workflow-steps-container steps-6">
                 <div class="step-node">
                     <div class="step-number">01</div>
                     <h4>Register Business</h4>
@@ -426,18 +444,19 @@
                     <h4>Insight Analytics</h4>
                     <p>Review clean revenue distributions and room capacities seamlessly.</p>
                 </div>
+              </div>
             </div>
         </section>
 
     <!-- FAQ -->
      <section class="section-container" id="faq">
-            <div class="section-header">
-                <span class="topic-tag">Common Enquiries</span>
+            <div class="content-block">
+                <div class="section-header">
+                <span class="topic-tag">FAQ</span>
                 <h2 class="section-title">Frequently Asked Questions</h2>
                 <p class="section-subtitle">Everything you need to know about setting up PAwfect AI in your business.</p>
             </div>
-
-            <div class="faq-accordion-wrapper">
+              <div class="faq-accordion-wrapper">
                 <details class="faq-item" open>
                     <summary class="faq-question">What is PAwfect AI exactly?</summary>
                     <div class="faq-answer">
@@ -465,16 +484,69 @@
                         <p>To keep responses accurate, the system needs to know your custom rules. Entering specific capacity levels, operating hours, package rates, and kennel availability ensures the AI works within your actual operational boundaries.</p>
                     </div>
                 </details>
+              </div>
             </div>
         </section>
     </main>
 
+<button id="backToTop" class="back-to-top" aria-label="Back to top" onclick="window.scrollTo({top:0,behavior:'smooth'})">&#8679;</button>
+
 <script src="index.js"></script>
 
-<footer class="footer-container">
-        <div class="footer-content">
-            <p>&copy; 2026 PAwfect AI Platforms. Crafted for premium pet care management.</p>
+<section class="cta-banner">
+    <div class="cta-content">
+        <h2>Ready to transform your<br>pet care operations?</h2>
+        <p>Join pet care businesses that have streamlined WhatsApp enquiries, bookings, and daily operations with one unified platform.</p>
+        <div class="cta-actions">
+            <a href="register.html" class="btn btn-cta-primary">Register Your Business</a>
+            <a href="login.html" class="btn btn-cta-ghost">Login to Dashboard</a>
         </div>
-    </footer>
+    </div>
+</section>
+</main>
+
+<footer class="footer-container">
+    <div class="footer-inner">
+        <div class="footer-top">
+            <div class="footer-logo">🐾 PAWFECT AI</div>
+            <p class="footer-tagline">AI-powered operations for modern pet care businesses.</p>
+        </div>
+
+        <div class="footer-divider"></div>
+
+        <div class="footer-grid">
+            <div class="footer-col">
+                <h4>Platform</h4>
+                <ul>
+                    <li><a href="#aboutus">About Us</a></li>
+                    <li><a href="#workflow">How It Works</a></li>
+                    <li><a href="#modules">Modules</a></li>
+                    <li><a href="#regworkflow">Register Flow</a></li>
+                    <li><a href="#faq">FAQ</a></li>
+                </ul>
+            </div>
+            <div class="footer-col">
+                <h4>Account</h4>
+                <ul>
+                    <li><a href="login.html">Login</a></li>
+                    <li><a href="register.html">Register Business</a></li>
+                </ul>
+            </div>
+            <div class="footer-col">
+                <h4>Contact</h4>
+                <ul class="footer-contact">
+                    <li><span class="contact-icon">✉</span><span>support@pawfectai.com</span></li>
+                    <li><span class="contact-icon">📍</span><span>Petaling Jaya, Malaysia</span></li>
+                </ul>
+            </div>
+        </div>
+
+        <div class="footer-divider"></div>
+
+        <div class="footer-bottom">
+            <p>&copy; 2026 PAWFECT AI Platforms. All rights reserved.</p>
+        </div>
+    </div>
+</footer>
 </body>
 </html>
