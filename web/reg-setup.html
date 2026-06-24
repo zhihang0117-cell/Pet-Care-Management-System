@@ -239,7 +239,7 @@
                 <span class="field-note" id="selectedServicesText">✂️ Grooming · 🏨 Boarding / Hotel · 🌞 Daycare</span>
             </div>
             <div class="setup-section-body">
-                <<div class="service-config-grid" id="selectedServiceCards">
+                <div class="service-config-grid" id="selectedServiceCards">
 
     <div class="service-config-card">
         <h3>✂️ Grooming</h3>
@@ -304,6 +304,32 @@
             </div>
         </section>
 
+        <!-- ── Dashboard Password Protection ─────────────── -->
+        <section class="setup-section">
+            <div class="setup-section-head">
+                <h3>🔒 Dashboard Password Protection</h3>
+            </div>
+            <div class="setup-section-body">
+                <p class="field-note">When enabled, staff must enter a passkey each time they open the dashboard portal.</p>
+
+                <label class="addon" style="max-width: 360px;">
+                    <input type="checkbox" id="enable_dashpass" onchange="toggleDashPass(this)">
+                    <div class="addon-text">
+                        <strong>Require Dashboard Passkey</strong>
+                        <span>Adds an extra access layer on top of login</span>
+                    </div>
+                </label>
+
+                <div id="dashpass-field" style="display:none;">
+                    <div class="form-group" style="max-width: 360px;">
+                        <label for="cfg_dashpass">Dashboard Passkey <span class="req">*</span></label>
+                        <input type="password" id="cfg_dashpass" placeholder="Enter a passkey (min. 4 characters)" minlength="4">
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        
         <!-- Actions -->
         <div class="setup-actions">
             <button class="btn btn-primary" type="button" onclick="saveServiceConfiguration()">Save &amp; Enter Portal</button>
