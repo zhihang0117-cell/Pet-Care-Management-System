@@ -1042,3 +1042,255 @@ a {
     .footer-bottom { flex-direction: column; gap: 12px; text-align: center; }
     .footer-legal { justify-content: center; }
 }
+
+/* ==========================================================================
+   Auth & Setup Pages
+   ========================================================================== */
+
+/* Auth Header — stretching pill nav, mirrors index.html style */
+.auth-header {
+    padding: 20px 24px 0;
+}
+.auth-header-inner {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    background-color: var(--card-white);
+    padding: 16px 36px;
+    border-radius: 100px;
+    box-shadow: var(--shadow-card);
+}
+.auth-nav-logo {
+    font-family: var(--font-serif);
+    font-weight: 700;
+    font-size: 1.3rem;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    color: var(--text-charcoal);
+}
+
+/* Auth Page Shell */
+.auth-page {
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+}
+.auth-main {
+    flex: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 48px 24px 80px;
+}
+
+/* Auth Card */
+.auth-card {
+    background-color: var(--bg-warm-cream);
+    border-radius: var(--radius-large);
+    padding: 52px;
+    box-shadow: var(--shadow-soft);
+    width: 100%;
+    max-width: 480px;
+}
+.auth-card-mark { font-size: 2rem; margin-bottom: 8px; display: block; }
+.auth-card h1,
+.auth-card h2 { font-size: 1.75rem; line-height: 1.2; margin-bottom: 8px; }
+.auth-subtitle { color: var(--text-muted); font-size: 0.95rem; line-height: 1.6; margin-bottom: 32px; }
+
+.auth-switch { text-align: center; font-size: 0.9rem; color: var(--text-muted); margin-top: 20px; }
+.auth-switch a { color: var(--btn-brown); font-weight: 600; }
+.auth-switch a:hover { color: var(--btn-brown-hover); }
+
+/* Form Elements */
+.form-stack { display: flex; flex-direction: column; gap: 16px; margin-bottom: 24px; }
+.form-group { display: flex; flex-direction: column; gap: 6px; }
+.form-group label,
+.setup-section-body label { font-size: 0.88rem; font-weight: 600; color: var(--text-charcoal); }
+
+input:not([type="checkbox"]):not([type="radio"]):not([type="file"]),
+select,
+textarea {
+    width: 100%;
+    padding: 12px 16px;
+    background-color: var(--card-white);
+    border: 1.5px solid var(--accent-sand);
+    border-radius: var(--radius-small);
+    font-family: var(--font-sans);
+    font-size: 0.95rem;
+    color: var(--text-charcoal);
+    transition: border-color 0.2s ease, box-shadow 0.2s ease;
+    outline: none;
+    appearance: none;
+}
+input:not([type="checkbox"]):not([type="radio"]):not([type="file"]):focus,
+select:focus,
+textarea:focus {
+    border-color: var(--btn-brown);
+    box-shadow: 0 0 0 3px rgba(92, 80, 71, 0.08);
+}
+input::placeholder, textarea::placeholder { color: var(--text-muted); opacity: 0.7; }
+textarea { resize: vertical; min-height: 84px; }
+select {
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8'%3E%3Cpath d='M1 1l5 5 5-5' stroke='%237A726C' stroke-width='1.5' fill='none' stroke-linecap='round'/%3E%3C/svg%3E");
+    background-repeat: no-repeat;
+    background-position: right 14px center;
+    padding-right: 36px;
+    cursor: pointer;
+}
+
+.req { color: var(--btn-brown); margin-left: 2px; }
+.field-note { font-size: 0.8rem; color: var(--text-muted); margin-top: 6px; }
+
+.form-grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+.form-grid-2 .full { grid-column: 1 / -1; }
+
+/* Password Meter */
+.password-meter { height: 4px; background-color: var(--accent-sand); border-radius: 2px; overflow: hidden; margin-bottom: 6px; }
+#passwordBar { height: 100%; border-radius: 2px; width: 0%; transition: width 0.3s ease, background-color 0.3s ease; }
+
+/* Auth Actions */
+.auth-actions { display: flex; flex-direction: column; gap: 10px; }
+.auth-actions .btn { width: 100%; justify-content: center; }
+
+/* Step Progress Indicator */
+.step-progress { display: flex; align-items: center; margin-bottom: 28px; }
+.step-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 0.82rem;
+    font-weight: 600;
+    color: var(--text-muted);
+    white-space: nowrap;
+}
+.step-dot {
+    width: 28px;
+    height: 28px;
+    border-radius: 50%;
+    background-color: var(--accent-sand);
+    color: var(--text-muted);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 0.72rem;
+    font-weight: 700;
+    flex-shrink: 0;
+}
+.step-item.done .step-dot,
+.step-item.active .step-dot { background-color: var(--btn-brown); color: var(--card-white); }
+.step-item.active { color: var(--text-charcoal); }
+.step-item.done   { color: var(--btn-brown); }
+.step-connector { flex: 1; height: 1px; background-color: var(--accent-sand); margin: 0 10px; min-width: 20px; }
+.step-connector.done { background-color: var(--btn-brown); }
+
+/* Service Choice Cards */
+.service-choice { display: flex; flex-direction: column; gap: 10px; margin-bottom: 28px; }
+.choice {
+    display: flex;
+    align-items: flex-start;
+    gap: 14px;
+    padding: 14px 18px;
+    background-color: var(--card-white);
+    border: 1.5px solid var(--accent-sand);
+    border-radius: var(--radius-medium);
+    cursor: pointer;
+    transition: border-color 0.2s ease, background-color 0.2s ease;
+}
+.choice:hover { border-color: var(--btn-brown); }
+.choice.active { border-color: var(--btn-brown); background-color: var(--bg-warm-cream); }
+.choice input[type="checkbox"] {
+    width: 17px; height: 17px; flex-shrink: 0; accent-color: var(--btn-brown);
+    margin-top: 2px; cursor: pointer;
+    padding: 0; border: unset; background-color: unset; box-shadow: none; border-radius: 0;
+}
+.choice strong { font-size: 0.92rem; display: block; margin-bottom: 2px; }
+.choice span   { font-size: 0.8rem; color: var(--text-muted); line-height: 1.4; }
+.choice-text   { display: flex; flex-direction: column; }
+
+/* ==========================================================================
+   Setup Page (reg-setup.html)
+   ========================================================================== */
+.setup-page { background-color: var(--bg-taupe-beige); min-height: 100vh; }
+.setup-container { max-width: 900px; margin: 0 auto; padding: 40px 24px 80px; }
+
+.setup-page-header { margin-bottom: 32px; }
+.setup-page-header h1 { font-size: clamp(1.5rem, 3vw, 2rem); margin-bottom: 6px; }
+.setup-page-header p { color: var(--text-muted); font-size: 0.95rem; }
+.req-note { font-size: 0.82rem; color: var(--text-muted); margin-top: 8px; }
+.req-note span { color: var(--btn-brown); font-weight: 600; }
+
+.setup-progress { display: flex; align-items: center; margin-bottom: 36px; max-width: 480px; }
+
+.setup-section { background-color: var(--bg-warm-cream); border-radius: var(--radius-large); box-shadow: var(--shadow-soft); overflow: hidden; margin-bottom: 20px; }
+.setup-section-head { display: flex; align-items: center; justify-content: space-between; padding: 20px 32px; border-bottom: 1px solid var(--accent-sand); }
+.setup-section-head h3 { font-size: 1rem; font-weight: 700; margin: 0; }
+.setup-section-body { padding: 28px 32px; display: flex; flex-direction: column; gap: 20px; }
+
+.logo-upload-label {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-direction: column;
+    gap: 8px;
+    padding: 24px;
+    border: 2px dashed var(--accent-sand);
+    border-radius: var(--radius-medium);
+    background-color: var(--card-white);
+    cursor: pointer;
+    transition: border-color 0.2s ease;
+    text-align: center;
+}
+.logo-upload-label:hover { border-color: var(--btn-brown); }
+.logo-upload-label .upload-icon { font-size: 1.6rem; }
+.logo-upload-label p { font-size: 0.82rem; color: var(--text-muted); }
+.logo-upload-label input[type="file"] { display: none; }
+
+.hours-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(168px, 1fr)); gap: 12px; }
+.hours-grid > div { display: flex; flex-direction: column; gap: 6px; }
+.hours-grid label { font-size: 0.78rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.06em; color: var(--text-muted); }
+
+.addons { display: grid; grid-template-columns: repeat(auto-fill, minmax(196px, 1fr)); gap: 12px; }
+.addon {
+    display: flex;
+    align-items: flex-start;
+    gap: 12px;
+    padding: 14px 16px;
+    background-color: var(--card-white);
+    border: 1.5px solid var(--accent-sand);
+    border-radius: var(--radius-medium);
+    cursor: pointer;
+    transition: border-color 0.2s ease;
+}
+.addon:hover { border-color: var(--btn-brown); }
+.addon input[type="checkbox"] {
+    width: 16px; height: 16px; flex-shrink: 0; margin-top: 2px; accent-color: var(--btn-brown); cursor: pointer;
+    padding: 0; border: unset; background-color: unset; box-shadow: none; border-radius: 0;
+}
+.addon-text strong { font-size: 0.9rem; font-weight: 600; display: block; margin-bottom: 2px; }
+.addon-text span   { font-size: 0.78rem; color: var(--text-muted); }
+
+.service-config-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 16px; }
+.service-config-card { background-color: var(--card-white); border: 1px solid var(--accent-sand); border-radius: var(--radius-medium); padding: 20px; display: flex; flex-direction: column; gap: 8px; }
+.service-config-card h3 { font-size: 0.95rem; font-weight: 700; margin: 0; }
+.service-config-card .muted { font-size: 0.8rem; color: var(--text-muted); }
+.service-config-card label { font-size: 0.82rem; font-weight: 600; margin-top: 4px; }
+
+.section-divider-label { font-size: 0.75rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.08em; color: var(--text-muted); padding-top: 8px; border-top: 1px solid var(--accent-sand); }
+
+.setup-actions { display: flex; gap: 16px; margin-top: 36px; flex-wrap: wrap; }
+
+/* Auth & Setup responsive */
+@media (max-width: 600px) {
+    .auth-card { padding: 32px 24px; }
+    .auth-card h1, .auth-card h2 { font-size: 1.5rem; }
+    .form-grid-2 { grid-template-columns: 1fr; }
+    .step-item span { display: none; }
+    .setup-container { padding: 28px 16px 60px; }
+    .setup-section-head, .setup-section-body { padding: 16px 20px; }
+    .hours-grid { grid-template-columns: repeat(2, 1fr); }
+    .addons { grid-template-columns: 1fr; }
+    .service-config-grid { grid-template-columns: 1fr; }
+    .setup-actions { flex-direction: column; }
+    .setup-actions .btn { justify-content: center; }
+}

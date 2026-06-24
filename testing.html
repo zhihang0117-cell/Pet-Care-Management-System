@@ -1,0 +1,50 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Login - Pawfect AI</title>
+    <link rel="stylesheet" href="testing.css">
+    <link rel="stylesheet" href="index.css">
+</head>
+<body class="auth-page">
+
+    <div class="auth-container">
+        <div class="auth-logo">
+            <a href="index.html">
+                <span class="logo-mark">🐾</span><b>Pawfect AI</b>
+            </a>
+        </div>
+
+        <main class="content-block auth-card">
+            <div class="auth-header">
+                <h2>Login to Pawfect AI</h2>
+                <p class="section-subtitle">Enter your email and password to access your dashboard.</p>
+            </div>
+
+            <form id="login-form">
+                <div class="form-group">
+                    <label for="login_email">Email <span class="req">*</span></label>
+                    <input id="login_email" type="email" autocomplete="email" placeholder="manager@happypaws.my" required>
+                </div>
+                
+                <div class="form-group">
+                    <label for="login_password">Password <span class="req">*</span></label>
+                    <input id="login_password" type="password" autocomplete="current-password" placeholder="Minimum 8 characters" required>
+                </div>
+
+                <div class="auth-actions">
+                    <button class="btn btn-primary" type="button" onclick="loginPawfectAccount()">Login Account</button>
+                    <a class="btn btn-secondary text-center" href="index.html">Back to Home</a>
+                </div>
+            </form>
+
+            <div class="auth-footer">
+                <p>New to Pawfect AI? <a href="register.html" class="inline-link">Create an account</a></p>
+            </div>
+        </main>
+    </div>
+
+    <script src="index.js"></script>
+</body>
+</html>

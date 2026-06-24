@@ -1,72 +1,103 @@
-<html lang="en"><head>
-  <meta charset="utf-8">
-  <title>Register | Pawfect AI</title>
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Register | Pawfect AI</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Playfair+Display:wght@600;700&family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="index.css">
 </head>
-<body>
-  <header class="nav">
-    <div class="container nav-inner">
-      <a class="logo" href="index.html"><span class="logo-mark">🐾</span><b>Pawfect AI</b></a>
-    </div>
-  </header>
+<body class="auth-page">
 
-  <main class="auth-wrap">
-    <section class="auth-card register-wizard">
-      <div class="wizard-steps">
-        <span class="wizard-step active">1 Account Setup</span>
-        <span class="wizard-step">2 Business Configuration</span>
-      </div>
-
-      <h2>Register Pet Care Business</h2>
-      <p class="muted">Create the business login account. After registration, the business profile configuration page will open.</p>
-
-      <div class="service-choice multi-service" aria-label="Selected business services">
-        <label class="choice active">
-          <input checked="" name="svc" type="checkbox" value="grooming">
-          <strong>Grooming</strong>
-          <span>Grooming schedule, service packages and pet notes.</span>
-        </label>
-        <label class="choice active">
-          <input checked="" name="svc" type="checkbox" value="boarding">
-          <strong>Boarding / Hotel</strong>
-          <span>Room availability, check-in/out and cleaning tasks.</span>
-        </label>
-        <label class="choice active">
-          <input checked="" name="svc" type="checkbox" value="daycare">
-          <strong>Daycare</strong>
-          <span>Daily attendance, capacity and customer updates.</span>
-        </label>
-      </div>
-
-      <div class="form-grid">
-        <div class="full">
-          <label>Business Name</label><span class="req">*</span>
-          <input id="reg_business_name" required="" placeholder="e.g. Fresh Paws Studio" value="Fresh Paws Studio">
+    <!-- Navbar -->
+    <header class="auth-header">
+        <div class="auth-header-inner">
+            <a class="auth-nav-logo" href="index.html">🐾 PAWFECT AI</a>
+            <a href="index.html" class="btn btn-secondary" style="padding: 10px 24px; font-size: 0.88rem;">← Back to Site</a>
         </div>
-        <div class="full">
-          <label>Login Email</label>
-          <input id="reg_email" type="email" required="" placeholder="business@email.com" value="new@freshpaws.my">
-        </div>
-        <div>
-          <label>Password <span class="req">*</span></label>
-          <input id="reg_password" type="password" required="" minlength="8" placeholder="Minimum 8 characters" oninput="checkPasswordStrength()">
-        </div>
-        <div>
-          <label>Confirm Password <span class="req">*</span></label>
-          <input id="reg_confirm" type="password" required="" minlength="8" placeholder="Retype password">
-        </div>
-        <div class="full">
-          <div class="password-meter"><div id="passwordBar"></div></div>
-          <p class="small" id="passwordText">Password must be at least 8 characters and both fields must match.</p>
-        </div>
-      </div>
+    </header>
 
-      <div class="actions">
-        <button class="btn btn-primary" type="button" onclick="registerBusinessAccount()">Register</button>
-        <a class="btn btn-outline" href="index.html">Back</a>
-      </div>
-    </section>
-  </main>
+    <main class="auth-main">
+        <div class="auth-card" style="max-width: 560px;">
 
-<script src="index.js"></script>
+            <!-- Step progress -->
+            <div class="step-progress">
+                <div class="step-item active">
+                    <div class="step-dot">1</div>
+                    <span>Account Setup</span>
+                </div>
+                <div class="step-connector"></div>
+                <div class="step-item">
+                    <div class="step-dot">2</div>
+                    <span>Business Configuration</span>
+                </div>
+            </div>
 
-</body></html>
+            <span class="topic-tag">Step 1 of 2</span>
+            <h2>Register Pet Care Business</h2>
+            <p class="auth-subtitle">Create the business login account. After registration, the business profile configuration page will open.</p>
+
+            <!-- Service type selection -->
+            <div class="service-choice" aria-label="Select business services">
+                <label class="choice active">
+                    <input checked name="svc" type="checkbox" value="grooming">
+                    <div class="choice-text">
+                        <strong>✂️ Grooming</strong>
+                        <span>Grooming schedule, service packages and pet notes.</span>
+                    </div>
+                </label>
+                <label class="choice active">
+                    <input checked name="svc" type="checkbox" value="boarding">
+                    <div class="choice-text">
+                        <strong>🏨 Boarding / Hotel</strong>
+                        <span>Room availability, check-in/out and cleaning tasks.</span>
+                    </div>
+                </label>
+                <label class="choice active">
+                    <input checked name="svc" type="checkbox" value="daycare">
+                    <div class="choice-text">
+                        <strong>🌞 Daycare</strong>
+                        <span>Daily attendance, capacity and customer updates.</span>
+                    </div>
+                </label>
+            </div>
+
+            <!-- Account fields -->
+            <div class="form-stack">
+                <div class="form-group">
+                    <label for="reg_business_name">Business Name <span class="req">*</span></label>
+                    <input id="reg_business_name" type="text" required placeholder="e.g. Fresh Paws Studio">
+                </div>
+                <div class="form-group">
+                    <label for="reg_email">Login Email <span class="req">*</span></label>
+                    <input id="reg_email" type="email" required placeholder="business@email.com">
+                </div>
+                <div class="form-grid-2">
+                    <div class="form-group">
+                        <label for="reg_password">Password <span class="req">*</span></label>
+                        <input id="reg_password" type="password" required minlength="8" placeholder="Min. 8 characters" oninput="checkPasswordStrength()">
+                    </div>
+                    <div class="form-group">
+                        <label for="reg_confirm">Confirm Password <span class="req">*</span></label>
+                        <input id="reg_confirm" type="password" required minlength="8" placeholder="Retype password">
+                    </div>
+                </div>
+                <div>
+                    <div class="password-meter"><div id="passwordBar"></div></div>
+                    <p class="field-note" id="passwordText">Password must be at least 8 characters and both fields must match.</p>
+                </div>
+            </div>
+
+            <div class="auth-actions">
+                <button class="btn btn-primary" type="button" onclick="registerBusinessAccount()">Register &amp; Continue</button>
+                <a class="btn btn-secondary" href="login.html">Already have an account? Login</a>
+            </div>
+
+        </div>
+    </main>
+
+    <script src="index.js"></script>
+</body>
+</html>

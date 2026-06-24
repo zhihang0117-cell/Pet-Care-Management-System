@@ -48,7 +48,7 @@ function loginPawfectAccount(){
   if(acc.blankData&&!acc.setupCompleted){
     saveAccountState(acc,{businessName:acc.businessName,services:acc.services||['grooming','boarding','daycare'],setupCompleted:false,newUser:true,accountEmail:acc.email,businessKey:acc.businessKey});
     localStorage.setItem('pawfect_first_login','true');
-    location.href='service-configuration.html';
+    location.href='dailyoverview.html';
     return;
   }
   saveAccountState(acc,completedSetupFor(acc));
@@ -99,7 +99,7 @@ function registerBusinessAccount(){
   localStorage.removeItem('pawfect_existing_completed_account');
   localStorage.setItem('pawfect_v10_business_setup',JSON.stringify(setup));
   localStorage.setItem('pawfect_first_login','true');
-  location.href='service-configuration.html';
+  location.href='reg-setup.html';
 }
 
 

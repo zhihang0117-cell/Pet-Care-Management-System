@@ -1,272 +1,316 @@
-<html lang="en"><head>
-  <meta charset="utf-8">
-  <title>Register | Pawfect AI</title>
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Business Setup | Pawfect AI</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Playfair+Display:wght@600;700&family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="index.css">
 </head>
-<body>
-  <header class="nav">
-    <div class="container nav-inner">
-      <a class="logo" href="index.html"><span class="logo-mark">🐾</span><b>Pawfect AI</b></a>
-    </div>
-  </header>
-<!--Intro & Status-->
-  <main class="config-page">
-   <div class="container">
-        <div class="app-top">
-            <div>
-              <h1>Business Profile Set Up</h1>
-              <p class="muted">Complete the business profile, service setup, invoice/tax format and WhatsApp API connection before enter the portal.</p>
-              <br> Field with <span>*</span> are required.
+<body class="setup-page">
+
+    <!-- Navbar -->
+    <header class="auth-header">
+        <div class="auth-header-inner">
+            <a class="auth-nav-logo" href="index.html">🐾 PAWFECT AI</a>
+            <a href="register.html" class="btn btn-secondary" style="padding: 10px 24px; font-size: 0.88rem;">← Back to Register</a>
+        </div>
+    </header>
+
+    <div class="setup-container">
+
+        <!-- Page header -->
+        <div class="setup-page-header">
+            <span class="topic-tag">Step 2 of 2</span>
+            <h1>Business Profile Setup</h1>
+            <p>Complete your business profile, service setup, invoice format, and WhatsApp API connection before entering the portal.</p>
+            <p class="req-note">Fields marked <span>*</span> are required.</p>
+        </div>
+
+        <!-- 3-step progress -->
+        <div class="setup-progress">
+            <div class="step-item done">
+                <div class="step-dot">✓</div>
+                <span>Register</span>
             </div>
-          </div>
-        <div class="v10-setup-progress">
-            <div>1 Register</div>
-            <div class="active">2 Service Configuration</div>
-            <div>3 Enter</div>
-          </div>
+            <div class="step-connector done"></div>
+            <div class="step-item active">
+                <div class="step-dot">2</div>
+                <span>Service Configuration</span>
+            </div>
+            <div class="step-connector"></div>
+            <div class="step-item">
+                <div class="step-dot">3</div>
+                <span>Enter Portal</span>
+            </div>
+        </div>
 
-<!--Business Profile-->
-    <section class="businessprofile">
-      <legend class="profile-header">Business Profile</legend>
-        <div class="businessprofile-body>">
-                  <div class="field">
-                    <label>Logo</label>
-                    <input id='logo', name="logo" accept="image/*" id="cfg_logo" type="file">
-                  </div>
-            <div>
-                <label>Business / Company Name <span class="req">*</span></label>
-                <input id="businessname", type="text" placeholder="Happy Paws Sdn Bhd" required>
-       </div>
-       <div>
-        <label>Country<span class="req">*</span></label>
-        <select id="country">
-         <option>Malaysia</option>
-         <option>Singapore</option>
-         <option>Thailand</option>
-        </select>
-       </div>
-       
-       <div>
-        <label>Street</label>
-        <input id="street", city="street" type="text" placeholder="No. 123, Jalan Happy Paws">
-       </div>
-       
-       <div>
-        <label>City</label>
-        <input id="city">
-       </div>
+        <!-- ── Business Profile ─────────────────────────────── -->
+        <section class="setup-section">
+            <div class="setup-section-head">
+                <h3>🏢 Business Profile</h3>
+            </div>
+            <div class="setup-section-body">
 
-       <div>
-        <label>State</label>
-        <input id="state">
-       </div>
+                <!-- Logo upload -->
+                <div class="form-group">
+                    <label>Business Logo</label>
+                    <label class="logo-upload-label">
+                        <span class="upload-icon">🖼️</span>
+                        <p>Click to upload logo (PNG, JPG — recommended 200×200 px)</p>
+                        <input type="file" id="cfg_logo" name="logo" accept="image/*">
+                    </label>
+                </div>
 
-       <div>
-        <label>ZIP / Postcode<span class="req">*</span></label>
-        <input id="zip">
-       </div>
+                <div class="form-grid-2">
+                    <div class="form-group full">
+                        <label for="businessname">Business / Company Name <span class="req">*</span></label>
+                        <input id="businessname" type="text" placeholder="Happy Paws Sdn Bhd" required>
+                    </div>
+                    <div class="form-group">
+                        <label for="country">Country <span class="req">*</span></label>
+                        <select id="country" required>
+                            <option>Malaysia</option>
+                            <option>Singapore</option>
+                            <option>Thailand</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label for="street">Street Address</label>
+                        <input id="street" type="text" placeholder="No. 123, Jalan Happy Paws">
+                    </div>
+                    <div class="form-group">
+                        <label for="city">City</label>
+                        <input id="city" type="text" placeholder="Kuala Lumpur">
+                    </div>
+                    <div class="form-group">
+                        <label for="state">State</label>
+                        <input id="state" type="text" placeholder="Wilayah Persekutuan">
+                    </div>
+                    <div class="form-group">
+                        <label for="zip">ZIP / Postcode <span class="req">*</span></label>
+                        <input id="zip" type="text" placeholder="50000" required>
+                    </div>
+                    <div class="form-group full">
+                        <label for="cfg_description">Business Description</label>
+                        <textarea id="cfg_description" placeholder="Premium grooming, hotel and daycare service for dogs and cats."></textarea>
+                    </div>
+                </div>
 
-       <div class="full">
-        <label>
-         Business Description
+            </div>
+        </section>
+
+        <!-- ── Business Hours ──────────────────────────────── -->
+        <section class="setup-section">
+            <div class="setup-section-head">
+                <legend>🕐 Business Hours</legend>
+            </div>
+            <div class="setup-section-body">
+                <div class="hours-grid">
+                    <div><label>Mon<span class="req">*</span></label><input id="hour_Mon" placeholder="09:30 AM – 06:30 PM" required></div>
+                    <div><label>Tue<span class="req">*</span></label><input id="hour_Tue" placeholder="09:30 AM – 06:30 PM" required></div>
+                    <div><label>Wed<span class="req">*</span></label><input id="hour_Wed" placeholder="09:30 AM – 06:30 PM" required></div>
+                    <div><label>Thu<span class="req">*</span></label><input id="hour_Thu" placeholder="09:30 AM – 06:30 PM" required></div>
+                    <div><label>Fri<span class="req">*</span></label><input id="hour_Fri" placeholder="09:30 AM – 06:30 PM" required></div>
+                    <div><label>Sat<span class="req">*</span></label><input id="hour_Sat" placeholder="10:00 AM – 05:00 PM" required></div>
+                    <div><label>Sun</label><input id="hour_Sun" placeholder="Closed" required></div>
+                </div>
+                <div class="form-group">
+                    <label for="cfg_closedDates">Closed Dates / Emergency Holidays</label>
+                    <textarea id="cfg_closedDates" placeholder="28/07/2026 – Staff training day&#10;31/08/2026 – Public holiday"></textarea>
+                </div>
+            </div>
+        </section>
+
+        <!-- ── Payment, Invoice & Localization ────────────── -->
+        <section class="setup-section">
+            <div class="setup-section-head">
+                <h3>💳 Payment &amp; Localization</h3>
+            </div>
+            <div class="setup-section-body">
+
+                <div>
+                    <p class="field-note" style="margin-bottom: 12px; font-weight: 600; color: var(--text-charcoal);">Accepted Payment Methods <span class="req">*</span></p>
+                    <div class="addons">
+                        <label class="addon">
+                            <input checked id="pay_cash" type="checkbox">
+                            <div class="addon-text">
+                                <strong>Cash</strong>
+                                <span>Front desk payment</span>
+                            </div>
+                        </label>
+                        <label class="addon">
+                            <input checked id="pay_card" type="checkbox">
+                            <div class="addon-text">
+                                <strong>Card Terminal</strong>
+                                <span>Physical card reader</span>
+                            </div>
+                        </label>
+                        <label class="addon">
+                            <input checked id="pay_qr" type="checkbox">
+                            <div class="addon-text">
+                                <strong>QR / E-wallet</strong>
+                                <span>DuitNow, Touch 'n Go, GrabPay</span>
+                            </div>
+                        </label>
+                        <label class="addon">
+                            <input id="pay_online" type="checkbox">
+                            <div class="addon-text">
+                                <strong>Online Payment</strong>
+                                <span>Stripe / ToyyibPay / Billplz</span>
+                            </div>
+                        </label>
+                    </div>
+                </div>
+
+                <div class="section-divider-label">Invoice Settings</div>
+                <div class="form-grid-2">
+                    <div class="form-group">
+                        <label for="cfg_invoicePrefix">Invoice Prefix <span class="req">*</span></label>
+                        <select id="cfg_invoicePrefix" required>
+                            <option>PAW</option>
+                            <option>HP</option>
+                            <option>INV</option>
+                            <option>MEOW</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label for="cfg_taxName">Tax Format <span class="req">*</span></label>
+                        <select id="cfg_taxName" required>
+                            <option>SST 0%</option>
+                            <option>SST 6%</option>
+                            <option>GST 9%</option>
+                            <option>No Tax</option>
+                        </select>
+                    </div>
+                </div>
+
+                <div class="section-divider-label">Localization</div>
+                <div class="form-grid-2">
+                    <div class="form-group">
+                        <label for="cfg_language">Language <span class="req">*</span></label>
+                        <select id="cfg_language" required>
+                            <option>English</option>
+                            <option>Malay</option>
+                            <option>Chinese</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label for="timezone">Timezone <span class="req">*</span></label>
+                        <select id="timezone" required>
+                            <option>Kuala Lumpur (GMT+8)</option>
+                            <option>Singapore (GMT+8)</option>
+                            <option>Bangkok (GMT+7)</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label for="currency">Currency <span class="req">*</span></label>
+                        <select id="currency" required>
+                            <option>MYR (RM)</option>
+                            <option>SGD (S$)</option>
+                            <option>THB (฿)</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label for="weight">Weight Unit <span class="req">*</span></label>
+                        <select id="weight" required>
+                            <option>kg</option>
+                            <option>lb</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label for="height">Height Unit <span class="req">*</span></label>
+                        <select id="height" required>
+                            <option>cm</option>
+                            <option>inch</option>
+                        </select>
+                    </div>
+                </div>
+
+            </div>
+        </section>
+
+        <!-- ── Services Policy Upload ──────────────────────────── -->
+        <section class="setup-section">
+            <div class="setup-section-head">
+                <h3>🐾 Services Policy Upload</h3>
+                <span class="field-note" id="selectedServicesText">✂️ Grooming · 🏨 Boarding / Hotel · 🌞 Daycare</span>
+            </div>
+            <div class="setup-section-body">
+                <<div class="service-config-grid" id="selectedServiceCards">
+
+    <div class="service-config-card">
+        <h3>✂️ Grooming</h3>
+        <p class="muted">Upload your grooming service policy document.</p>
+        <label class="logo-upload-label" for="policy_grooming">
+            <span class="upload-icon">📄</span>
+            <p>Click to upload policy file<br>(PDF, TXT, DOCX — max 10 MB)</p>
+            <input type="file" id="policy_grooming" name="policy_grooming" accept=".pdf,.txt,.docx">
         </label>
-        <textarea id="cfg_description" placeholder="Premium grooming, hotel and daycare service for dogs and cats."></textarea>
-       </div>
-       
-      </div>
-    </section>
-<!--Business Hours-->
-    <section class="field">
-     <div >
-      <legend>Business Hours<span class="req">*</span></legend>
-     </div>
-     <div class="panel-body">
-      <div class="hours-grid" id="hoursGrid">
-        <div>
-        <label>Mon</label><input id="hour_Mon" value="09:30 AM - 06:30 PM" required></div>
-        <div><label>Tue</label><input id="hour_Tue" value="09:30 AM - 06:30 PM" required></div>
-        <div><label>Wed</label><input id="hour_Wed" value="09:30 AM - 06:30 PM" required></div>
-        <div><label>Thu</label><input id="hour_Thu" value="09:30 AM - 06:30 PM" required></div>
-        <div><label>Fri</label><input id="hour_Fri" value="09:30 AM - 06:30 PM" required></div>
-        <div><label>Sat</label><input id="hour_Sat" value="10:00 AM - 05:00 PM" required></div>
-        <div><label>Sun</label><input id="hour_Sun" value="Closed" required></div>
-      </div>
-      <div style="margin-top:16px">
-       <label>
-        Closed Dates / Emergency Holiday
-       </label>
-       <textarea id="cfg_closedDates" placeholder="28/07/2026 - Staff training day\n31/08/2026 - Public holiday"></textarea>
-      </div>
-     </div>
-    </section>
+    </div>
 
-<!--Payment Methods & Unit Measure-->
-    <section class="field">
-     <div class="panel-head">
-      <legend>Payment Methods<span class="req">*</span></legend>
-     </div>
-     <div class="panel-body">
-      <div class="addons">
-       <label class="addon">
-        <input checked="" id="pay_cash" type="checkbox">
-         Cash<span>Front desk payment<span>
-       </label>
-
-       <label class="addon">
-        <input checked="" id="pay_card" type="checkbox">
-         Card Terminal<span>Physical card reader</span>
-  
-       </label>
-       <label class="addon">
-        <input checked="" id="pay_qr" type="checkbox">
-         QR / E-wallet
-       </label>
-
-       <label class="addon">
-        <input id="pay_online" type="checkbox">
-         Online Payment<span>(Stripe / ToyyibPay / Billplz placeholder)</span>
-       </label>
-
-      </div>
-
-      <div class="form-grid" style="margin-top:18px">
-       <div>
-        <label>Invoice Prefix<span class="req">*</span></label>
-        <select id="cfg_invoicePrefix" required>
-         <option>PAW</option>
-         <option>HP</option>
-         <option>INV</option>
-         <option>MEOW</option>
-        </select>
-       </div>
-
-       <div>
-        <label>Tax Format<span class="req">*</span></label>
-        <select id="cfg_taxName" required>
-         <option>SST 0%</option>
-         <option>SST 6%</option>
-         <option>GST 9% </option>
-         <option>No Tax</option>
-        </select>
-       </div>
-      </div>
-
-<div class="panel-head">
-      <legend>
-       Localization<span class="req">*</span>
-      </h3>
-     </div>
-     <div class="panel-body">
-      <div class="form-grid">
-       <div>
-        <label>
-         Language<span class="req">*</span>
+    <div class="service-config-card">
+        <h3>🏨 Boarding / Hotel</h3>
+        <p class="muted">Upload your boarding service policy document.</p>
+        <label class="logo-upload-label" for="policy_boarding">
+            <span class="upload-icon">📄</span>
+            <p>Click to upload policy file<br>(PDF, TXT, DOCX — max 10 MB)</p>
+            <input type="file" id="policy_boarding" name="policy_boarding" accept=".pdf,.txt,.docx">
         </label>
-        <select id="cfg_language" required>
-         <option>
-          English
-         </option>
-         <option>
-          Malay
-         </option>
-         <option>
-          Chinese
-         </option>
-        </select>
-       </div>
-       
-       <div>
-        <label>Timezone<span class="req">*</span></label>
-        <select id="timezone" required>
-         <option>Kuala_Lumpur(GMT+8)</option>
-         <option>Singapore(GMT+8)</option>
-         <option>Bangkok(GMT+7)</option>
-        </select>
-       </div>
+    </div>
 
-       <div>
-        <label>Currency<span class="req">*</span></label>
-        <select id="currency" required>
-         <option>MYR (RM)</option>
-         <option>SGD (S$)</option>
-         <option>THB (฿)</option>
-        </select>
-       </div>
-
-       <div>
-        <label>Weight Unit<span class="req">*</span></label>
-        <select id="weight" required>
-         <option>kg</option>
-         <option>lb</option>
-        </select>
-      </div>
-
-       <div>
-        <label>Height Unit<span class="req">*</span></label>
-        <select id="height" required>
-         <option>cm</option>
-         <option>inch</option>
-        </select>
-       </div>
-      </div>
-     </div>
-     </div>
-    </section>
-  
-    
-        <section class="panel">
-     <div class="panel-head">
-      <h3>
-       Selected Services
-      </h3>
-      <span class="small" id="selectedServicesText">✂️ Grooming · 🏨 Boarding / Hotel · 🌞 Daycare</span>
-     </div>
-     <div class="panel-body">
-      <div class="service-config-grid" id="selectedServiceCards"><div class="service-config-card"><h3>✂️ Grooming</h3><p class="muted">Set the default booking rule used by the dashboard and customer booking page.</p><label>Default Capacity / Slot Rule</label><input value="90 minutes per full groom"></div><div class="service-config-card"><h3>🏨 Boarding / Hotel</h3><p class="muted">Set the default booking rule used by the dashboard and customer booking page.</p><label>Default Capacity / Slot Rule</label><input value="Room availability required"></div><div class="service-config-card"><h3>🌞 Daycare</h3><p class="muted">Set the default booking rule used by the dashboard and customer booking page.</p><label>Default Capacity / Slot Rule</label><input value="Daily capacity limit required"></div></div>
-     </div>
-    </section>
-    
- <!--Booking Page & WhatsApp API-->   
-    <section class="panel">
-     <div class="panel-head">
-      <legend>Booking Page + WhatsApp API</legend>
-     </div>
-     
-     <div class="panel-body">
-      <div class="form-grid">
-       <div>
-        <label>
-         Booking Page URL
+    <div class="service-config-card">
+        <h3>🌞 Daycare</h3>
+        <p class="muted">Upload your daycare service policy document.</p>
+        <label class="logo-upload-label" for="policy_daycare">
+            <span class="upload-icon">📄</span>
+            <p>Click to upload policy file<br>(PDF, TXT, DOCX — max 10 MB)</p>
+            <input type="file" id="policy_daycare" name="policy_daycare" accept=".pdf,.txt,.docx">
         </label>
-        <input type="url" id="cfg_bookingUrl" value="pawfect.ai/happypaws">
-       </div>
-       
-       <div>
-        <label>WhatsApp Business Number</label>
-        <input type="tel" id="cfg_whatsapp">
-       </div>
-       <div>
-        <label>Booking Confirmation Rule<span class="req">*</span></label>
-        <select id="cfg_confirmRule" required>
-         <option value="">Select a rule</option>
-         <option>Auto-confirm if available</option>
-         <option>Deposit required before confirmation</option>
-        </select>
-       </div>
-       
-      </div>
-      <div class="actions">
-       <button class="btn btn-primary" onclick="saveServiceConfiguration()">
-        Save &amp; Mark Setup Complete
-       </button>
-       <a class="btn btn-outline" href="settings.html">
-        Open Settings Page
-       </a>
-      </div>
-     </div>
-    </section>
-   </div>
-  </main>
+    </div>
 
-<script src="index.js"></script>
+</div>
 
-</body></html>
+            </div>
+        </section>
+
+        <!-- ── Booking Page & WhatsApp API ────────────────── -->
+        <section class="setup-section">
+            <div class="setup-section-head">
+                <h3>🔗 Booking Page &amp; WhatsApp API</h3>
+            </div>
+            <div class="setup-section-body">
+                <div class="form-grid-2">
+                    <div class="form-group">
+                        <label for="cfg_bookingUrl">Booking Page URL<span class="req">*</span></label>
+                        <input type="url" id="cfg_bookingUrl" placeholder="pawfect.ai/yourbusiness">
+                    </div>
+                    <div class="form-group">
+                        <label for="cfg_whatsapp">WhatsApp Business Number<span class="req">*</span></label>
+                        <input type="tel" id="cfg_whatsapp" placeholder="+60 12-345 6789">
+                    </div>
+                    <div class="form-group full">
+                        <label for="cfg_confirmRule">Booking Confirmation Rule<span class="req">*</span></label>
+                        <select id="cfg_confirmRule" required>
+                            <option value="">Select a rule</option>
+                            <option>Auto-confirm if slot is available</option>
+                            <option>Deposit required before confirmation</option>
+                        </select>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- Actions -->
+        <div class="setup-actions">
+            <button class="btn btn-primary" type="button" onclick="saveServiceConfiguration()">Save &amp; Enter Portal</button>
+            <a class="btn btn-secondary" href="register.html">← Back to Register</a>
+        </div>
+
+    </div>
+
+    <script src="index.js"></script>
+</body>
+</html>
