@@ -1,598 +1,594 @@
-const today = new Date().toISOString().slice(0, 10);
-
-let currentServiceFilter = "all";
-
-let bookings = [
+const customers = [
   {
-    id: "B001",
-    time: "09:30",
-    date: today,
-    customerName: "Alicia Lee",
-    petName: "Milo",
-    serviceType: "grooming",
-    requiredService: "Full Grooming",
-    staffName: "Sarah Wong",
-    roomName: "",
-    duration: 150,
-    status: "scheduled",
-    amount: 150,
-    specialNote: "Sensitive skin. Use mild shampoo.",
-    aiSummary: "Customer requested grooming this morning. AI suggested Full Grooming."
+    customer_id: "CUST-0001",
+    loyalty_id: "LOY-0001",
+    full_name: "John Smith",
+    phone: "+60 12-345 6789",
+    address: "Sunway Geo Avenue",
+    photo_icon: "👨",
+    notes: "Prefers WhatsApp reminder. Usually books boarding + grooming."
   },
   {
-    id: "B002",
-    time: "10:30",
-    date: today,
-    customerName: "Jason Lim",
-    petName: "Coco",
-    serviceType: "boarding",
-    requiredService: "Standard Boarding",
-    staffName: "Sarah Wong",
-    roomName: "Room A",
-    duration: 1440,
-    status: "checked_in",
-    amount: 120,
-    specialNote: "Needs evening medication.",
-    aiSummary: "Customer confirmed two-night boarding stay."
-  },
-  {
-    id: "B003",
-    time: "12:00",
-    date: today,
-    customerName: "Nur Aina",
-    petName: "Luna",
-    serviceType: "daycare",
-    requiredService: "Full-Day Daycare",
-    staffName: "Sarah Wong",
-    roomName: "Playroom 1",
-    duration: 480,
-    status: "in_progress",
-    amount: 100,
-    specialNote: "Very active. Needs more playtime.",
-    aiSummary: "Customer asked for daycare and daily photo update."
-  },
-  {
-    id: "B004",
-    time: "15:00",
-    date: today,
-    customerName: "Tan Wei",
-    petName: "Buddy",
-    serviceType: "grooming",
-    requiredService: "Basic Grooming",
-    staffName: "Sarah Wong",
-    roomName: "",
-    duration: 90,
-    status: "ready_pickup",
-    amount: 80,
-    specialNote: "Owner requested pickup before 5 PM.",
-    aiSummary: "AI confirmed grooming booking after staff approval."
+    customer_id: "CUST-0002",
+    loyalty_id: "LOY-0002",
+    full_name: "Sarah Lee",
+    phone: "+60 11-222 7788",
+    address: "Subang Jaya",
+    photo_icon: "👩",
+    notes: "Prefers morning grooming slot."
   }
 ];
 
-let hitlActions = [
+const pets = [
   {
-    id: "H001",
-    bookingId: "B001",
-    customerName: "Alicia Lee",
-    petName: "Milo",
-    intent: "Grooming Booking",
-    suggestion: "Full Grooming at 09:30 with Sarah Wong",
-    confidence: 82,
-    reason: "Customer said 'morning', exact time requires staff confirmation.",
-    type: "booking"
+    pet_id: "PET-0001",
+    customer_id: "CUST-0001",
+    pet_name: "Xiangwu",
+    species: "Cat",
+    gender: "Male",
+    birthdate: "2022-05-12",
+    breed: "British Shorthair",
+    weight: "5.2kg",
+    colour: "Grey",
+    service_preference: "Boarding",
+    special_care_note: "Mild anxiety during grooming",
+    additional_note: "Keep in quiet room. Bring own food."
   },
   {
-    id: "H002",
-    bookingId: "B002",
-    customerName: "Jason Lim",
-    petName: "Coco",
-    intent: "Policy Exception",
-    suggestion: "Accept boarding with medication note",
-    confidence: 76,
-    reason: "Medication handling requires staff review.",
-    type: "policy"
-  },
-  {
-    id: "H003",
-    bookingId: "B003",
-    customerName: "Nur Aina",
-    petName: "Luna",
-    intent: "Daily Update Request",
-    suggestion: "Send daycare photo update by WhatsApp",
-    confidence: 88,
-    reason: "AI prepared update but photo is missing.",
-    type: "update"
+    pet_id: "PET-0002",
+    customer_id: "CUST-0001",
+    pet_name: "Mochi",
+    species: "Dog",
+    gender: "Female",
+    birthdate: "2020-11-03",
+    breed: "Poodle",
+    weight: "6.8kg",
+    colour: "White",
+    service_preference: "Grooming",
+    special_care_note: "Matting around ears",
+    additional_note: "Use sensitive shampoo."
   }
 ];
 
-let petUpdates = [
+const bookings = [
   {
-    id: "U001",
-    bookingId: "B001",
-    petName: "Milo",
-    customerName: "Alicia Lee",
-    serviceType: "Grooming",
-    missing: "After-groom photo missing",
-    status: "pending"
+    booking_id: "BOOK-0001",
+    customer_id: "CUST-0001",
+    pet_id: "PET-0001",
+    service_type: "Boarding",
+    booking_date: "2026-06-18"
   },
   {
-    id: "U002",
-    bookingId: "B003",
-    petName: "Luna",
-    customerName: "Nur Aina",
-    serviceType: "Daycare",
-    missing: "Meal and playtime update missing",
-    status: "pending"
-  },
-  {
-    id: "U003",
-    bookingId: "B002",
-    petName: "Coco",
-    customerName: "Jason Lim",
-    serviceType: "Boarding",
-    missing: "Night care update not sent",
-    status: "pending"
+    booking_id: "BOOK-0002",
+    customer_id: "CUST-0001",
+    pet_id: "PET-0002",
+    service_type: "Grooming",
+    booking_date: "2026-06-22"
   }
 ];
 
-let alerts = [
-  {
-    id: "A001",
-    priority: "high",
-    title: "Missing Vaccination Record",
-    description: "Buddy does not have updated vaccination status.",
-    status: "open"
-  },
-  {
-    id: "A002",
-    priority: "high",
-    title: "Unpaid Payment",
-    description: "Coco has pending payment review before checkout.",
-    status: "open"
-  },
-  {
-    id: "A003",
-    priority: "medium",
-    title: "Room Capacity Warning",
-    description: "Playroom 1 is near capacity: 10/12 pets occupied.",
-    status: "open"
-  },
-  {
-    id: "A004",
-    priority: "low",
-    title: "AI Low Confidence",
-    description: "One enquiry needs staff confirmation due to unclear customer time.",
-    status: "open"
-  }
-];
+const profileTypeFilter = document.getElementById("profileTypeFilter");
+const searchInput = document.getElementById("searchInput");
 
-const staffWorkload = [
-  { name: "Sarah Wong", tasks: 8, max: 10 },
-  { name: "Adam Tan", tasks: 6, max: 10 },
-  { name: "Mei Ling", tasks: 5, max: 10 }
-];
+const customerSection = document.getElementById("customerSection");
+const petSection = document.getElementById("petSection");
 
-const roomCapacity = [
-  { name: "Room A", used: 4, max: 5 },
-  { name: "Room B", used: 2, max: 4 },
-  { name: "Playroom 1", used: 10, max: 12 },
-  { name: "Playroom 2", used: 6, max: 10 }
-];
+const customerTableBody = document.getElementById("customerTableBody");
+const petTableBody = document.getElementById("petTableBody");
 
-document.addEventListener("DOMContentLoaded", () => {
-  document.getElementById("todayDate").textContent = formatDate(today);
+const customerRecordCount = document.getElementById("customerRecordCount");
+const petRecordCount = document.getElementById("petRecordCount");
 
-  setupServiceTabs();
-  setupBookingForm();
-  renderDashboard();
-});
+const detailPage = document.getElementById("detailPage");
+const detailTitle = document.getElementById("detailTitle");
+const detailForm = document.getElementById("detailForm");
 
-function renderDashboard() {
-  renderKpiStrip();
-  renderSchedule();
-  renderHitlQueue();
-  renderPetUpdates();
-  renderAlerts();
-  renderStaffWorkload();
-  renderRoomCapacity();
+function initCRM() {
+  updateKPI();
+  renderLists();
+
+  profileTypeFilter.addEventListener("change", renderLists);
+  searchInput.addEventListener("input", renderLists);
 }
 
-function renderKpiStrip() {
-  const assignedTasks = getFilteredBookings().length;
-  const pendingHitl = hitlActions.length;
-  const urgentAlerts = alerts.filter(alert => alert.status === "open").length;
-  const petsUnderCare = bookings.filter(b => b.status !== "completed" && b.status !== "no_show").length;
-  const updatesPending = petUpdates.filter(update => update.status === "pending").length;
+function updateKPI() {
+  document.getElementById("totalCustomers").textContent = customers.length;
+  document.getElementById("totalPets").textContent = pets.length;
 
-  const kpis = [
-    { label: "My Assigned Tasks", value: assignedTasks, note: "today" },
-    { label: "Pending HITL", value: pendingHitl, note: "needs review" },
-    { label: "Urgent Alerts", value: urgentAlerts, note: "open" },
-    { label: "Pets Under Care", value: petsUnderCare, note: "active" },
-    { label: "Updates Not Sent", value: updatesPending, note: "pending" }
-  ];
+  document.getElementById("newCustomers").textContent =
+    customers.filter(c => {
+      const loyaltyNum = parseInt(c.loyalty_id?.replace("LOY-", "") || "0");
+      return loyaltyNum > customers.length - 2;
+    }).length;
 
-  document.getElementById("kpiStrip").innerHTML = kpis.map(kpi => `
-    <div class="kpi-item">
-      <span class="kpi-label">${kpi.label}</span>
-      <span class="kpi-value">${kpi.value}</span>
-      <span class="kpi-note">${kpi.note}</span>
+  document.getElementById("attentionNeeded").textContent =
+    pets.filter(pet => pet.special_care_note && pet.special_care_note.trim() !== "").length;
+}
+
+function renderLists() {
+  const selectedType = profileTypeFilter.value;
+  const searchValue = searchInput.value.toLowerCase().trim();
+
+  const filteredCustomers = filterCustomers(searchValue);
+  const filteredPets = filterPets(searchValue);
+
+  customerSection.classList.toggle("hidden", selectedType === "pet");
+  petSection.classList.toggle("hidden", selectedType === "customer");
+
+  renderCustomerTable(filteredCustomers);
+  renderPetTable(filteredPets);
+}
+
+function filterCustomers(searchValue) {
+  return customers.filter(customer => {
+    const linkedPets = getPetsByCustomerId(customer.customer_id);
+    const linkedPetText = linkedPets
+      .map(pet => `${pet.pet_name} ${pet.pet_id}`)
+      .join(" ")
+      .toLowerCase();
+
+    return (
+      customer.full_name.toLowerCase().includes(searchValue) ||
+      customer.phone.toLowerCase().includes(searchValue) ||
+      (customer.loyalty_id || "").toLowerCase().includes(searchValue) ||
+      customer.customer_id.toLowerCase().includes(searchValue) ||
+      linkedPetText.includes(searchValue)
+    );
+  });
+}
+
+function filterPets(searchValue) {
+  return pets.filter(pet => {
+    const owner = getCustomerById(pet.customer_id);
+
+    return (
+      pet.pet_name.toLowerCase().includes(searchValue) ||
+      pet.pet_id.toLowerCase().includes(searchValue) ||
+      pet.customer_id.toLowerCase().includes(searchValue) ||
+      pet.species.toLowerCase().includes(searchValue) ||
+      pet.breed.toLowerCase().includes(searchValue) ||
+      pet.special_care_note.toLowerCase().includes(searchValue) ||
+      owner.full_name.toLowerCase().includes(searchValue) ||
+      owner.phone.toLowerCase().includes(searchValue)
+    );
+  });
+}
+
+function renderCustomerTable(data) {
+  customerTableBody.innerHTML = "";
+  customerRecordCount.textContent = `${data.length} records`;
+
+  if (data.length === 0) {
+    customerTableBody.innerHTML = `
+      <tr>
+        <td colspan="7" class="empty-row">No customer record found.</td>
+      </tr>
+    `;
+    return;
+  }
+
+  data.forEach(customer => {
+    const linkedPets = getPetsByCustomerId(customer.customer_id);
+    const lastBooking = getLastBookingByCustomerId(customer.customer_id);
+
+    const row = document.createElement("tr");
+
+    row.innerHTML = `
+      <td>
+        <span class="profile-name">${customer.photo_icon || "👤"} ${customer.full_name}</span>
+        <span class="profile-sub">${customer.loyalty_id || "—"}</span>
+      </td>
+
+      <td>
+        <span class="key-chip">PK: ${customer.customer_id}</span>
+      </td>
+
+      <td>${customer.phone}</td>
+
+      <td>
+        ${
+          lastBooking
+            ? `<span class="key-chip">${formatDate(lastBooking.booking_date)}</span>`
+            : `<span class="profile-sub">No booking yet</span>`
+        }
+      </td>
+
+      <td>
+        ${
+          linkedPets.length === 0
+            ? `<span class="profile-sub">No pet linked</span>`
+            : linkedPets.map(pet => `
+                <span class="key-chip">${pet.pet_name} · ${pet.pet_id}</span>
+              `).join("")
+        }
+      </td>
+
+      <td>${getBookingsByCustomerId(customer.customer_id).length}</td>
+
+      <td>
+        <button class="action-btn" onclick="openCustomerForm('${customer.customer_id}')">View / Edit</button>
+      </td>
+    `;
+
+    customerTableBody.appendChild(row);
+  });
+}
+
+function renderPetTable(data) {
+  petTableBody.innerHTML = "";
+  petRecordCount.textContent = `${data.length} records`;
+
+  if (data.length === 0) {
+    petTableBody.innerHTML = `
+      <tr>
+        <td colspan="7" class="empty-row">No pet record found.</td>
+      </tr>
+    `;
+    return;
+  }
+
+  data.forEach(pet => {
+    const owner = getCustomerById(pet.customer_id);
+
+    const row = document.createElement("tr");
+
+    row.innerHTML = `
+      <td>
+        <span class="profile-name">${getPetIcon(pet.species)} ${pet.pet_name}</span>
+        <span class="profile-sub">${pet.species} · ${pet.breed} · ${pet.weight}</span>
+      </td>
+
+      <td>
+        <span class="key-chip">PK: ${pet.pet_id}</span>
+      </td>
+
+      <td>
+        <span class="key-chip">FK: ${pet.customer_id}</span>
+      </td>
+
+      <td>
+        ${owner.full_name}
+        <span class="profile-sub">${owner.phone}</span>
+      </td>
+
+      <td>
+        <span class="badge blue">${pet.service_preference}</span>
+      </td>
+
+      <td>
+        ${
+          pet.special_care_note
+            ? `<span class="key-chip">${pet.special_care_note}</span>`
+            : `<span class="profile-sub">No special care note</span>`
+        }
+      </td>
+
+      <td>
+        <button class="action-btn" onclick="openPetForm('${pet.pet_id}')">View / Edit</button>
+      </td>
+    `;
+
+    petTableBody.appendChild(row);
+  });
+}
+
+function openCustomerForm(customerId = null) {
+  const isEdit = Boolean(customerId);
+  const customer = isEdit
+    ? getCustomerById(customerId)
+    : {
+        customer_id: generateCustomerId(),
+        loyalty_id: generateLoyaltyId(),
+        full_name: "",
+        phone: "",
+        address: "",
+        photo_icon: "👤",
+        notes: ""
+      };
+
+  const linkedPets = isEdit ? getPetsByCustomerId(customer.customer_id) : [];
+
+  detailPage.style.display = "flex";
+  detailTitle.textContent = isEdit
+    ? `Customer Info · ${customer.customer_id}`
+    : "New Customer";
+
+  detailForm.innerHTML = `
+    <div class="form-group">
+      <label>Customer ID</label>
+      <input name="customer_id" value="${customer.customer_id}" readonly />
     </div>
-  `).join("");
-}
 
-function renderSchedule() {
-  const list = document.getElementById("scheduleList");
+    <div class="form-group">
+      <label>Loyalty ID</label>
+      <input name="loyalty_id" value="${customer.loyalty_id || ""}" readonly />
+    </div>
 
-  const data = getFilteredBookings().sort((a, b) => a.time.localeCompare(b.time));
+    <div class="form-group">
+      <label>Photo / Icon</label>
+      <input name="photo_icon" value="${customer.photo_icon}" />
+    </div>
 
-  list.innerHTML = data.map(booking => `
-    <div class="task-row">
-      <div><strong>${booking.time}</strong></div>
+    <div class="form-group">
+      <label>Name</label>
+      <input name="full_name" value="${customer.full_name}" placeholder="Enter customer name" required />
+    </div>
 
-      <div>
-        <div class="pet-title">${booking.petName}</div>
-        <div class="muted">${booking.customerName}</div>
-      </div>
+    <div class="form-group">
+      <label>Mobile Number</label>
+      <input name="phone" value="${customer.phone}" placeholder="+60..." required />
+    </div>
 
-      <div>
-        <div>${booking.requiredService}</div>
-        <div class="muted">${booking.serviceType}${booking.roomName ? ` · ${booking.roomName}` : ""}</div>
-      </div>
+    <div class="form-group">
+      <label>Address</label>
+      <input name="address" value="${customer.address}" placeholder="Enter address" />
+    </div>
 
-      <div>
-        ${renderStatusTag(booking.status)}
-      </div>
+    <div class="form-group full">
+      <label>Notes</label>
+      <textarea name="notes" placeholder="Customer reminder, preference, or communication note">${customer.notes}</textarea>
+    </div>
 
-      <div class="queue-actions">
-        ${renderTaskActionButtons(booking)}
+    ${isEdit ? `
+    <div class="form-group full">
+      <label>Linked Pet Profiles</label>
+      <div class="crm-pet-list">
+        ${linkedPets.length === 0
+          ? `<p class="crm-pet-empty">No pets linked to this customer.</p>`
+          : linkedPets.map(pet => `
+              <div class="crm-pet-card">
+                <div class="crm-pet-info">
+                  <span class="profile-name">${getPetIcon(pet.species)} ${pet.pet_name}</span>
+                  <span class="profile-sub">${pet.species} · ${pet.breed} · ${pet.weight} · ${pet.colour}</span>
+                  <span class="profile-sub">Service: ${pet.service_preference}${pet.special_care_note ? ` &nbsp;|&nbsp; Care: ${pet.special_care_note}` : ""}</span>
+                </div>
+                <button type="button" class="action-btn" onclick="openPetForm('${pet.pet_id}')">View / Edit</button>
+              </div>
+            `).join("")
+        }
       </div>
     </div>
-  `).join("");
-}
+    ` : ""}
 
-function renderTaskActionButtons(booking) {
-  if (booking.status === "scheduled") {
-    return `
-      <button class="btn secondary" onclick="updateBookingStatus('${booking.id}', 'checked_in')">Check-in</button>
-      <button class="btn secondary" onclick="openBookingDetails('${booking.id}')">View</button>
-    `;
-  }
-
-  if (booking.status === "checked_in") {
-    return `
-      <button class="btn secondary" onclick="updateBookingStatus('${booking.id}', 'in_progress')">Start</button>
-      <button class="btn secondary" onclick="openBookingDetails('${booking.id}')">View</button>
-    `;
-  }
-
-  if (booking.status === "in_progress") {
-    return `
-      <button class="btn secondary" onclick="updateBookingStatus('${booking.id}', 'ready_pickup')">Ready</button>
-      <button class="btn secondary" onclick="openBookingDetails('${booking.id}')">View</button>
-    `;
-  }
-
-  if (booking.status === "ready_pickup") {
-    return `
-      <button class="btn primary" onclick="updateBookingStatus('${booking.id}', 'completed')">Done</button>
-      <button class="btn secondary" onclick="openBookingDetails('${booking.id}')">View</button>
-    `;
-  }
-
-  return `
-    <button class="btn secondary" onclick="openBookingDetails('${booking.id}')">View</button>
+    <div class="form-actions">
+      <button type="button" class="cancel-btn" onclick="closeDetailPage()">Cancel</button>
+      ${isEdit ? `<button type="button" class="btn btn-secondary bk-danger-btn" onclick="removeCustomer('${customer.customer_id}')">Remove Customer</button>` : ""}
+      <button type="submit" class="save-btn">${isEdit ? "Save Customer" : "Create Customer"}</button>
+    </div>
   `;
-}
 
-function renderHitlQueue() {
-  document.getElementById("hitlCount").textContent = `${hitlActions.length} pending`;
-
-  const queue = document.getElementById("hitlQueue");
-
-  if (hitlActions.length === 0) {
-    queue.innerHTML = `<div class="queue-item"><div class="queue-desc">No pending HITL actions.</div></div>`;
-    return;
-  }
-
-  queue.innerHTML = hitlActions.map(item => `
-    <div class="queue-item">
-      <div class="queue-top">
-        <div>
-          <div class="queue-title">${item.customerName} · ${item.petName}</div>
-          <div class="queue-desc">Intent: ${item.intent}</div>
-        </div>
-        <span class="status-tag status-in_progress">${item.confidence}%</span>
-      </div>
-
-      <div class="queue-desc">
-        <strong>AI Suggestion:</strong> ${item.suggestion}<br>
-        <strong>Reason:</strong> ${item.reason}
-      </div>
-
-      <div class="queue-actions">
-        <button class="btn primary" onclick="approveHitl('${item.id}')">Approve</button>
-        <button class="btn secondary" onclick="editHitl('${item.id}')">Edit</button>
-        <button class="btn danger" onclick="rejectHitl('${item.id}')">Reject</button>
-      </div>
-    </div>
-  `).join("");
-}
-
-function renderPetUpdates() {
-  const queue = document.getElementById("petUpdateQueue");
-
-  const pending = petUpdates.filter(update => update.status === "pending");
-
-  if (pending.length === 0) {
-    queue.innerHTML = `<div class="queue-item"><div class="queue-desc">All pet updates are completed.</div></div>`;
-    return;
-  }
-
-  queue.innerHTML = pending.map(update => `
-    <div class="queue-item">
-      <div class="queue-top">
-        <div>
-          <div class="queue-title">${update.petName} · ${update.serviceType}</div>
-          <div class="queue-desc">${update.customerName}</div>
-        </div>
-        <span class="status-tag status-in_progress">Pending</span>
-      </div>
-
-      <div class="queue-desc">${update.missing}</div>
-
-      <div class="queue-actions">
-        <button class="btn secondary" onclick="addPetUpdate('${update.id}')">Add Update</button>
-        <button class="btn primary" onclick="sendPetUpdate('${update.id}')">Send WhatsApp</button>
-      </div>
-    </div>
-  `).join("");
-}
-
-function renderAlerts() {
-  const list = document.getElementById("alertList");
-
-  const openAlerts = alerts.filter(alert => alert.status === "open");
-
-  if (openAlerts.length === 0) {
-    list.innerHTML = `<div class="queue-item"><div class="queue-desc">No urgent alerts.</div></div>`;
-    return;
-  }
-
-  list.innerHTML = openAlerts.map(alert => `
-    <div class="queue-item">
-      <div class="queue-top">
-        <div class="queue-title">${alert.title}</div>
-        <span class="status-tag priority-${alert.priority}">${alert.priority}</span>
-      </div>
-
-      <div class="queue-desc">${alert.description}</div>
-
-      <div class="queue-actions">
-        <button class="btn secondary" onclick="resolveAlert('${alert.id}')">Mark Resolved</button>
-      </div>
-    </div>
-  `).join("");
-}
-
-function renderStaffWorkload() {
-  document.getElementById("staffWorkload").innerHTML = staffWorkload.map(item => {
-    const percent = Math.round((item.tasks / item.max) * 100);
-
-    return `
-      <div class="progress-row">
-        <div class="progress-info">
-          <span>${item.name}</span>
-          <span>${item.tasks}/${item.max}</span>
-        </div>
-        <div class="progress-track">
-          <div class="progress-fill ${getProgressClass(percent)}" style="width:${percent}%"></div>
-        </div>
-      </div>
-    `;
-  }).join("");
-}
-
-function renderRoomCapacity() {
-  document.getElementById("roomCapacity").innerHTML = roomCapacity.map(item => {
-    const percent = Math.round((item.used / item.max) * 100);
-
-    return `
-      <div class="progress-row">
-        <div class="progress-info">
-          <span>${item.name}</span>
-          <span>${item.used}/${item.max}</span>
-        </div>
-        <div class="progress-track">
-          <div class="progress-fill ${getProgressClass(percent)}" style="width:${percent}%"></div>
-        </div>
-      </div>
-    `;
-  }).join("");
-}
-
-function setupServiceTabs() {
-  document.querySelectorAll("#serviceTabs .tab").forEach(tab => {
-    tab.addEventListener("click", () => {
-      document.querySelectorAll("#serviceTabs .tab").forEach(btn => btn.classList.remove("active"));
-      tab.classList.add("active");
-
-      currentServiceFilter = tab.dataset.filter;
-      renderDashboard();
-    });
-  });
-}
-
-function setupBookingForm() {
-  document.getElementById("bookingForm").addEventListener("submit", event => {
+  detailForm.onsubmit = function(event) {
     event.preventDefault();
-    saveBookingDetails();
-  });
-}
 
-function openBookingDetails(bookingId) {
-  const booking = bookings.find(item => item.id === bookingId);
-  if (!booking) return;
+    const formData = new FormData(detailForm);
+    const updatedCustomer = Object.fromEntries(formData.entries());
 
-  document.getElementById("bookingId").value = booking.id;
-  document.getElementById("customerName").value = booking.customerName;
-  document.getElementById("petName").value = booking.petName;
-  document.getElementById("serviceType").value = booking.serviceType;
-  document.getElementById("requiredService").value = booking.requiredService;
-  document.getElementById("staffName").value = booking.staffName;
-  document.getElementById("roomName").value = booking.roomName;
-  document.getElementById("bookingDate").value = booking.date;
-  document.getElementById("bookingTime").value = booking.time;
-  document.getElementById("duration").value = booking.duration;
-  document.getElementById("bookingStatus").value = booking.status;
-  document.getElementById("amount").value = booking.amount;
-  document.getElementById("specialNote").value = booking.specialNote;
-  document.getElementById("aiSummary").value = booking.aiSummary;
+    if (isEdit) {
+      const index = customers.findIndex(item => item.customer_id === customerId);
+      customers[index] = updatedCustomer;
+    } else {
+      customers.push(updatedCustomer);
+    }
 
-  document.getElementById("bookingModal").style.display = "flex";
-}
-
-function closeBookingModal() {
-  document.getElementById("bookingModal").style.display = "none";
-}
-
-function saveBookingDetails() {
-  const bookingId = document.getElementById("bookingId").value;
-  const booking = bookings.find(item => item.id === bookingId);
-
-  if (!booking) return;
-
-  booking.customerName = document.getElementById("customerName").value;
-  booking.petName = document.getElementById("petName").value;
-  booking.serviceType = document.getElementById("serviceType").value;
-  booking.requiredService = document.getElementById("requiredService").value;
-  booking.staffName = document.getElementById("staffName").value;
-  booking.roomName = document.getElementById("roomName").value;
-  booking.date = document.getElementById("bookingDate").value;
-  booking.time = document.getElementById("bookingTime").value;
-  booking.duration = Number(document.getElementById("duration").value);
-  booking.status = document.getElementById("bookingStatus").value;
-  booking.amount = Number(document.getElementById("amount").value);
-  booking.specialNote = document.getElementById("specialNote").value;
-  booking.aiSummary = document.getElementById("aiSummary").value;
-
-  closeBookingModal();
-  renderDashboard();
-}
-
-function updateBookingStatus(bookingId, newStatus) {
-  const booking = bookings.find(item => item.id === bookingId);
-  if (!booking) return;
-
-  booking.status = newStatus;
-  renderDashboard();
-}
-
-function markBookingCompleted() {
-  const bookingId = document.getElementById("bookingId").value;
-  updateBookingStatus(bookingId, "completed");
-  closeBookingModal();
-}
-
-function markBookingNoShow() {
-  const bookingId = document.getElementById("bookingId").value;
-  updateBookingStatus(bookingId, "no_show");
-  closeBookingModal();
-}
-
-function approveHitl(hitlId) {
-  hitlActions = hitlActions.filter(item => item.id !== hitlId);
-  renderDashboard();
-}
-
-function rejectHitl(hitlId) {
-  hitlActions = hitlActions.filter(item => item.id !== hitlId);
-  renderDashboard();
-}
-
-function editHitl(hitlId) {
-  const hitl = hitlActions.find(item => item.id === hitlId);
-  if (!hitl) return;
-
-  openBookingDetails(hitl.bookingId);
-}
-
-function addPetUpdate(updateId) {
-  alert("Open pet update form for update ID: " + updateId);
-}
-
-function sendPetUpdate(updateId) {
-  const update = petUpdates.find(item => item.id === updateId);
-  if (!update) return;
-
-  update.status = "sent";
-  renderDashboard();
-}
-
-function sendAllPendingUpdates() {
-  petUpdates.forEach(update => {
-    if (update.status === "pending") update.status = "sent";
-  });
-
-  renderDashboard();
-}
-
-function resolveAlert(alertId) {
-  const alert = alerts.find(item => item.id === alertId);
-  if (!alert) return;
-
-  alert.status = "resolved";
-  renderDashboard();
-}
-
-function openNewBooking() {
-  alert("Open new booking form or redirect to booking dashboard.");
-}
-
-function openPetProfile() {
-  const petName = document.getElementById("petName").value;
-  alert("Open pet profile: " + petName);
-}
-
-function refreshDashboard() {
-  renderDashboard();
-}
-
-function getFilteredBookings() {
-  if (currentServiceFilter === "all") return bookings;
-  return bookings.filter(booking => booking.serviceType === currentServiceFilter);
-}
-
-function renderStatusTag(status) {
-  return `<span class="status-tag status-${status}">${formatStatus(status)}</span>`;
-}
-
-function formatStatus(status) {
-  const map = {
-    scheduled: "Scheduled",
-    checked_in: "Checked-in",
-    in_progress: "In Progress",
-    ready_pickup: "Ready Pickup",
-    completed: "Completed",
-    no_show: "No Show"
+    updateKPI();
+    renderLists();
+    closeDetailPage();
   };
-
-  return map[status] || status;
 }
 
-function getProgressClass(percent) {
-  if (percent >= 90) return "danger";
-  if (percent >= 75) return "warning";
-  return "";
+function openPetForm(petId = null) {
+  const isEdit = Boolean(petId);
+  const pet = isEdit
+    ? getPetById(petId)
+    : {
+        pet_id: generatePetId(),
+        customer_id: customers[0]?.customer_id || "",
+        pet_name: "",
+        species: "Cat",
+        gender: "Male",
+        birthdate: "",
+        breed: "",
+        weight: "",
+        colour: "",
+        service_preference: "Grooming",
+        special_care_note: "",
+        additional_note: ""
+      };
+
+  detailPage.style.display = "flex";
+  detailTitle.textContent = isEdit
+    ? `Pet Profile · ${pet.pet_name}`
+    : "New Pet";
+
+  detailForm.innerHTML = `
+    <div class="form-group full">
+      <label>Owner</label>
+      <select name="customer_id" required>
+        ${customers.map(customer => `
+          <option value="${customer.customer_id}" ${customer.customer_id === pet.customer_id ? "selected" : ""}>
+            ${customer.full_name} · ${customer.customer_id}
+          </option>
+        `).join("")}
+      </select>
+    </div>
+
+    <div class="form-group">
+      <label>Pet ID</label>
+      <input name="pet_id" value="${pet.pet_id}" readonly />
+    </div>
+
+    <div class="form-group">
+      <label>Pet Name</label>
+      <input name="pet_name" value="${pet.pet_name}" placeholder="Enter pet name" required />
+    </div>
+
+    <div class="form-group">
+      <label>Type</label>
+      <select name="species">
+        <option value="Cat" ${pet.species === "Cat" ? "selected" : ""}>Cat</option>
+        <option value="Dog" ${pet.species === "Dog" ? "selected" : ""}>Dog</option>
+      </select>
+    </div>
+
+    <div class="form-group">
+      <label>Gender</label>
+      <select name="gender">
+        <option value="Male" ${pet.gender === "Male" ? "selected" : ""}>Male</option>
+        <option value="Female" ${pet.gender === "Female" ? "selected" : ""}>Female</option>
+      </select>
+    </div>
+
+    <div class="form-group">
+      <label>Birthdate</label>
+      <input type="date" name="birthdate" value="${pet.birthdate}" />
+    </div>
+
+    <div class="form-group">
+      <label>Breed</label>
+      <input name="breed" value="${pet.breed}" placeholder="Enter breed" />
+    </div>
+
+    <div class="form-group">
+      <label>Weight</label>
+      <input name="weight" value="${pet.weight}" placeholder="e.g. 5.2kg" />
+    </div>
+
+    <div class="form-group">
+      <label>Colour</label>
+      <input name="colour" value="${pet.colour}" placeholder="Enter colour" />
+    </div>
+
+    <div class="form-group">
+      <label>Service Preference</label>
+      <select name="service_preference">
+        <option value="Grooming" ${pet.service_preference === "Grooming" ? "selected" : ""}>Grooming</option>
+        <option value="Boarding" ${pet.service_preference === "Boarding" ? "selected" : ""}>Boarding</option>
+        <option value="Daycare" ${pet.service_preference === "Daycare" ? "selected" : ""}>Daycare</option>
+      </select>
+    </div>
+
+    <div class="form-group full">
+      <label>Special Care Note</label>
+      <input name="special_care_note" value="${pet.special_care_note}" placeholder="e.g. Mild anxiety during grooming" />
+    </div>
+
+    <div class="form-group full">
+      <label>Additional Note</label>
+      <textarea name="additional_note" placeholder="Feeding instruction, room preference, grooming reminders">${pet.additional_note}</textarea>
+    </div>
+
+    <div class="form-actions">
+      <button type="button" class="cancel-btn" onclick="closeDetailPage()">Cancel</button>
+      ${isEdit ? `<button type="button" class="btn btn-secondary bk-danger-btn" onclick="removePet('${pet.pet_id}')">Remove Pet</button>` : ""}
+      <button type="submit" class="save-btn">${isEdit ? "Save Pet" : "Create Pet"}</button>
+    </div>
+  `;
+
+  detailForm.onsubmit = function(event) {
+    event.preventDefault();
+
+    const formData = new FormData(detailForm);
+    const updatedPet = Object.fromEntries(formData.entries());
+
+    if (isEdit) {
+      const index = pets.findIndex(item => item.pet_id === petId);
+      pets[index] = updatedPet;
+    } else {
+      pets.push(updatedPet);
+    }
+
+    updateKPI();
+    renderLists();
+    closeDetailPage();
+  };
+}
+
+function closeDetailPage() {
+  detailPage.style.display = "none";
+  detailForm.innerHTML = "";
+}
+
+function removeCustomer(customerId) {
+  if (!confirm(`Remove customer ${customerId} and all their linked pets? This cannot be undone.`)) return;
+
+  const linkedPetIds = pets
+    .filter(p => p.customer_id === customerId)
+    .map(p => p.pet_id);
+
+  linkedPetIds.forEach(petId => {
+    const idx = pets.findIndex(p => p.pet_id === petId);
+    if (idx !== -1) pets.splice(idx, 1);
+  });
+
+  const customerIdx = customers.findIndex(c => c.customer_id === customerId);
+  if (customerIdx !== -1) customers.splice(customerIdx, 1);
+
+  updateKPI();
+  renderLists();
+  closeDetailPage();
+}
+
+function removePet(petId) {
+  if (!confirm(`Remove pet ${petId}? This cannot be undone.`)) return;
+
+  const idx = pets.findIndex(p => p.pet_id === petId);
+  if (idx !== -1) pets.splice(idx, 1);
+
+  updateKPI();
+  renderLists();
+  closeDetailPage();
+}
+
+function getCustomerById(customerId) {
+  return customers.find(customer => customer.customer_id === customerId);
+}
+
+function getPetById(petId) {
+  return pets.find(pet => pet.pet_id === petId);
+}
+
+function getPetsByCustomerId(customerId) {
+  return pets.filter(pet => pet.customer_id === customerId);
+}
+
+function getBookingsByCustomerId(customerId) {
+  return bookings.filter(booking => booking.customer_id === customerId);
+}
+
+function getLastBookingByCustomerId(customerId) {
+  const customerBookings = getBookingsByCustomerId(customerId);
+
+  if (customerBookings.length === 0) {
+    return null;
+  }
+
+  return customerBookings.sort((a, b) => {
+    return new Date(b.booking_date) - new Date(a.booking_date);
+  })[0];
+}
+
+function generateCustomerId() {
+  return `CUST-${String(customers.length + 1).padStart(4, "0")}`;
+}
+
+function generateLoyaltyId() {
+  return `LOY-${String(customers.length + 1).padStart(4, "0")}`;
+}
+
+function generatePetId() {
+  return `PET-${String(pets.length + 1).padStart(4, "0")}`;
+}
+
+function getPetIcon(species) {
+  return species === "Cat" ? "🐱" : "🐶";
 }
 
 function formatDate(dateString) {
-  const date = new Date(dateString);
-
-  return date.toLocaleDateString("en-MY", {
-    weekday: "long",
+  return new Date(dateString).toLocaleDateString("en-MY", {
     day: "2-digit",
-    month: "long",
+    month: "short",
     year: "numeric"
   });
 }
+
+initCRM();

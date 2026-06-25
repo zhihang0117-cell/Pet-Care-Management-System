@@ -1,0 +1,173 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Customer &amp; Pet Profiles | Pawfect AI</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Playfair+Display:wght@600;700&family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="index.css">
+</head>
+
+<body class="dash-page">
+<div class="dash-layout">
+
+  <!-- ── Sidebar ─────────────────────────────────────────────── -->
+  <aside class="dash-sidebar">
+
+    <div class="dash-brand">
+      <div class="dash-brand-avatar">🐾</div>
+      <div class="dash-brand-text">
+        <span class="dash-brand-name">Pawfect AI</span>
+        <span class="dash-brand-sub">Staff portal</span>
+      </div>
+    </div>
+
+    <nav class="dash-nav">
+      <a class="dash-nav-link" href="dailyoverview.html">🏠 &nbsp;&nbsp;Daily Overview</a>
+      <a class="dash-nav-link" href="booking.html">📅&nbsp;&nbsp;Booking Dashboard</a>
+      <a class="dash-nav-link active" href="profile.html">🐾 Customer &amp; Pet Profile</a>
+      <a class="dash-nav-link" href="enquiries.html">💬&nbsp;&nbsp;Enquiries (WhatsApp)</a>
+      <a class="dash-nav-link" href="payment.html">💳&nbsp;&nbsp;Payment</a>
+      <a class="dash-nav-link" href="loyalty.html">🎁&nbsp;&nbsp;Loyalty</a>
+      <a class="dash-nav-link" href="staff.html">👥&nbsp;&nbsp;Staff Management</a>
+      <a class="dash-nav-link" href="dashboard.html">📊&nbsp;&nbsp;Analytical Dashboard</a>
+      <a class="dash-nav-link" href="setting.html">⚙️&nbsp;&nbsp;Settings</a>
+    </nav>
+
+    <div class="dash-sidebar-footer">
+      <a href="login.html" class="btn btn-secondary" style="width:100%;justify-content:center;font-size:0.88rem;">Logout</a>
+    </div>
+
+  </aside>
+
+  <!-- ── Main content ─────────────────────────────────────────── -->
+  <main class="dash-main">
+
+    <!-- Header + Filter -->
+    <section class="bk-section">
+      <div class="bk-view-header" style="align-items:flex-start;">
+        <div>
+          <h1 class="bk-page-title" style="margin-bottom:8px;">Customer Relationship Management</h1>
+        </div>
+        <div style="display:flex;gap:10px;flex-wrap:wrap;flex-shrink:0;">
+          <button class="btn btn-primary" onclick="openCustomerForm()">+ Add Customer</button>
+          <button class="btn btn-secondary" onclick="openPetForm()">+ Add Pet</button>
+        </div>
+      </div>
+
+      <!-- Filter row -->
+      <div style="display:flex;gap:12px;flex-wrap:wrap;margin-top:20px;padding-top:20px;border-top:1px solid var(--accent-sand);">
+        <select id="profileTypeFilter" class="bk-select" style="min-width:220px;height:40px;font-size:0.875rem;">
+          <option value="all">All Customer &amp; Pet Records</option>
+          <option value="customer">Customer Profile Only</option>
+          <option value="pet">Pet Profile Only</option>
+        </select>
+        <input
+          type="text"
+          id="searchInput"
+          class="bk-search"
+          style="flex:1;min-width:220px;max-width:none;border-radius:var(--radius-small);"
+          placeholder="Search customer name, phone number, pet name, customer ID, or pet ID…"
+        />
+      </div>
+    </section>
+
+    <!-- KPI Cards -->
+    <section class="bk-section bk-section-slim">
+      <div class="bk-kpi-grid">
+        <div class="metric-card">
+          <h3>Total Customers</h3>
+          <p id="totalCustomers">0</p>
+          <small style="font-size:0.78rem;color:var(--text-muted);">Registered customer profiles</small>
+        </div>
+        <div class="metric-card">
+          <h3>Total Pets</h3>
+          <p id="totalPets">0</p>
+          <small style="font-size:0.78rem;color:var(--text-muted);">Linked pet profiles</small>
+        </div>
+        <div class="metric-card">
+          <h3>New Customers</h3>
+          <p id="newCustomers">0</p>
+          <small style="font-size:0.78rem;color:var(--text-muted);">Recently registered customers</small>
+        </div>
+        <div class="metric-card" style="border-color:#FEF3C7;">
+          <h3 style="color:#92400E;">Attention Needed</h3>
+          <p id="attentionNeeded">0</p>
+          <small style="font-size:0.78rem;color:var(--text-muted);">Missing vaccine / special care notes</small>
+        </div>
+      </div>
+    </section>
+
+    <!-- Customer Profile List -->
+    <section class="bk-section" id="customerSection">
+      <div class="bk-view-header" style="margin-bottom:16px;">
+        <div>
+          <h2 style="font-family:var(--font-serif);font-size:1.15rem;font-weight:700;margin-bottom:2px;">Customer Profile List</h2>
+          <p style="font-size:0.78rem;color:var(--text-muted);">Database table: customers</p>
+        </div>
+        <span id="customerRecordCount" style="font-size:0.78rem;font-weight:700;color:var(--text-muted);white-space:nowrap;">0 records</span>
+      </div>
+      <div class="bk-table-wrap">
+        <table class="bk-table">
+          <thead>
+            <tr>
+              <th>Customer Profile</th>
+              <th>Customer ID</th>
+              <th>Contact</th>
+              <th>Last Booking Made</th>
+              <th>Linked Pets</th>
+              <th>Total Bookings</th>
+              <th>Action</th>
+            </tr>
+          </thead>
+          <tbody id="customerTableBody"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- Pet Profile List -->
+    <section class="bk-section" id="petSection">
+      <div class="bk-view-header" style="margin-bottom:16px;">
+        <div>
+          <h2 style="font-family:var(--font-serif);font-size:1.15rem;font-weight:700;margin-bottom:2px;">Pet Profile List</h2>
+          <p style="font-size:0.78rem;color:var(--text-muted);">Database table: pets, linked by customer_id foreign key</p>
+        </div>
+        <span id="petRecordCount" style="font-size:0.78rem;font-weight:700;color:var(--text-muted);white-space:nowrap;">0 records</span>
+      </div>
+      <div class="bk-table-wrap">
+        <table class="bk-table">
+          <thead>
+            <tr>
+              <th>Pet Profile</th>
+              <th>Pet ID</th>
+              <th>Customer ID FK</th>
+              <th>Owner</th>
+              <th>Service Preference</th>
+              <th>Special Care Note</th>
+              <th>Action</th>
+            </tr>
+          </thead>
+          <tbody id="petTableBody"></tbody>
+        </table>
+      </div>
+    </section>
+
+  </main>
+</div>
+
+<!-- ── Detail Modal ──────────────────────────────────────────── -->
+<div class="bk-modal-backdrop" id="detailPage">
+  <div class="bk-modal" style="width:min(860px,100%);max-height:90vh;overflow-y:auto;">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:24px;">
+      <h2 id="detailTitle" style="margin:0;"></h2>
+      <button class="close-btn" onclick="closeDetailPage()">×</button>
+    </div>
+    <form id="detailForm" class="detail-form"></form>
+  </div>
+</div>
+
+<script src="testing.js"></script>
+</body>
+</html>
