@@ -1329,7 +1329,7 @@ const pets = [
   }
 ];
 
-const bookings = [
+const crmBookings = [
   {
     booking_id: "BOOK-0001",
     customer_id: "CUST-0001",
@@ -1787,7 +1787,7 @@ function getPetsByCustomerId(customerId) {
 }
 
 function getBookingsByCustomerId(customerId) {
-  return bookings.filter(booking => booking.customer_id === customerId);
+  return crmBookings.filter(booking => booking.customer_id === customerId);
 }
 
 function getLastBookingByCustomerId(customerId) {
@@ -1822,4 +1822,4 @@ function formatDate(dateString) {
   });
 }
 
-initCRM();
+if (document.getElementById("profileTypeFilter")) initCRM();
