@@ -25,8 +25,8 @@
     </div>
 
     <nav class="dash-nav">
-      <a class="dash-nav-link" href="dailyoverview.html">🏠 &nbsp;&nbsp;Daily Overview</a>
-      <a class="dash-nav-link active" href="booking.html">📅&nbsp;&nbsp;Booking Dashboard</a>
+      <a class="dash-nav-link active" href="dailyoverview.html">🏠 &nbsp;&nbsp;Daily Overview</a>
+      <a class="dash-nav-link" href="booking.html">📅&nbsp;&nbsp;Booking Dashboard</a>
       <a class="dash-nav-link" href="profile.html">🐾 Customer &amp; Pet Profile</a>
       <a class="dash-nav-link" href="enquiries.html">💬&nbsp;&nbsp;Enquiries (WhatsApp)</a>
       <a class="dash-nav-link" href="payment.html">💳&nbsp;&nbsp;Payment</a>
@@ -47,182 +47,132 @@
 
     <!-- Header + Service Filter -->
     <section class="bk-section">
-      <h1 class="bk-page-title">Booking Dashboard</h1>
-      <div class="bk-tab-group" id="serviceFilterTabs">
+      <div class="overview-header-row">
+        <div>
+          <h1 class="bk-page-title" style="margin-bottom:6px;">Daily Overview</h1>
+          <p style="font-size:0.85rem;color:var(--text-muted);">Human-in-the-loop action queue — everything that needs a staff decision today.</p>
+        </div>
+        <div class="overview-meta">
+          <span class="overview-chip" id="overviewRoleChip">👤 Staff</span>
+          <span class="overview-chip" id="overviewDateChip">🗓️ Today</span>
+        </div>
+      </div>
+
+      <div class="bk-tab-group" id="overviewServiceFilterTabs" style="margin-top:20px;padding-top:20px;border-top:1px solid var(--accent-sand);">
         <button class="tab-btn active" data-filter="all">All</button>
         <button class="tab-btn" data-filter="grooming">✂️ Grooming</button>
         <button class="tab-btn" data-filter="boarding">🏨 Boarding</button>
         <button class="tab-btn" data-filter="daycare">🌞 Daycare</button>
-      </div>
+      </div> 
     </section>
 
-    <!-- KPI Cards -->
+    <!-- Pending action cards -->
     <section class="bk-section bk-section-slim">
-      <div class="bk-kpi-grid" id="metricCards"></div>
+      <div class="bk-kpi-grid" id="actionCards"></div>
     </section>
 
-    <!-- Views -->
+    <!-- Daily Booking Schedule + Task Status -->
+    <div class="overview-pair">
+
+      <section class="bk-section">
+        <div class="calendar-nav-row">
+          <h3 class="overview-panel-title" style="margin-bottom:0;">Daily Booking Schedule</h3>
+          <div class="calendar-nav-controls">
+            <button class="btn btn-secondary" id="calPrevBtn">←</button>
+            <button class="btn btn-primary" id="calTodayBtn" style="font-size:0.78rem;">Today</button>
+            <button class="btn btn-secondary" id="calNextBtn">→</button>
+            <span class="overview-panel-sub" id="scheduleWeekLabel" style="margin:0 0 0 6px;white-space:nowrap;"></span>
+          </div>
+        </div>
+        <div class="schedule-wrap">
+          <div class="schedule-head-row" id="scheduleHead"></div>
+          <div class="schedule-grid" id="scheduleGrid"></div>
+        </div>
+      </section>
+
+      <section class="bk-section">
+        <div class="bk-view-header" style="margin-bottom:20px;">
+          <h3 class="overview-panel-title" style="margin-bottom:0;">Task Status</h3>
+          <span class="overview-panel-sub" id="statusScopeLabel" style="margin-bottom:0;">All bookings</span>
+        </div>
+        <div class="chart-donut-row">
+          <div class="donut-chart" id="statusDonut">
+            <div class="donut-center">
+              <strong id="statusDonutTotal">0</strong>
+              <span>Bookings</span>
+            </div>
+          </div>
+          <div class="chart-legend" id="statusLegend"></div>
+        </div>
+      </section>
+
+    </div>
+
+    <!-- Today's Service Load + Room & Play Area Status -->
+    <div class="overview-pair">
+
+      <section class="bk-section">
+        <div class="bk-view-header" style="margin-bottom:20px;">
+          <div>
+            <h3 class="overview-panel-title" style="margin-bottom:2px;">Today's Service Load</h3>
+            <p class="overview-panel-sub" style="margin-bottom:0;">Bookings scheduled for today, by service type. Click a bar for details.</p>
+          </div>
+          <span id="serviceLoadTotal" style="font-size:0.78rem;font-weight:700;color:var(--text-muted);white-space:nowrap;">0 bookings today</span>
+        </div>
+        <div class="bar-label-row" id="serviceLoadChart"></div>
+      </section>
+
+      <section class="bk-section">
+        <div class="bk-view-header" style="margin-bottom:20px;">
+          <div>
+            <h3 class="overview-panel-title" style="margin-bottom:2px;">Room &amp; Play Area Status</h3>
+            <p class="overview-panel-sub" style="margin-bottom:0;">Turnover status for rooms &amp; playrooms. Click a room for details.</p>
+          </div>
+          <span id="roomStatusCount" style="font-size:0.78rem;font-weight:700;color:var(--text-muted);white-space:nowrap;">0 rooms</span>
+        </div>
+        <div class="room-status-list" id="roomStatusList"></div>
+      </section>
+
+    </div>
+
+    <!-- Action queue -->
     <section class="bk-section">
       <div class="bk-view-header">
-        <div class="bk-tab-group" id="viewTabs">
-          <button class="tab-btn active" data-view="kanban">Kanban</button>
-          <button class="tab-btn" data-view="calendar">Calendar</button>
-          <button class="tab-btn" data-view="listing">Listing</button>
+        <div>
+          <h3 class="overview-panel-title" style="margin-bottom:2px;">Today's Action Queue</h3>
+          <p class="overview-panel-sub" style="margin-bottom:0;">Sorted by time. SLA countdown shown for pending service, enquiries &amp; loyalty. Resolve items directly, or open the relevant workspace.</p>
         </div>
-        <div class="bk-view-actions" id="kanbanQuickActions">
-          <div class="bk-date-toggle">
-            <button class="tab-btn active" id="todayBtn">Today</button>
-            <button class="tab-btn"        id="allBtn">All</button>
-          </div>
-          <button class="btn btn-primary" id="addBookingBtn">+ Add Booking</button>
-        </div>
+        <span id="queueCount" style="font-size:0.78rem;font-weight:700;color:var(--text-muted);white-space:nowrap;">0 items</span>
       </div>
-
-      <!-- Kanban -->
-      <div id="kanbanView">
-        <div class="bk-kanban-board" id="kanbanBoard"></div>
+      <div class="bk-table-wrap">
+        <table class="bk-table">
+          <thead>
+            <tr>
+              <th>Time</th><th>Type</th><th>Details</th><th>Status</th><th>SLA</th><th></th>
+            </tr>
+          </thead>
+          <tbody id="actionQueueBody"></tbody>
+        </table>
       </div>
-
-      <!-- Calendar -->
-      <div id="calendarView" class="hidden">
-        <div class="bk-cal-toolbar">
-          <div class="bk-cal-title">
-            <h3>Calendar Schedule</h3>
-            <p>Use ← / Today / → to navigate. Switch between Daily, Weekly and Monthly.</p>
-          </div>
-          <div class="bk-cal-controls">
-            <div class="bk-cal-nav">
-              <button class="btn btn-secondary" id="prevCalendarBtn">← Prev</button>
-              <button class="btn btn-primary"   id="todayCalendarBtn">Today</button>
-              <button class="btn btn-secondary" id="nextCalendarBtn">Next →</button>
-            </div>
-            <div class="bk-cal-filter">
-              <select class="bk-select" id="calendarMode">
-                <option value="daily">Daily</option>
-                <option value="weekly" selected>Weekly</option>
-                <option value="monthly">Monthly</option>
-              </select>
-              <label class="bk-date-label">Start <input class="bk-date-input" type="date" id="calendarStartDate" /></label>
-              <label class="bk-date-label">End <input class="bk-date-input" type="date" id="calendarEndDate" /></label>
-              <button class="btn btn-primary"   id="applyCalendarFilter">Apply</button>
-              <button class="btn btn-secondary" id="clearCalendarFilter">Clear</button>
-            </div>
-          </div>
-        </div>
-        <div class="bk-cal-wrap" id="calendarWrap">
-          <div class="calendar-grid" id="calendarGrid"></div>
-        </div>
-      </div><!-- /calendarView -->
-
-      <!-- Listing -->
-      <div id="listingView" class="hidden">
-        <div class="bk-listing-toolbar">
-          <input class="bk-search" type="text" id="listingSearchInput"
-            placeholder="Search by pet, customer or staff…" />
-        </div>
-        <div class="bk-table-wrap">
-          <table class="bk-table">
-            <thead>
-              <tr>
-                <th>Customer</th><th>Pet</th><th>Service</th><th>Staff</th>
-                <th>Date</th><th>Time</th><th>Duration</th><th>Status</th>
-                <th>Amount</th><th>Room</th><th></th>
-              </tr>
-            </thead>
-            <tbody id="listingTableBody"></tbody>
-          </table>
-        </div>
-      </div>
-
     </section>
+
   </main>
 </div>
 
-<!-- ── Booking Modal ─────────────────────────────────────────── -->
-<div class="bk-modal-backdrop" id="bookingModal">
-  <div class="bk-modal">
-    <h2>Booking Details</h2>
-    <form id="bookingForm">
-      <input type="hidden" id="bookingId" />
-      <div class="form-grid-2">
-        <div class="form-group">
-          <label>Customer Name</label>
-          <input type="text" id="customerName" required />
-        </div>
-        <div class="form-group">
-          <label>Pet Name</label>
-          <input type="text" id="petName" required />
-        </div>
-        <div class="form-group">
-          <label>Service Type</label>
-          <select id="serviceType" required>
-            <option value="grooming">Grooming</option>
-            <option value="boarding">Boarding</option>
-            <option value="daycare">Daycare</option>
-          </select>
-        </div>
-        <div class="form-group">
-          <label>Required Service</label>
-          <select id="requiredService" required></select>
-        </div>
-        <div class="form-group">
-          <label>Staff Name</label>
-          <select id="staffName" required></select>
-        </div>
-        <div class="form-group room-field hidden">
-          <label>Room</label>
-          <select id="roomName"></select>
-        </div>
-        <div class="form-group">
-          <label>Date</label>
-          <input type="date" id="bookingDate" required />
-        </div>
-        <div class="form-group">
-          <label>Time</label>
-          <input type="time" id="bookingTime" required />
-        </div>
-        <div class="form-group boarding-field hidden">
-          <label>Check-in Date</label>
-          <input type="date" id="checkInDate" />
-        </div>
-        <div class="form-group boarding-field hidden">
-          <label>Check-out Date</label>
-          <input type="date" id="checkOutDate" />
-        </div>
-        <div class="form-group">
-          <label>Duration (min)</label>
-          <input type="number" id="duration" min="1" required />
-        </div>
-        <div class="form-group">
-          <label>Status</label>
-          <select id="bookingStatus">
-            <option value="pending">Pending Service</option>
-            <option value="scheduled">Scheduled</option>
-            <option value="done">Done</option>
-            <option value="no_show">No Show</option>
-          </select>
-        </div>
-        <div class="form-group">
-          <label>Amount (RM)</label>
-          <input type="number" id="amount" min="0" step="0.01" readonly />
-        </div>
-        <div class="form-group full">
-          <label>Special Note</label>
-          <textarea id="specialNote" rows="3"></textarea>
-        </div>
-      </div>
-      <div class="bk-modal-actions">
-        <button type="submit"  class="btn btn-primary">Save Booking</button>
-        <button type="button"  class="btn btn-secondary" id="doneServiceBtn">✓ Done Service</button>
-        <button type="button"  class="btn btn-secondary bk-danger-btn" id="noShowBtn">No Show</button>
-        <button type="button"  class="btn btn-secondary bk-danger-btn" id="cancelBookingBtn">✕ Cancel Booking</button>
-        <button type="button"  class="btn btn-secondary" id="openPetProfileBtn">🐾 Pet Profile</button>
-        <button type="button"  class="btn btn-secondary" id="closeModalBtn">Close</button>
-      </div>
-    </form>
+<!-- ── Drill-down Detail Modal ───────────────────────────────── -->
+<div class="bk-modal-backdrop" id="detailModal">
+  <div class="bk-modal" style="width:min(640px,100%);">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;">
+      <h2 id="detailModalTitle" style="margin:0;"></h2>
+      <button class="close-btn" onclick="closeDetailModal()">×</button>
+    </div>
+    <p class="detail-modal-subtitle" id="detailModalSubtitle"></p>
+    <div class="detail-list" id="detailModalBody"></div>
+    <div id="detailModalFooter" style="margin-top:16px;"></div>
   </div>
 </div>
 
-<script src="common.js"></script>
+<script src="auth.js"></script>
+<script src="dailyoverview.js"></script>
 </body>
 </html>

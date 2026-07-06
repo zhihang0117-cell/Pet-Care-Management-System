@@ -1603,6 +1603,8 @@ select {
     text-transform: uppercase;
     letter-spacing: 0.06em;
     color: var(--text-muted);
+    line-height: 1.4;
+    min-height: 2.2rem;
     margin: 0 0 10px;
 }
 
@@ -1949,6 +1951,286 @@ select {
     border-color: var(--btn-brown);
     color: #fff;
 }
+
+/* ==========================================================================
+   Dashboard — Daily Overview (HITL action dashboard)
+   ========================================================================== */
+.overview-header-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    gap: 16px;
+    flex-wrap: wrap;
+}
+
+.overview-meta {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
+}
+
+.overview-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 8px 16px;
+    border-radius: 40px;
+    background-color: var(--card-white);
+    border: 1.5px solid var(--accent-sand);
+    font-size: 0.8rem;
+    font-weight: 600;
+    color: var(--text-charcoal);
+    white-space: nowrap;
+}
+
+.overview-panel-title {
+    font-family: var(--font-serif);
+    font-size: 1.1rem;
+    font-weight: 700;
+    color: var(--text-charcoal);
+    margin-bottom: 4px;
+}
+
+.overview-panel-sub {
+    font-size: 0.78rem;
+    color: var(--text-muted);
+    margin-bottom: 18px;
+}
+
+.bar-label-row {
+    display: flex;
+    align-items: flex-end;
+    justify-content: center;
+    gap: 32px;
+}
+
+.bar-label-item {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 10px;
+    flex: 1;
+    cursor: pointer;
+}
+
+.bar-track {
+    height: 140px;
+    width: 100%;
+    max-width: 72px;
+    display: flex;
+    align-items: flex-end;
+}
+
+.mini-bar {
+    width: 100%;
+    border-radius: 8px 8px 0 0;
+    opacity: 0.85;
+    transition: height 0.3s ease;
+}
+
+.bar-count { font-size: 0.95rem; font-weight: 800; color: var(--text-charcoal); }
+.bar-name  { font-size: 0.75rem; font-weight: 600; color: var(--text-muted); text-align: center; }
+
+.room-status-list { display: flex; flex-direction: column; gap: 10px; }
+
+.room-status-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+    padding: 10px 14px;
+    border-radius: var(--radius-small);
+    background-color: var(--card-white);
+    border: 1px solid var(--accent-sand);
+    font-size: 0.82rem;
+    font-weight: 600;
+    color: var(--text-charcoal);
+    cursor: pointer;
+    transition: box-shadow 0.2s ease;
+}
+
+.room-status-row > span:first-child { flex-shrink: 0; }
+
+.room-status-row:hover { box-shadow: var(--shadow-soft); }
+
+.queue-empty {
+    padding: 24px;
+    text-align: center;
+    color: var(--text-muted);
+    font-size: 0.85rem;
+}
+
+/* Donut chart */
+.chart-donut-row {
+    display: flex;
+    align-items: center;
+    gap: 28px;
+    flex-wrap: wrap;
+}
+
+.donut-chart {
+    width: 160px;
+    height: 160px;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    transition: background 0.3s ease;
+}
+
+.donut-center {
+    width: 106px;
+    height: 106px;
+    background: var(--card-white);
+    border-radius: 50%;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+}
+
+.donut-center strong { font-size: 1.6rem; color: var(--text-charcoal); line-height: 1; }
+.donut-center span { font-size: 0.72rem; color: var(--text-muted); }
+
+.chart-legend { display: flex; flex-direction: column; gap: 10px; flex: 1; min-width: 160px; }
+
+.chart-legend-item {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    font-size: 0.92rem;
+    font-weight: 600;
+    color: var(--text-charcoal);
+    cursor: pointer;
+    padding: 6px 10px;
+    border-radius: var(--radius-small);
+    transition: background-color 0.2s ease;
+}
+
+.chart-legend-item:hover { background-color: var(--bg-warm-cream); }
+.legend-swatch { width: 12px; height: 12px; border-radius: 4px; flex-shrink: 0; }
+
+/* Paired widgets (Daily Booking Schedule + Task Status) */
+.overview-pair {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(420px, 1fr));
+    gap: 24px;
+}
+
+.calendar-nav-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 16px;
+    gap: 10px;
+    flex-wrap: wrap;
+}
+
+.calendar-nav-row .btn {
+    padding: 6px 14px;
+    font-size: 0.78rem;
+    min-width: unset;
+}
+
+.calendar-nav-controls { display: flex; align-items: center; gap: 6px; }
+
+/* Weekly booking schedule */
+.schedule-wrap { overflow-x: auto; }
+
+.schedule-head-row,
+.schedule-grid {
+    display: grid;
+    grid-template-columns: 44px repeat(7, 1fr);
+    gap: 4px;
+}
+
+.schedule-head-row { margin-bottom: 6px; }
+
+.schedule-head {
+    font-size: 0.72rem;
+    font-weight: 700;
+    color: var(--text-muted);
+    text-align: center;
+    padding: 4px 0;
+}
+
+.schedule-head.is-today { color: var(--btn-brown); }
+
+.schedule-time {
+    font-size: 0.72rem;
+    font-weight: 600;
+    color: var(--text-muted);
+    display: flex;
+    align-items: center;
+}
+
+.schedule-cell {
+    min-height: 52px;
+    border-radius: var(--radius-small);
+    background-color: var(--accent-sand);
+    padding: 5px;
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+    cursor: pointer;
+    transition: box-shadow 0.2s ease;
+}
+
+.schedule-cell:hover { box-shadow: var(--shadow-soft); }
+.schedule-cell.is-today { outline: 1.5px solid var(--btn-brown); outline-offset: -1.5px; }
+
+.schedule-chip {
+    background-color: var(--btn-brown);
+    color: #fff;
+    font-size: 0.68rem;
+    font-weight: 700;
+    padding: 3px 7px;
+    border-radius: 6px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.schedule-more {
+    font-size: 0.62rem;
+    font-weight: 700;
+    color: var(--text-muted);
+    padding-left: 2px;
+}
+
+/* Shared drill-down detail modal */
+.detail-modal-subtitle {
+    font-size: 0.82rem;
+    color: var(--text-muted);
+    margin: -14px 0 20px;
+}
+
+.detail-list {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    max-height: 50vh;
+    overflow-y: auto;
+}
+
+.detail-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    gap: 12px;
+    padding: 12px 14px;
+    border: 1px solid var(--accent-sand);
+    border-radius: var(--radius-small);
+    background-color: var(--bg-warm-cream);
+}
+
+.detail-row-main { display: flex; flex-direction: column; gap: 4px; }
+.detail-row-title { font-weight: 700; font-size: 0.88rem; color: var(--text-charcoal); }
+.detail-row-sub { font-size: 0.78rem; color: var(--text-muted); }
+.detail-row-side { display: flex; flex-direction: column; align-items: flex-end; gap: 8px; flex-shrink: 0; }
 
 /* ==========================================================================
    Dashboard — Booking modal

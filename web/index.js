@@ -106,6 +106,10 @@ function findAccount(email) {
 }
 function deny(message) { const el = q('loginError'); if (el) el.textContent = message; }
 
+function landingPageFor(acc) {
+    return (acc.role || '').toLowerCase() === 'manager' ? 'dashboard.html' : 'dailyoverview.html';
+}
+
 function loginPawfectAccount() {
     const emailEl = q('login_email'), passEl = q('login_password');
     if (!emailEl || !passEl) return;
@@ -119,17 +123,17 @@ function loginPawfectAccount() {
         saveAccountState(acc, completedSetupFor(acc));
         localStorage.setItem('pawfect_existing_completed_account', 'true');
         localStorage.setItem('pawfect_first_login', 'shown');
-        location.href = 'dailyoverview.html'; return;
+        location.href = landingPageFor(acc); return;
     }
     localStorage.removeItem('pawfect_existing_completed_account');
     if (acc.blankData && !acc.setupCompleted) {
         saveAccountState(acc, { businessName: acc.businessName, services: acc.services || ['grooming', 'boarding', 'daycare'], setupCompleted: false, newUser: true, accountEmail: acc.email, businessKey: acc.businessKey });
         localStorage.setItem('pawfect_first_login', 'true');
-        location.href = 'dailyoverview.html'; return;
+        location.href = landingPageFor(acc); return;
     }
     saveAccountState(acc, completedSetupFor(acc));
     localStorage.setItem('pawfect_first_login', 'shown');
-    location.href = 'dailyoverview.html';
+    location.href = landingPageFor(acc);
 }
 
 // ── Register ──────────────────────────────────────────────────────────────────
