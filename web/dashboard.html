@@ -1,0 +1,183 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Analytical Dashboard | Pawfect AI</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Playfair+Display:wght@600;700&family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="index.css">
+</head>
+
+<body class="dash-page">
+<div class="dash-layout">
+
+  <!-- ── Sidebar ─────────────────────────────────────────────── -->
+  <aside class="dash-sidebar">
+
+    <div class="dash-brand">
+      <div class="dash-brand-avatar">🐾</div>
+      <div class="dash-brand-text">
+        <span class="dash-brand-name">Pawfect AI</span>
+        <span class="dash-brand-sub">Staff portal</span>
+      </div>
+    </div>
+
+    <nav class="dash-nav">
+      <a class="dash-nav-link" href="dailyoverview.html">🏠 &nbsp;&nbsp;Daily Overview</a>
+      <a class="dash-nav-link" href="booking.html">📅&nbsp;&nbsp;Booking Dashboard</a>
+      <a class="dash-nav-link" href="profile.html">🐾 Customer &amp; Pet Profile</a>
+      <a class="dash-nav-link" href="enquiries.html">💬&nbsp;&nbsp;Enquiries (WhatsApp)</a>
+      <a class="dash-nav-link" href="payment.html">💳&nbsp;&nbsp;Payment</a>
+      <a class="dash-nav-link" href="loyalty.html">🎁&nbsp;&nbsp;Loyalty</a>
+      <a class="dash-nav-link" href="staff.html">👥&nbsp;&nbsp;Staff Management</a>
+      <a class="dash-nav-link active" href="dashboard.html">📊&nbsp;&nbsp;Analytical Dashboard</a>
+      <a class="dash-nav-link" href="setting.html">⚙️&nbsp;&nbsp;Settings</a>
+    </nav>
+
+    <div class="dash-sidebar-footer">
+      <div class="sidebar-account">
+        <div class="sidebar-account-avatar" id="sidebarAccountAvatar">👤</div>
+        <div class="sidebar-account-info">
+          <span class="sidebar-account-role" id="sidebarAccountRole">Staff</span>
+          <span class="sidebar-account-business" id="sidebarAccountBusiness"></span>
+          <span class="sidebar-account-email" id="sidebarAccountEmail"></span>
+        </div>
+      </div>
+
+      <div class="sidebar-switch-wrap">
+        <button type="button" class="btn btn-secondary sidebar-switch-btn" onclick="toggleSwitchAccountMenu()">🔁 Switch Account</button>
+        <div class="sidebar-switch-menu" id="switchAccountMenu"></div>
+      </div>
+
+      <a href="login.html" id="logoutBtn" class="btn btn-secondary" style="width:100%;justify-content:center;font-size:0.88rem;">Logout</a>
+    </div>
+
+  </aside>
+
+  <!-- ── Main content ─────────────────────────────────────────── -->
+  <main class="dash-main">
+
+    <!-- Header -->
+    <section class="bk-section">
+      <div class="overview-header-row">
+        <div>
+          <h1 class="bk-page-title" style="margin-bottom:6px;">Business Performance Dashboard</h1>
+          <p style="font-size:0.85rem;color:var(--text-muted);">Real-time overview of your business performance and AI system health.</p>
+        </div>
+        <div class="overview-meta">
+          <span class="overview-chip" id="dashboardBusinessChip">🏢 Business</span>
+        </div>
+      </div>
+
+      <div class="bk-view-header" style="margin-top:20px;padding-top:20px;border-top:1px solid var(--accent-sand);">
+        <div class="bk-tab-group" id="dashboardPeriodToggle">
+          <button class="tab-btn" data-period="daily">Daily</button>
+          <button class="tab-btn active" data-period="weekly">Weekly</button>
+          <button class="tab-btn" data-period="monthly">Monthly</button>
+        </div>
+        <div class="calendar-nav-controls">
+          <button class="btn btn-secondary" id="dashboardPrevBtn">←</button>
+          <button class="btn btn-primary" id="dashboardTodayBtn" style="font-size:0.78rem;">Today</button>
+          <button class="btn btn-secondary" id="dashboardNextBtn">→</button>
+          <span class="overview-chip" id="dashboardWeekChip" style="margin:0 0 0 6px;">🗓️ This Week</span>
+        </div>
+      </div>
+    </section>
+
+    <!-- KPI Hero Row -->
+    <section class="bk-section bk-section-slim">
+      <div class="kpi-hero-grid" id="kpiHeroGrid"></div>
+    </section>
+
+    <!-- Revenue Trend + Customer Growth Trend -->
+    <div class="dash-chart-grid-2col">
+
+      <section class="bk-section">
+        <div class="bk-view-header" style="margin-bottom:16px;">
+          <h3 class="overview-panel-title" style="margin-bottom:0;">Revenue Trend</h3>
+          <span class="overview-panel-sub" style="margin-bottom:0;" id="revenueTrendSub"></span>
+        </div>
+        <div id="revenueTrendChart"></div>
+      </section>
+
+      <section class="bk-section">
+        <div class="bk-view-header" style="margin-bottom:16px;">
+          <h3 class="overview-panel-title" style="margin-bottom:0;">Customer Growth Trend</h3>
+          <span class="overview-panel-sub" style="margin-bottom:0;" id="customerGrowthSub"></span>
+        </div>
+        <div id="customerGrowthChart"></div>
+      </section>
+
+    </div>
+
+    <!-- Booking Mix + Top Services -->
+    <div class="dash-chart-grid-2col">
+
+      <section class="bk-section">
+        <div class="bk-view-header" style="margin-bottom:16px;">
+          <h3 class="overview-panel-title" style="margin-bottom:0;">Booking Mix by Service Category</h3>
+        </div>
+        <div class="chart-donut-row">
+          <div class="donut-chart" id="serviceMixDonut">
+            <div class="donut-center">
+              <strong id="serviceMixTotal">0</strong>
+              <span>Bookings</span>
+            </div>
+          </div>
+          <div class="chart-legend" id="serviceMixLegend"></div>
+        </div>
+      </section>
+
+      <section class="bk-section">
+        <div class="bk-view-header" style="margin-bottom:16px;">
+          <h3 class="overview-panel-title" style="margin-bottom:0;">Top Services by Revenue</h3>
+          <span class="overview-panel-sub" style="margin-bottom:0;">All Time</span>
+        </div>
+        <div id="topServicesList" class="top-services-list"></div>
+      </section>
+
+    </div>
+
+    <!-- Operational Highlights + Branch Snapshot + Today's Schedule -->
+    <div class="dash-ops-grid">
+
+      <section class="bk-section">
+        <h3 class="overview-panel-title" style="margin-bottom:16px;">Operational Highlights <span class="overview-panel-sub" style="margin-bottom:0;">(Live)</span></h3>
+        <div class="ops-highlight-grid" id="opsHighlightGrid"></div>
+      </section>
+
+      <section class="bk-section">
+        <h3 class="overview-panel-title" style="margin-bottom:16px;">Business Snapshot</h3>
+        <div class="snapshot-list" id="snapshotList"></div>
+      </section>
+
+      <section class="bk-section">
+        <h3 class="overview-panel-title" style="margin-bottom:16px;">Today's Schedule Overview</h3>
+        <div class="stacked-bar" id="scheduleStackedBar"></div>
+        <div class="schedule-breakdown-list" id="scheduleBreakdownList"></div>
+      </section>
+
+    </div>
+
+  </main>
+</div>
+
+<!-- ── Drill-down Detail Modal ───────────────────────────────── -->
+<div class="bk-modal-backdrop" id="detailModal">
+  <div class="bk-modal" style="width:min(640px,100%);">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;">
+      <h2 id="detailModalTitle" style="margin:0;"></h2>
+      <button class="close-btn" onclick="closeDetailModal()">×</button>
+    </div>
+    <p class="detail-modal-subtitle" id="detailModalSubtitle"></p>
+    <div class="detail-list" id="detailModalBody"></div>
+    <div id="detailModalFooter" style="margin-top:16px;"></div>
+  </div>
+</div>
+
+<script src="auth.js"></script>
+<script src="common.js"></script>
+</body>
+</html>

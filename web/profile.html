@@ -37,7 +37,21 @@
     </nav>
 
     <div class="dash-sidebar-footer">
-      <a href="login.html" class="btn btn-secondary" style="width:100%;justify-content:center;font-size:0.88rem;">Logout</a>
+      <div class="sidebar-account">
+        <div class="sidebar-account-avatar" id="sidebarAccountAvatar">👤</div>
+        <div class="sidebar-account-info">
+          <span class="sidebar-account-role" id="sidebarAccountRole">Staff</span>
+          <span class="sidebar-account-business" id="sidebarAccountBusiness"></span>
+          <span class="sidebar-account-email" id="sidebarAccountEmail"></span>
+        </div>
+      </div>
+
+      <div class="sidebar-switch-wrap">
+        <button type="button" class="btn btn-secondary sidebar-switch-btn" onclick="toggleSwitchAccountMenu()">🔁 Switch Account</button>
+        <div class="sidebar-switch-menu" id="switchAccountMenu"></div>
+      </div>
+
+      <a href="login.html" id="logoutBtn" class="btn btn-secondary" style="width:100%;justify-content:center;font-size:0.88rem;">Logout</a>
     </div>
 
   </aside>
@@ -169,6 +183,6 @@
 </div>
 
 <script src="auth.js"></script>
-<script src="testing.js"></script>
+<script src="common.js"></script>
 </body>
 </html>
