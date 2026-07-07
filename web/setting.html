@@ -1,0 +1,409 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Settings | Pawfect AI</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Playfair+Display:wght@600;700&family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="index.css">
+</head>
+
+<body class="dash-page">
+<div class="dash-layout">
+
+  <!-- ── Sidebar ─────────────────────────────────────────────── -->
+  <aside class="dash-sidebar">
+
+    <div class="dash-brand">
+      <div class="dash-brand-avatar">🐾</div>
+      <div class="dash-brand-text">
+        <span class="dash-brand-name">Pawfect AI</span>
+        <span class="dash-brand-sub">Staff portal</span>
+      </div>
+    </div>
+
+    <nav class="dash-nav">
+      <a class="dash-nav-link" href="dailyoverview.html">🏠 &nbsp;&nbsp;Daily Overview</a>
+      <a class="dash-nav-link" href="booking.html">📅&nbsp;&nbsp;Booking Dashboard</a>
+      <a class="dash-nav-link" href="profile.html">🐾 Customer &amp; Pet Profile</a>
+      <a class="dash-nav-link" href="enquiries.html">💬&nbsp;&nbsp;Enquiries (WhatsApp)</a>
+      <a class="dash-nav-link" href="payment.html">💳&nbsp;&nbsp;Payment</a>
+      <a class="dash-nav-link" href="loyalty.html">🎁&nbsp;&nbsp;Loyalty</a>
+      <a class="dash-nav-link" href="staff.html">👥&nbsp;&nbsp;Staff Management</a>
+      <a class="dash-nav-link" href="dashboard.html">📊&nbsp;&nbsp;Analytical Dashboard</a>
+      <a class="dash-nav-link active" href="setting.html">⚙️&nbsp;&nbsp;Settings</a>
+    </nav>
+
+    <div class="dash-sidebar-footer">
+      <div class="sidebar-account">
+        <div class="sidebar-account-avatar" id="sidebarAccountAvatar">👤</div>
+        <div class="sidebar-account-info">
+          <span class="sidebar-account-role" id="sidebarAccountRole">Staff</span>
+          <span class="sidebar-account-business" id="sidebarAccountBusiness"></span>
+          <span class="sidebar-account-email" id="sidebarAccountEmail"></span>
+        </div>
+      </div>
+
+      <div class="sidebar-switch-wrap">
+        <button type="button" class="btn btn-secondary sidebar-switch-btn" onclick="toggleSwitchAccountMenu()">🔁 Switch Account</button>
+        <div class="sidebar-switch-menu" id="switchAccountMenu"></div>
+      </div>
+
+      <a href="login.html" id="logoutBtn" class="btn btn-secondary" style="width:100%;justify-content:center;font-size:0.88rem;">Logout</a>
+    </div>
+
+  </aside>
+
+  <!-- ── Main content ─────────────────────────────────────────── -->
+  <main class="dash-main">
+
+    <!-- Header + Filter -->
+    <section class="bk-section">
+      <div class="overview-header-row">
+        <div>
+          <h1 class="bk-page-title" style="margin-bottom:6px;">Settings</h1>
+          <p style="font-size:0.85rem;color:var(--text-muted);">Configure your business profile, payments, services and booking connections.</p>
+        </div>
+        <div class="overview-meta">
+          <span class="overview-chip" id="settingsBusinessChip">🏢 Business</span>
+        </div>
+      </div>
+
+      <div class="bk-tab-group" id="settingsTabs" style="margin-top:20px;padding-top:20px;border-top:1px solid var(--accent-sand);">
+        <button class="tab-btn active" data-panel="general">🏢 General</button>
+        <button class="tab-btn" data-panel="payment">💳 Payment</button>
+        <button class="tab-btn" data-panel="localization">🌐 Localization</button>
+        <button class="tab-btn" data-panel="services">🐾 Services</button>
+        <button class="tab-btn" data-panel="booking">🔗 Booking &amp; WhatsApp</button>
+        <button class="tab-btn" data-panel="accounts">👥 Accounts</button>
+      </div>
+    </section>
+
+    <!-- ── General: Business Profile + Hours ────────────────── -->
+    <div class="settings-panel" id="panel-general">
+
+      <section class="bk-section setup-section" style="margin-bottom:20px;">
+        <div class="setup-section-head">
+          <h3>🏢 Business Profile</h3>
+        </div>
+        <div class="setup-section-body">
+
+          <div class="form-group">
+            <label>Business Logo</label>
+            <label class="logo-upload-label">
+              <span class="upload-icon">🖼️</span>
+              <p id="logoFileName">Click to upload logo (PNG, JPG — recommended 200×200 px)</p>
+              <input type="file" id="cfg_logo" accept="image/*" onchange="showFilename(this,'logoFileName')">
+            </label>
+          </div>
+
+          <div class="form-grid-2">
+            <div class="form-group full">
+              <label for="cfg_businessName">Business / Company Name <span class="req">*</span></label>
+              <input id="cfg_businessName" type="text" placeholder="Happy Paws Sdn Bhd" required>
+            </div>
+            <div class="form-group">
+              <label for="cfg_country">Country <span class="req">*</span></label>
+              <select id="cfg_country" required>
+                <option>Malaysia</option>
+                <option>Singapore</option>
+                <option>Thailand</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label for="cfg_street">Street Address</label>
+              <input id="cfg_street" type="text" placeholder="No. 123, Jalan Happy Paws">
+            </div>
+            <div class="form-group">
+              <label for="cfg_city">City</label>
+              <input id="cfg_city" type="text" placeholder="Kuala Lumpur">
+            </div>
+            <div class="form-group">
+              <label for="cfg_state">State</label>
+              <input id="cfg_state" type="text" placeholder="Wilayah Persekutuan">
+            </div>
+            <div class="form-group">
+              <label for="cfg_zip">ZIP / Postcode <span class="req">*</span></label>
+              <input id="cfg_zip" type="text" placeholder="50000" required>
+            </div>
+            <div class="form-group full">
+              <label for="cfg_description">Business Description</label>
+              <textarea id="cfg_description" placeholder="Premium grooming, hotel and daycare service for dogs and cats."></textarea>
+            </div>
+          </div>
+
+        </div>
+      </section>
+
+      <section class="bk-section setup-section">
+        <div class="setup-section-head">
+          <h3>🕐 Business Hours</h3>
+        </div>
+        <div class="setup-section-body">
+          <div class="hours-grid">
+            <div><label>Mon</label><input id="hour_Mon" placeholder="09:30 AM – 06:30 PM"></div>
+            <div><label>Tue</label><input id="hour_Tue" placeholder="09:30 AM – 06:30 PM"></div>
+            <div><label>Wed</label><input id="hour_Wed" placeholder="09:30 AM – 06:30 PM"></div>
+            <div><label>Thu</label><input id="hour_Thu" placeholder="09:30 AM – 06:30 PM"></div>
+            <div><label>Fri</label><input id="hour_Fri" placeholder="09:30 AM – 06:30 PM"></div>
+            <div><label>Sat</label><input id="hour_Sat" placeholder="10:00 AM – 05:00 PM"></div>
+            <div><label>Sun</label><input id="hour_Sun" placeholder="Closed"></div>
+          </div>
+          <div class="form-group">
+            <label for="cfg_closedDates">Closed Dates / Emergency Holidays</label>
+            <textarea id="cfg_closedDates" placeholder="28/07/2026 – Staff training day&#10;31/08/2026 – Public holiday"></textarea>
+          </div>
+        </div>
+      </section>
+
+    </div>
+
+    <!-- ── Payment ───────────────────────────────────────────── -->
+    <div class="settings-panel hidden" id="panel-payment">
+
+      <section class="bk-section setup-section">
+        <div class="setup-section-head">
+          <h3>💳 Payment</h3>
+        </div>
+        <div class="setup-section-body">
+
+          <div>
+            <p class="field-note" style="margin-bottom:12px;font-weight:600;color:var(--text-charcoal);">Accepted Payment Methods <span class="req">*</span></p>
+            <div class="addons">
+              <label class="addon">
+                <input id="pay_cash" type="checkbox">
+                <div class="addon-text"><strong>Cash</strong><span>Front desk payment</span></div>
+              </label>
+              <label class="addon">
+                <input id="pay_card" type="checkbox">
+                <div class="addon-text"><strong>Card Terminal</strong><span>Physical card reader</span></div>
+              </label>
+              <label class="addon">
+                <input id="pay_qr" type="checkbox">
+                <div class="addon-text"><strong>QR / E-wallet</strong><span>DuitNow, Touch 'n Go, GrabPay</span></div>
+              </label>
+              <label class="addon">
+                <input id="pay_online" type="checkbox">
+                <div class="addon-text"><strong>Online Payment</strong><span>Stripe / ToyyibPay / Billplz</span></div>
+              </label>
+            </div>
+          </div>
+
+          <div class="section-divider-label">Invoice Settings</div>
+          <div class="form-grid-2">
+            <div class="form-group">
+              <label for="cfg_invoicePrefix">Invoice Prefix <span class="req">*</span></label>
+              <select id="cfg_invoicePrefix" required>
+                <option>PAW</option>
+                <option>HP</option>
+                <option>INV</option>
+                <option>MEOW</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label for="cfg_taxName">Tax Format <span class="req">*</span></label>
+              <select id="cfg_taxName" required>
+                <option>SST 0%</option>
+                <option>SST 6%</option>
+                <option>GST 9%</option>
+                <option>No Tax</option>
+              </select>
+            </div>
+          </div>
+
+        </div>
+      </section>
+
+    </div>
+
+    <!-- ── Localization ──────────────────────────────────────── -->
+    <div class="settings-panel hidden" id="panel-localization">
+
+      <section class="bk-section setup-section">
+        <div class="setup-section-head">
+          <h3>🌐 Localization</h3>
+        </div>
+        <div class="setup-section-body">
+          <div class="form-grid-2">
+            <div class="form-group">
+              <label for="cfg_language">Language <span class="req">*</span></label>
+              <select id="cfg_language" required>
+                <option>English</option>
+                <option>Malay</option>
+                <option>Chinese</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label for="cfg_timezone">Timezone <span class="req">*</span></label>
+              <select id="cfg_timezone" required>
+                <option>Kuala Lumpur (GMT+8)</option>
+                <option>Singapore (GMT+8)</option>
+                <option>Bangkok (GMT+7)</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label for="cfg_currency">Currency <span class="req">*</span></label>
+              <select id="cfg_currency" required>
+                <option>MYR (RM)</option>
+                <option>SGD (S$)</option>
+                <option>THB (฿)</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label for="cfg_weight">Weight Unit <span class="req">*</span></label>
+              <select id="cfg_weight" required>
+                <option>kg</option>
+                <option>lb</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label for="cfg_height">Height Unit <span class="req">*</span></label>
+              <select id="cfg_height" required>
+                <option>cm</option>
+                <option>inch</option>
+              </select>
+            </div>
+          </div>
+        </div>
+      </section>
+
+    </div>
+
+    <!-- ── Services ──────────────────────────────────────────── -->
+    <div class="settings-panel hidden" id="panel-services">
+
+      <section class="bk-section setup-section">
+        <div class="setup-section-head">
+          <h3>🐾 Active Services</h3>
+          <span class="field-note" id="selectedServicesText"></span>
+        </div>
+        <div class="setup-section-body">
+          <p class="field-note">Services are chosen at registration. Contact support to add or remove a service category.</p>
+          <div class="service-config-grid" id="selectedServiceCards"></div>
+        </div>
+      </section>
+
+    </div>
+
+    <!-- ── Booking & WhatsApp ────────────────────────────────── -->
+    <div class="settings-panel hidden" id="panel-booking">
+
+      <section class="bk-section setup-section">
+        <div class="setup-section-head">
+          <h3>🔗 Booking Page &amp; WhatsApp API</h3>
+        </div>
+        <div class="setup-section-body">
+          <div class="form-grid-2">
+            <div class="form-group">
+              <label for="cfg_bookingUrl">Booking Page URL <span class="req">*</span></label>
+              <input type="url" id="cfg_bookingUrl" placeholder="pawfect.ai/yourbusiness">
+            </div>
+            <div class="form-group">
+              <label for="cfg_whatsapp">WhatsApp Business Number <span class="req">*</span></label>
+              <input type="tel" id="cfg_whatsapp" placeholder="+60 12-345 6789">
+            </div>
+            <div class="form-group full">
+              <label for="cfg_confirmRule">Booking Confirmation Rule <span class="req">*</span></label>
+              <select id="cfg_confirmRule" required>
+                <option value="">Select a rule</option>
+                <option>Auto-confirm if slot is available</option>
+                <option>Deposit required before confirmation</option>
+                <option>Required Staff Approval</option>
+              </select>
+            </div>
+          </div>
+        </div>
+      </section>
+
+    </div>
+
+    <!-- ── Accounts ──────────────────────────────────────────── -->
+    <div class="settings-panel hidden" id="panel-accounts">
+
+      <section class="bk-section setup-section">
+        <div class="setup-section-head">
+          <h3>👥 Team Accounts</h3>
+        </div>
+        <div class="setup-section-body">
+
+          <!-- Manager view: full account control -->
+          <div id="accountsManagerView">
+            <p class="field-note">Everyone below has staff-portal access under <strong id="accountsBusinessName">this business</strong>. Add a new teammate or remove one that no longer needs access.</p>
+
+            <div class="bk-table-wrap">
+              <table class="bk-table">
+                <thead>
+                  <tr>
+                    <th>Email</th>
+                    <th>Role</th>
+                    <th>Source</th>
+                    <th>Action</th>
+                  </tr>
+                </thead>
+                <tbody id="accountsTableBody"></tbody>
+              </table>
+            </div>
+
+            <div class="section-divider-label">Add Team Account</div>
+            <div class="form-grid-2">
+              <div class="form-group">
+                <label for="newAccountEmail">Email <span class="req">*</span></label>
+                <input type="email" id="newAccountEmail" placeholder="staff2@happypaws.my">
+              </div>
+              <div class="form-group">
+                <label for="newAccountPassword">Temporary Password <span class="req">*</span></label>
+                <input type="text" id="newAccountPassword" placeholder="password123">
+              </div>
+              <div class="form-group">
+                <label for="newAccountRole">Role <span class="req">*</span></label>
+                <select id="newAccountRole">
+                  <option value="Staff">Staff</option>
+                  <option value="Manager">Manager</option>
+                </select>
+              </div>
+            </div>
+            <div style="display:flex;align-items:center;gap:12px;">
+              <button class="btn btn-primary" type="button" onclick="addTeamAccount()">+ Add Account</button>
+              <span id="accountsAddNote" style="font-size:0.82rem;font-weight:700;"></span>
+            </div>
+          </div>
+
+          <!-- Staff view: read-only organization info -->
+          <div id="accountsStaffView" class="hidden">
+            <div class="snapshot-list">
+              <div class="snapshot-row">
+                <span class="snapshot-row-label">🏢 Organization</span>
+                <span class="snapshot-row-value" id="staffOrgName">—</span>
+              </div>
+              <div class="snapshot-row">
+                <span class="snapshot-row-label">👤 Your Role</span>
+                <span class="snapshot-row-value" id="staffOrgRole">—</span>
+              </div>
+              <div class="snapshot-row">
+                <span class="snapshot-row-label">✉️ Your Email</span>
+                <span class="snapshot-row-value" id="staffOrgEmail">—</span>
+              </div>
+            </div>
+            <p class="field-note" style="margin-top:16px;">Only a manager can add or remove team accounts.</p>
+          </div>
+
+        </div>
+      </section>
+
+    </div>
+
+    <!-- Save action bar -->
+    <section class="bk-section" style="display:flex;align-items:center;gap:16px;flex-wrap:wrap;">
+      <button class="btn btn-primary" type="button" onclick="saveBusinessSettings()">Save Changes</button>
+      <span id="settingsSavedNote" style="font-size:0.85rem;font-weight:700;color:#059669;opacity:0;transition:opacity 0.3s ease;">✓ Settings saved</span>
+    </section>
+
+  </main>
+</div>
+
+<script src="auth.js"></script>
+<script src="common.js"></script>
+</body>
+</html>

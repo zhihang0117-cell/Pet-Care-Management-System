@@ -189,11 +189,6 @@ function registerBusinessAccount() {
 }
 
 // ── Setup page helpers ────────────────────────────────────────────────────────
-function toggleDashPass(cb) {
-    const field = q('dashpass-field'), input = q('cfg_dashpass');
-    if (field) field.style.display = cb.checked ? 'block' : 'none';
-    if (input) input.required = cb.checked;
-}
 function showFilename(input, targetId) {
     const el = q(targetId);
     if (el && input.files.length) el.textContent = '📎 ' + input.files[0].name;

@@ -115,9 +115,10 @@
     <!-- Booking Mix + Top Services -->
     <div class="dash-chart-grid-2col">
 
-      <section class="bk-section">
+      <section class="bk-section dash-donut-card">
         <div class="bk-view-header" style="margin-bottom:16px;">
           <h3 class="overview-panel-title" style="margin-bottom:0;">Booking Mix by Service Category</h3>
+          <span class="overview-panel-sub" style="margin-bottom:0;" id="serviceMixSub"></span>
         </div>
         <div class="chart-donut-row">
           <div class="donut-chart" id="serviceMixDonut">
@@ -133,18 +134,18 @@
       <section class="bk-section">
         <div class="bk-view-header" style="margin-bottom:16px;">
           <h3 class="overview-panel-title" style="margin-bottom:0;">Top Services by Revenue</h3>
-          <span class="overview-panel-sub" style="margin-bottom:0;">All Time</span>
+          <span class="overview-panel-sub" style="margin-bottom:0;" id="topServicesSub"></span>
         </div>
         <div id="topServicesList" class="top-services-list"></div>
       </section>
 
     </div>
 
-    <!-- Operational Highlights + Branch Snapshot + Today's Schedule -->
+    <!-- Operational Highlights + Branch Snapshot + Schedule -->
     <div class="dash-ops-grid">
 
       <section class="bk-section">
-        <h3 class="overview-panel-title" style="margin-bottom:16px;">Operational Highlights <span class="overview-panel-sub" style="margin-bottom:0;">(Live)</span></h3>
+        <h3 class="overview-panel-title" style="margin-bottom:16px;">Operational Highlights</h3>
         <div class="ops-highlight-grid" id="opsHighlightGrid"></div>
       </section>
 
@@ -154,7 +155,10 @@
       </section>
 
       <section class="bk-section">
-        <h3 class="overview-panel-title" style="margin-bottom:16px;">Today's Schedule Overview</h3>
+        <div class="bk-view-header" style="margin-bottom:16px;">
+          <h3 class="overview-panel-title" style="margin-bottom:0;">Schedule Overview</h3>
+          <span class="overview-panel-sub" style="margin-bottom:0;" id="scheduleOverviewSub"></span>
+        </div>
         <div class="stacked-bar" id="scheduleStackedBar"></div>
         <div class="schedule-breakdown-list" id="scheduleBreakdownList"></div>
       </section>

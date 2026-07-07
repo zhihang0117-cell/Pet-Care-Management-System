@@ -110,6 +110,10 @@ document.addEventListener("DOMContentLoaded", () => {
   if (document.getElementById("kpiHeroGrid")) {
     initAnalyticsDashboard();
   }
+
+  if (document.getElementById("settingsTabs")) {
+    initSettings();
+  }
 });
 
 /* =========================
@@ -1458,6 +1462,103 @@ function renderServiceLoadChart() {
 }
 
 /* =========================
+   DONUT CHART (shared, interactive)
+========================= */
+
+function polarToCartesian(cx, cy, r, angleDeg) {
+  const rad = (angleDeg - 90) * Math.PI / 180;
+  return { x: cx + r * Math.cos(rad), y: cy + r * Math.sin(rad) };
+}
+
+function describeWedge(cx, cy, r, startAngle, endAngle) {
+  if (endAngle - startAngle >= 360) endAngle = startAngle + 359.99;
+  const startPt = polarToCartesian(cx, cy, r, startAngle);
+  const endPt = polarToCartesian(cx, cy, r, endAngle);
+  const largeArc = (endAngle - startAngle) > 180 ? 1 : 0;
+  return `M${cx},${cy} L${startPt.x},${startPt.y} A${r},${r} 0 ${largeArc} 1 ${endPt.x},${endPt.y} Z`;
+}
+
+function renderInteractiveDonut({ chartElId, totalElId, legendElId, segments, onSegmentClick }) {
+  const chartEl = q(chartElId);
+  const total = segments.reduce((sum, s) => sum + s.count, 0);
+  const cx = 50, cy = 50, r = 48;
+
+  let angle = 0;
+  const arcs = segments.filter(s => s.count > 0).map(s => {
+    const pct = total ? (s.count / total) * 100 : 0;
+    const startAngle = angle;
+    const endAngle = angle + pct * 3.6;
+    angle = endAngle;
+    return { ...s, pct, startAngle, endAngle };
+  });
+
+  const wedgesHtml = total
+    ? arcs.map(a => `<path class="donut-segment" data-key="${a.key}" d="${describeWedge(cx, cy, r, a.startAngle, a.endAngle)}" fill="${a.color}"></path>`).join("")
+    : `<circle cx="${cx}" cy="${cy}" r="${r}" fill="var(--accent-sand)"></circle>`;
+
+  chartEl.querySelectorAll(".donut-svg, .donut-tooltip").forEach(el => el.remove());
+  chartEl.insertAdjacentHTML("afterbegin", `
+    <svg class="donut-svg" viewBox="0 0 100 100">${wedgesHtml}</svg>
+    <div class="donut-tooltip"></div>
+  `);
+
+  if (totalElId) q(totalElId).textContent = total;
+
+  const svgEl = chartEl.querySelector(".donut-svg");
+  const tooltip = chartEl.querySelector(".donut-tooltip");
+  const segmentEls = svgEl.querySelectorAll(".donut-segment");
+
+  function showTooltip(seg) {
+    const mid = (seg.startAngle + seg.endAngle) / 2;
+    const pt = polarToCartesian(cx, cy, r * 0.82, mid);
+    const rect = svgEl.getBoundingClientRect();
+    tooltip.style.left = `${(pt.x / 100) * rect.width}px`;
+    tooltip.style.top = `${(pt.y / 100) * rect.height}px`;
+
+    tooltip.innerHTML = "";
+    const title = document.createElement("div");
+    title.className = "trend-tooltip-title";
+    title.textContent = seg.label;
+    const row = document.createElement("div");
+    row.className = "trend-tooltip-row";
+    const key = document.createElement("span");
+    key.className = "trend-tooltip-key";
+    key.style.backgroundColor = seg.color;
+    const val = document.createElement("span");
+    val.className = "trend-tooltip-value";
+    val.textContent = `${seg.count} (${Math.round(seg.pct)}%)`;
+    row.appendChild(key);
+    row.appendChild(val);
+    tooltip.appendChild(title);
+    tooltip.appendChild(row);
+    tooltip.classList.add("is-active");
+  }
+
+  function hideTooltip() { tooltip.classList.remove("is-active"); }
+
+  function setActive(activeKey) {
+    segmentEls.forEach(el => el.classList.toggle("is-active", el.dataset.key === activeKey));
+  }
+
+  segmentEls.forEach(pathEl => {
+    const seg = arcs.find(a => a.key === pathEl.dataset.key);
+    pathEl.style.cursor = onSegmentClick ? "pointer" : "default";
+    pathEl.addEventListener("pointerenter", () => { setActive(seg.key); showTooltip(seg); });
+    pathEl.addEventListener("pointerleave", () => { setActive(null); hideTooltip(); });
+    if (onSegmentClick) pathEl.addEventListener("click", () => onSegmentClick(seg.key));
+  });
+
+  if (legendElId) {
+    q(legendElId).querySelectorAll(".chart-legend-item").forEach(item => {
+      const key = item.dataset.key;
+      const seg = arcs.find(a => a.key === key);
+      item.addEventListener("pointerenter", () => { if (seg) { setActive(key); showTooltip(seg); } });
+      item.addEventListener("pointerleave", () => { setActive(null); hideTooltip(); });
+    });
+  }
+}
+
+/* =========================
    BOOKING STATUS DONUT
 ========================= */
 
@@ -1473,30 +1574,26 @@ function renderStatusDonut(filter) {
   const counts = STATUS_META.map(s => todayBookings.filter(b => b.status === s.key).length);
   const total = counts.reduce((a, b) => a + b, 0);
 
-  let cursorPct = 0;
-  const gradientParts = STATUS_META.map((s, i) => {
-    const pct = total ? (counts[i] / total) * 100 : 0;
-    const part = `${s.color} ${cursorPct}% ${cursorPct + pct}%`;
-    cursorPct += pct;
-    return part;
-  });
-  const gradient = total ? gradientParts.join(', ') : 'var(--accent-sand) 0% 100%';
-
-  q('statusDonut').style.background = `conic-gradient(${gradient})`;
-  q('statusDonutTotal').textContent = total;
-
   const scopeLabel = filter === 'all' ? 'All bookings' : `${filter.charAt(0).toUpperCase() + filter.slice(1)} bookings`;
   q('statusScopeLabel').textContent = scopeLabel;
 
   q('statusLegend').innerHTML = STATUS_META.map((s, i) => {
     const pct = total ? Math.round((counts[i] / total) * 100) : 0;
     return `
-      <div class="chart-legend-item" onclick="openServiceStatusDetail('${s.key}')">
+      <div class="chart-legend-item" data-key="${s.key}" onclick="openServiceStatusDetail('${s.key}')">
         <span class="legend-swatch" style="background-color:${s.color};"></span>
         <span>${s.label} ${counts[i]} (${pct}%)</span>
       </div>
     `;
   }).join('');
+
+  renderInteractiveDonut({
+    chartElId: 'statusDonut',
+    totalElId: 'statusDonutTotal',
+    legendElId: 'statusLegend',
+    segments: STATUS_META.map((s, i) => ({ key: s.key, label: s.label, count: counts[i], color: s.color })),
+    onSegmentClick: openServiceStatusDetail
+  });
 }
 
 /* =========================
@@ -1876,9 +1973,10 @@ function approveLoyalty(id) {
 ========================= */
 
 function renderHeaderMeta() {
-  const account = getCurrentAccount();
-  q('overviewRoleChip').textContent = `👤 ${account?.role || 'Staff'}`;
-  q('overviewDateChip').textContent = `🗓️ ${new Date().toLocaleDateString('en-MY', { weekday: 'long', day: '2-digit', month: 'short', year: 'numeric' })}`;
+  const now = new Date();
+  const datePart = now.toLocaleDateString('en-MY', { weekday: 'long', day: '2-digit', month: 'short', year: 'numeric' });
+  const timePart = now.toLocaleTimeString('en-MY', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+  q('overviewDateChip').textContent = `🗓️ ${datePart} · ${timePart}`;
 }
 
 function renderDailyOverview() {
@@ -1910,6 +2008,7 @@ function setupDailyOverview() {
   });
 
   renderDailyOverview();
+  setInterval(renderHeaderMeta, 1000);
 }
 
 /* ==========================================================================
@@ -2526,23 +2625,18 @@ function formatDate(dateString) {
    clickable (no fabricated drill-down for numbers that aren't real).
    ========================================================================== */
 
-const DASHBOARD_MOCK = {
-  repeatCustomerRate: 62,
-  customerSatisfaction: 4.6
-};
-
 const SERVICE_MIX_COLORS = { grooming: "#3B82F6", boarding: "#10B981", daycare: "#F59E0B" };
 
 const KPI_DEFS = [
-  { key: "revenue",      icon: "💰", color: "#3B82F6", label: "Total Revenue",               deltaPct: 12.4, onClick: "openKpiDetail('revenue')" },
-  { key: "bookings",     icon: "📅", color: "#059669", label: "Total Bookings",               deltaPct: 8.7,  onClick: "openKpiDetail('bookings')" },
-  { key: "repeat",       icon: "👥", color: "#7C3AED", label: "Repeat Customer Rate",          deltaPct: 5.3 },
-  { key: "occupancy",    icon: "🥧", color: "#D97706", label: "Occupancy / Slot Utilisation",  deltaPct: 6.1,  onClick: "openKpiDetail('occupancy')" },
-  { key: "satisfaction", icon: "⭐", color: "#CA8A04", label: "Customer Satisfaction",         deltaAbs: 0.2 }
+  { key: "revenue",   icon: "💰", color: "#3B82F6", label: "Total Revenue",               deltaPct: 12.4, onClick: "openKpiDetail('revenue')" },
+  { key: "bookings",  icon: "📅", color: "#059669", label: "Total Bookings",               deltaPct: 8.7,  onClick: "openKpiDetail('bookings')" },
+  { key: "repeat",    icon: "👥", color: "#7C3AED", label: "Repeat Customer Rate",          deltaPct: 5.3,  onClick: "openKpiDetail('repeat')" },
+  { key: "occupancy", icon: "🥧", color: "#D97706", label: "Occupancy / Slot Utilisation",  deltaPct: 6.1,  onClick: "openKpiDetail('occupancy')" }
 ];
 
 let currentDashboardPeriod = "weekly";
 let dashboardAnchorDate = today;
+let dashboardRange = null;
 let dashboardTrendBuckets = [];
 
 function shiftDashboardAnchor(step) {
@@ -2582,30 +2676,56 @@ function formatPeriodChip(period, range) {
   return `🗓️ ${periodRangeLabel(period, range)}`;
 }
 
+function isRoomOccupiedOnDate(roomId, date) {
+  return bookings.some(b => {
+    if (b.roomId !== roomId || b.status === "no_show") return false;
+    if (b.checkInDate && b.checkOutDate) return date >= b.checkInDate && date <= b.checkOutDate;
+    return b.date === date;
+  });
+}
+
+function computeOccupancyRate(range) {
+  if (!rooms.length) return 0;
+  const days = getDateRange(range.start, range.end);
+  if (!days.length) return 0;
+  const dailyRates = days.map(d => rooms.filter(r => isRoomOccupiedOnDate(r.id, d)).length / rooms.length);
+  return (dailyRates.reduce((a, b) => a + b, 0) / dailyRates.length) * 100;
+}
+
+function computeRepeatCustomerRate(periodBookings) {
+  const lifetimeCountByCustomer = {};
+  bookings.forEach(b => { lifetimeCountByCustomer[b.customerName] = (lifetimeCountByCustomer[b.customerName] || 0) + 1; });
+
+  const periodCustomers = [...new Set(periodBookings.map(b => b.customerName))];
+  if (!periodCustomers.length) return 0;
+
+  const repeatCount = periodCustomers.filter(name => lifetimeCountByCustomer[name] > 1).length;
+  return (repeatCount / periodCustomers.length) * 100;
+}
+
 function computeDashboardMetrics(period) {
   const range = getPeriodRange(period, dashboardAnchorDate);
+  dashboardRange = range;
   const periodBookings = bookings.filter(b => b.date >= range.start && b.date <= range.end);
   const totalRevenue = periodBookings.reduce((sum, b) => sum + b.amount, 0);
   const totalBookings = periodBookings.length;
 
-  const todayBookingsCount = bookings.filter(b => b.date === today).length;
-  const todayDoneCount = bookings.filter(b => b.date === today && b.status === "done").length;
-  const todayCompletionRate = todayBookingsCount ? (todayDoneCount / todayBookingsCount) * 100 : 0;
-  const noShowCount = bookings.filter(b => b.status === "no_show").length;
-  const noShowRate = bookings.length ? (noShowCount / bookings.length) * 100 : 0;
-  const slaCompliance = computeSlaCompliance();
+  const doneCount = periodBookings.filter(b => b.status === "done").length;
+  const completionRate = totalBookings ? (doneCount / totalBookings) * 100 : 0;
 
-  const roomsOccupiedToday = rooms.filter(r =>
-    bookings.some(b => b.roomId === r.id && b.date === today && b.status !== "no_show" && b.status !== "done")
-  ).length;
-  const occupancyRate = rooms.length ? (roomsOccupiedToday / rooms.length) * 100 : 0;
+  const noShowCount = periodBookings.filter(b => b.status === "no_show").length;
+  const noShowRate = totalBookings ? (noShowCount / totalBookings) * 100 : 0;
+
+  const slaCompliance = computeSlaCompliance();
+  const occupancyRate = computeOccupancyRate(range);
+  const repeatCustomerRate = computeRepeatCustomerRate(periodBookings);
 
   const serviceMix = ["grooming", "boarding", "daycare"].map(type => ({
-    type, count: bookings.filter(b => b.serviceType === type).length
+    type, count: periodBookings.filter(b => b.serviceType === type).length
   }));
 
   const revenueByService = {};
-  bookings.forEach(b => { revenueByService[b.serviceId] = (revenueByService[b.serviceId] || 0) + b.amount; });
+  periodBookings.forEach(b => { revenueByService[b.serviceId] = (revenueByService[b.serviceId] || 0) + b.amount; });
   const topServices = Object.entries(revenueByService)
     .map(([serviceId, revenue]) => ({ serviceId, service: findService(serviceId), revenue }))
     .sort((a, b) => b.revenue - a.revenue);
@@ -2613,8 +2733,9 @@ function computeDashboardMetrics(period) {
   const pendingTasks = buildActionQueue("all").length;
 
   return {
-    period, range, periodBookings, totalRevenue, totalBookings, todayBookingsCount,
-    todayCompletionRate, noShowRate, slaCompliance, occupancyRate, roomsOccupiedToday, serviceMix, topServices, pendingTasks
+    period, range, periodBookings, totalRevenue, totalBookings,
+    completionRate, noShowRate, slaCompliance, occupancyRate, repeatCustomerRate,
+    serviceMix, topServices, pendingTasks
   };
 }
 
@@ -2622,9 +2743,8 @@ function renderKpiHeroGrid(metrics) {
   const values = {
     revenue: formatCurrency(metrics.totalRevenue),
     bookings: metrics.totalBookings.toLocaleString("en-MY"),
-    repeat: `${DASHBOARD_MOCK.repeatCustomerRate}%`,
-    occupancy: `${Math.round(metrics.occupancyRate)}%`,
-    satisfaction: `${DASHBOARD_MOCK.customerSatisfaction} / 5.0`
+    repeat: `${Math.round(metrics.repeatCustomerRate)}%`,
+    occupancy: `${Math.round(metrics.occupancyRate)}%`
   };
 
   q("kpiHeroGrid").innerHTML = KPI_DEFS.map(def => {
@@ -2658,11 +2778,23 @@ function openKpiDetail(key) {
     const items = [...metrics.periodBookings].sort((a, b) => a.date.localeCompare(b.date) || a.time.localeCompare(b.time));
     openDetailModal("Total Bookings", `${items.length} booking(s) · ${label}`, items.map(bookingDetailRow).join(""), { label: "Open Booking Dashboard", href: "booking.html" });
   } else if (key === "occupancy") {
+    const days = getDateRange(metrics.range.start, metrics.range.end);
     const rows = rooms.map(r => {
-      const occupied = bookings.some(b => b.roomId === r.id && b.date === today && b.status !== "no_show" && b.status !== "done");
-      return renderDetailRow({ title: r.name, sub: `${r.type} · capacity ${r.capacity}`, tag: occupied ? "scheduled" : "done", tagLabel: occupied ? "Occupied" : "Available" });
+      const occupiedDays = days.filter(d => isRoomOccupiedOnDate(r.id, d)).length;
+      const pct = days.length ? Math.round((occupiedDays / days.length) * 100) : 0;
+      return renderDetailRow({ title: r.name, sub: `${r.type} · capacity ${r.capacity}`, tag: pct >= 50 ? "scheduled" : "done", tagLabel: `${occupiedDays}/${days.length} day(s) · ${pct}%` });
     }).join("");
-    openDetailModal("Room Occupancy Today", `${metrics.roomsOccupiedToday} of ${rooms.length} rooms occupied.`, rows, { label: "Open Booking Dashboard", href: "booking.html" });
+    openDetailModal("Room Occupancy", `Average ${Math.round(metrics.occupancyRate)}% occupancy · ${label}`, rows, { label: "Open Booking Dashboard", href: "booking.html" });
+  } else if (key === "repeat") {
+    const lifetimeCountByCustomer = {};
+    bookings.forEach(b => { lifetimeCountByCustomer[b.customerName] = (lifetimeCountByCustomer[b.customerName] || 0) + 1; });
+    const periodCustomers = [...new Set(metrics.periodBookings.map(b => b.customerName))];
+    const rows = periodCustomers.map(name => {
+      const lifetimeCount = lifetimeCountByCustomer[name];
+      const isRepeat = lifetimeCount > 1;
+      return renderDetailRow({ title: name, sub: `${lifetimeCount} lifetime booking(s)`, tag: isRepeat ? "scheduled" : "done", tagLabel: isRepeat ? "Repeat Customer" : "New Customer" });
+    }).join("");
+    openDetailModal("Repeat Customer Rate", `${Math.round(metrics.repeatCustomerRate)}% repeat · ${periodCustomers.length} customer(s) · ${label}`, rows, { label: "Open CRM", href: "profile.html" });
   }
 }
 
@@ -2724,8 +2856,108 @@ function openTrendBucketDetail(index) {
   openDetailModal(bucket.label, `${items.length} booking(s) in this period.`, items.map(bookingDetailRow).join(""), { label: "Open Booking Dashboard", href: "booking.html" });
 }
 
+function attachTrendInteraction(containerId, { width, height, pad, stepX, pointCount, labels, seriesDefs, onPointClick }) {
+  const container = q(containerId);
+  const svg = container.querySelector(".trend-chart-svg");
+  const crosshair = container.querySelector(".trend-crosshair");
+  const tooltip = container.querySelector(".trend-tooltip");
+  const hoverDots = container.querySelectorAll(".trend-hover-dot");
+  if (!svg || pointCount < 1) return;
+
+  function indexFromClientX(clientX) {
+    const rect = svg.getBoundingClientRect();
+    if (!rect.width) return 0;
+    const vbX = (clientX - rect.left) * (width / rect.width);
+    const rawIndex = Math.round((vbX - pad) / (stepX || 1));
+    return Math.min(pointCount - 1, Math.max(0, rawIndex));
+  }
+
+  function showAt(index) {
+    const x = pad + index * stepX;
+    const rect = svg.getBoundingClientRect();
+
+    crosshair.setAttribute("x1", x);
+    crosshair.setAttribute("x2", x);
+    crosshair.classList.add("is-active");
+
+    seriesDefs.forEach((s, si) => {
+      const y = height - pad - (s.values[index] / s.max) * (height - pad * 2);
+      hoverDots[si].setAttribute("cx", x);
+      hoverDots[si].setAttribute("cy", y);
+      hoverDots[si].classList.add("is-active");
+    });
+
+    const pxX = (x / width) * rect.width;
+    const tooltipHalfWidth = 80;
+    tooltip.style.left = `${Math.min(Math.max(pxX, tooltipHalfWidth), rect.width - tooltipHalfWidth)}px`;
+    tooltip.classList.add("is-active");
+
+    tooltip.innerHTML = "";
+    const titleEl = document.createElement("div");
+    titleEl.className = "trend-tooltip-title";
+    titleEl.textContent = labels[index] || "";
+    tooltip.appendChild(titleEl);
+
+    seriesDefs.forEach(s => {
+      const row = document.createElement("div");
+      row.className = "trend-tooltip-row";
+      const key = document.createElement("span");
+      key.className = "trend-tooltip-key";
+      key.style.backgroundColor = s.color;
+      row.appendChild(key);
+      if (s.label) {
+        const name = document.createElement("span");
+        name.className = "trend-tooltip-name";
+        name.textContent = s.label;
+        row.appendChild(name);
+      }
+      const val = document.createElement("span");
+      val.className = "trend-tooltip-value";
+      val.textContent = s.format ? s.format(s.values[index]) : s.values[index];
+      row.appendChild(val);
+      tooltip.appendChild(row);
+    });
+  }
+
+  function hide() {
+    crosshair.classList.remove("is-active");
+    hoverDots.forEach(d => d.classList.remove("is-active"));
+    tooltip.classList.remove("is-active");
+  }
+
+  svg.style.cursor = onPointClick ? "pointer" : "crosshair";
+  svg.addEventListener("pointermove", e => showAt(indexFromClientX(e.clientX)));
+  svg.addEventListener("pointerleave", hide);
+  if (onPointClick) svg.addEventListener("click", e => onPointClick(indexFromClientX(e.clientX)));
+}
+
+function smoothPath(points) {
+  if (points.length < 2) return "";
+  if (points.length === 2) return `M${points[0].x},${points[0].y} L${points[1].x},${points[1].y}`;
+
+  let d = `M${points[0].x},${points[0].y}`;
+  for (let i = 0; i < points.length - 1; i++) {
+    const p0 = points[i - 1] || points[i];
+    const p1 = points[i];
+    const p2 = points[i + 1];
+    const p3 = points[i + 2] || p2;
+
+    let cp1x = p1.x + (p2.x - p0.x) / 6;
+    let cp1y = p1.y + (p2.y - p0.y) / 6;
+    let cp2x = p2.x - (p3.x - p1.x) / 6;
+    let cp2y = p2.y - (p3.y - p1.y) / 6;
+
+    const yLo = Math.min(p1.y, p2.y), yHi = Math.max(p1.y, p2.y);
+    cp1y = Math.min(Math.max(cp1y, yLo), yHi);
+    cp2y = Math.min(Math.max(cp2y, yLo), yHi);
+
+    d += ` C${cp1x},${cp1y} ${cp2x},${cp2y} ${p2.x},${p2.y}`;
+  }
+  return d;
+}
+
 function renderAreaTrendChart(containerId, series, options) {
-  const { color = "#3B82F6", labels = [], area = true, onPointClick } = options;
+  const { color = "#3B82F6", labels = [], area = true, onPointClick, format = v => v } = options;
   const width = 600, height = 140, pad = 6;
   const max = Math.max(...series, 1) * 1.15;
   const stepX = series.length > 1 ? (width - pad * 2) / (series.length - 1) : 0;
@@ -2735,7 +2967,7 @@ function renderAreaTrendChart(containerId, series, options) {
     y: height - pad - (v / max) * (height - pad * 2)
   }));
 
-  const linePath = points.map((p, i) => `${i === 0 ? "M" : "L"}${p.x},${p.y}`).join(" ");
+  const linePath = smoothPath(points);
   const areaPath = area
     ? `${linePath} L${points[points.length - 1].x},${height - pad} L${points[0].x},${height - pad} Z`
     : "";
@@ -2745,24 +2977,34 @@ function renderAreaTrendChart(containerId, series, options) {
     return `<line class="trend-gridline" x1="${pad}" y1="${y}" x2="${width - pad}" y2="${y}" />`;
   }).join("");
 
-  const dots = points.map((p, i) => {
-    const hit = onPointClick ? `<circle class="trend-dot-hit" cx="${p.x}" cy="${p.y}" r="10" fill="transparent" style="cursor:pointer;" onclick="${onPointClick(i)}" />` : "";
-    return `${hit}<circle class="trend-dot" cx="${p.x}" cy="${p.y}" r="3.5" fill="${color}" style="${onPointClick ? "pointer-events:none;" : ""}" />`;
-  }).join("");
+  const dots = points.map(p => `<circle class="trend-dot" cx="${p.x}" cy="${p.y}" r="3.5" fill="${color}" />`).join("");
+  const last = points[points.length - 1];
 
   q(containerId).innerHTML = `
-    <svg class="trend-chart-svg" viewBox="0 0 ${width} ${height}" preserveAspectRatio="none">
-      ${gridLines}
-      ${area ? `<path class="trend-area" d="${areaPath}" fill="${color}" />` : ""}
-      <path class="trend-line" d="${linePath}" stroke="${color}" />
-      ${dots}
-    </svg>
+    <div class="trend-chart-surface">
+      <svg class="trend-chart-svg" viewBox="0 0 ${width} ${height}" preserveAspectRatio="none">
+        ${gridLines}
+        ${area ? `<path class="trend-area" d="${areaPath}" fill="${color}" />` : ""}
+        <path class="trend-line" d="${linePath}" stroke="${color}" />
+        ${dots}
+        <text class="trend-end-label" x="${width - pad}" y="${Math.max(last.y - 10, pad + 9)}">${format(series[series.length - 1])}</text>
+        <line class="trend-crosshair" x1="0" y1="${pad}" x2="0" y2="${height - pad}" />
+        <circle class="trend-hover-dot" r="5" fill="${color}" />
+      </svg>
+      <div class="trend-tooltip"></div>
+    </div>
     <div class="trend-chart-labels">${labels.map(l => `<span>${l}</span>`).join("")}</div>
   `;
+
+  attachTrendInteraction(containerId, {
+    width, height, pad, stepX, pointCount: series.length, labels,
+    seriesDefs: [{ color, label: null, values: series, max, format }],
+    onPointClick
+  });
 }
 
 function renderDualLineChart(containerId, seriesA, seriesB, options) {
-  const { colorA, colorB, labelA, labelB, labels = [], onPointClick } = options;
+  const { colorA, colorB, labelA, labelB, labels = [], onPointClick, format = v => v } = options;
   const width = 600, height = 140, pad = 6;
   const max = Math.max(...seriesA, ...seriesB, 1) * 1.15;
   const stepX = seriesA.length > 1 ? (width - pad * 2) / (seriesA.length - 1) : 0;
@@ -2775,14 +3017,11 @@ function renderDualLineChart(containerId, seriesA, seriesB, options) {
   }
 
   function toPath(points) {
-    return points.map((p, i) => `${i === 0 ? "M" : "L"}${p.x},${p.y}`).join(" ");
+    return smoothPath(points);
   }
 
   function toDots(points, color) {
-    return points.map((p, i) => {
-      const hit = onPointClick ? `<circle class="trend-dot-hit" cx="${p.x}" cy="${p.y}" r="10" fill="transparent" style="cursor:pointer;" onclick="${onPointClick(i)}" />` : "";
-      return `${hit}<circle class="trend-dot" cx="${p.x}" cy="${p.y}" r="3" fill="${color}" style="${onPointClick ? "pointer-events:none;" : ""}" />`;
-    }).join("");
+    return points.map(p => `<circle class="trend-dot" cx="${p.x}" cy="${p.y}" r="3" fill="${color}" />`).join("");
   }
 
   const pointsA = toPoints(seriesA);
@@ -2793,20 +3032,48 @@ function renderDualLineChart(containerId, seriesA, seriesB, options) {
     return `<line class="trend-gridline" x1="${pad}" y1="${y}" x2="${width - pad}" y2="${y}" />`;
   }).join("");
 
+  const lastA = pointsA[pointsA.length - 1];
+  const lastB = pointsB[pointsB.length - 1];
+  let labelYA = lastA.y - 8;
+  let labelYB = lastB.y - 8;
+  if (Math.abs(labelYA - labelYB) < 12) {
+    labelYA -= 6;
+    labelYB += 12;
+  }
+  labelYA = Math.min(Math.max(labelYA, pad + 9), height - pad);
+  labelYB = Math.min(Math.max(labelYB, pad + 9), height - pad);
+
   q(containerId).innerHTML = `
     <div class="trend-chart-legend">
       <span><span class="legend-swatch" style="background:${colorA};"></span>${labelA}</span>
       <span><span class="legend-swatch" style="background:${colorB};"></span>${labelB}</span>
     </div>
-    <svg class="trend-chart-svg" viewBox="0 0 ${width} ${height}" preserveAspectRatio="none">
-      ${gridLines}
-      <path class="trend-line" d="${toPath(pointsA)}" stroke="${colorA}" />
-      <path class="trend-line" d="${toPath(pointsB)}" stroke="${colorB}" />
-      ${toDots(pointsA, colorA)}
-      ${toDots(pointsB, colorB)}
-    </svg>
+    <div class="trend-chart-surface">
+      <svg class="trend-chart-svg" viewBox="0 0 ${width} ${height}" preserveAspectRatio="none">
+        ${gridLines}
+        <path class="trend-line" d="${toPath(pointsA)}" stroke="${colorA}" />
+        <path class="trend-line" d="${toPath(pointsB)}" stroke="${colorB}" />
+        ${toDots(pointsA, colorA)}
+        ${toDots(pointsB, colorB)}
+        <text class="trend-end-label" x="${width - pad}" y="${labelYA}">${format(seriesA[seriesA.length - 1])}</text>
+        <text class="trend-end-label" x="${width - pad}" y="${labelYB}">${format(seriesB[seriesB.length - 1])}</text>
+        <line class="trend-crosshair" x1="0" y1="${pad}" x2="0" y2="${height - pad}" />
+        <circle class="trend-hover-dot" r="4" fill="${colorA}" />
+        <circle class="trend-hover-dot" r="4" fill="${colorB}" />
+      </svg>
+      <div class="trend-tooltip"></div>
+    </div>
     <div class="trend-chart-labels">${labels.map(l => `<span>${l}</span>`).join("")}</div>
   `;
+
+  attachTrendInteraction(containerId, {
+    width, height, pad, stepX, pointCount: seriesA.length, labels,
+    seriesDefs: [
+      { color: colorA, label: labelA, values: seriesA, max, format },
+      { color: colorB, label: labelB, values: seriesB, max, format }
+    ],
+    onPointClick
+  });
 }
 
 function openServiceMixDetail(type) {
@@ -2817,35 +3084,33 @@ function openServiceMixDetail(type) {
 
 function renderServiceMixDonut(serviceMix) {
   const total = serviceMix.reduce((sum, s) => sum + s.count, 0);
-  let cursor = 0;
-
-  const gradientParts = serviceMix.map(s => {
-    const pct = total ? (s.count / total) * 100 : 0;
-    const part = `${SERVICE_MIX_COLORS[s.type]} ${cursor}% ${cursor + pct}%`;
-    cursor += pct;
-    return part;
-  });
-
-  q("serviceMixDonut").style.background = total ? `conic-gradient(${gradientParts.join(", ")})` : "var(--accent-sand)";
-  q("serviceMixTotal").textContent = total;
 
   q("serviceMixLegend").innerHTML = serviceMix.map(s => {
     const pct = total ? Math.round((s.count / total) * 100) : 0;
     const label = s.type.charAt(0).toUpperCase() + s.type.slice(1);
     return `
-      <div class="chart-legend-item" onclick="openServiceMixDetail('${s.type}')">
+      <div class="chart-legend-item" data-key="${s.type}" onclick="openServiceMixDetail('${s.type}')">
         <span class="legend-swatch" style="background:${SERVICE_MIX_COLORS[s.type]};"></span>
         <span>${label} ${s.count} (${pct}%)</span>
       </div>
     `;
   }).join("");
+
+  renderInteractiveDonut({
+    chartElId: "serviceMixDonut",
+    totalElId: "serviceMixTotal",
+    legendElId: "serviceMixLegend",
+    segments: serviceMix.map(s => ({ key: s.type, label: s.type.charAt(0).toUpperCase() + s.type.slice(1), count: s.count, color: SERVICE_MIX_COLORS[s.type] })),
+    onSegmentClick: openServiceMixDetail
+  });
 }
 
 function openTopServiceDetail(serviceId) {
-  const items = bookings.filter(b => b.serviceId === serviceId).sort((a, b) => b.date.localeCompare(a.date));
+  const items = bookings.filter(b => b.serviceId === serviceId && b.date >= dashboardRange.start && b.date <= dashboardRange.end).sort((a, b) => b.date.localeCompare(a.date));
   const service = findService(serviceId);
   const revenue = items.reduce((sum, b) => sum + b.amount, 0);
-  openDetailModal(`${service?.name || "Service"} — Bookings`, `${items.length} booking(s) · RM ${revenue.toLocaleString("en-MY")} total revenue`, items.map(bookingDetailRow).join(""), { label: "Open Booking Dashboard", href: "booking.html" });
+  const label = periodRangeLabel(currentDashboardPeriod, dashboardRange);
+  openDetailModal(`${service?.name || "Service"} — Bookings`, `${items.length} booking(s) · RM ${revenue.toLocaleString("en-MY")} total revenue · ${label}`, items.map(bookingDetailRow).join(""), { label: "Open Booking Dashboard", href: "booking.html" });
 }
 
 function renderTopServices(topServices) {
@@ -2889,21 +3154,26 @@ function openOpsHighlightDetail(key) {
     const rows = [...pendingGrooming.map(bookingDetailRow), ...pendingEnquiries.map(enquiryDetailRow), ...pendingLoyalty.map(loyaltyDetailRow)].join("");
     const total = pendingGrooming.length + pendingEnquiries.length + pendingLoyalty.length;
     openDetailModal("SLA Compliance", `${total} item(s) currently tracked against SLA.`, rows, { label: "Open Daily Overview", href: "dailyoverview.html" });
-  } else if (key === "noShow") {
-    const items = bookings.filter(b => b.status === "no_show");
-    openDetailModal("No-Show Bookings", `${items.length} booking(s) marked as no-show.`, items.map(bookingDetailRow).join(""), { label: "Open Booking Dashboard", href: "booking.html" });
+    return;
+  }
+
+  const label = periodRangeLabel(currentDashboardPeriod, dashboardRange);
+
+  if (key === "noShow") {
+    const items = bookings.filter(b => b.status === "no_show" && b.date >= dashboardRange.start && b.date <= dashboardRange.end);
+    openDetailModal("No-Show Bookings", `${items.length} booking(s) marked as no-show · ${label}`, items.map(bookingDetailRow).join(""), { label: "Open Booking Dashboard", href: "booking.html" });
   } else if (key === "completionRate") {
-    const items = bookings.filter(b => b.date === today).sort((a, b) => a.time.localeCompare(b.time));
-    openDetailModal("Today's Bookings — Completion Status", `${items.length} booking(s) scheduled today.`, items.map(bookingDetailRow).join(""), { label: "Open Daily Overview", href: "dailyoverview.html" });
+    const items = bookings.filter(b => b.date >= dashboardRange.start && b.date <= dashboardRange.end).sort((a, b) => a.date.localeCompare(b.date) || a.time.localeCompare(b.time));
+    openDetailModal("Completion Status", `${items.length} booking(s) · ${label}`, items.map(bookingDetailRow).join(""), { label: "Open Booking Dashboard", href: "booking.html" });
   }
 }
 
 function renderOpsHighlights(metrics) {
   const cards = [
-    { key: "pendingTasks", icon: "📋", color: "#3B82F6", label: "Pending Tasks", value: metrics.pendingTasks, sub: "Requires attention", tone: "neutral" },
-    { key: "slaCompliance", icon: "⏱️", color: "#059669", label: "SLA Compliance", value: `${metrics.slaCompliance.rate}%`, sub: metrics.slaCompliance.breaches ? `${metrics.slaCompliance.breaches} breached` : "All within SLA", tone: metrics.slaCompliance.rate < 80 ? "down" : "up" },
-    { key: "noShow", icon: "⚠️", color: "#D97706", label: "No-Show Rate", value: `${metrics.noShowRate.toFixed(1)}%`, sub: "of all bookings", tone: metrics.noShowRate > 8 ? "down" : "up" },
-    { key: "completionRate", icon: "✅", color: "#7C3AED", label: "Today's Completion Rate", value: `${Math.round(metrics.todayCompletionRate)}%`, sub: "of today's bookings", tone: metrics.todayCompletionRate >= 50 ? "up" : "neutral" }
+    { key: "pendingTasks", icon: "📋", color: "#3B82F6", label: "Pending Tasks", value: metrics.pendingTasks, sub: "Needs action now", tone: "neutral" },
+    { key: "slaCompliance", icon: "⏱️", color: "#059669", label: "SLA Compliance", value: `${metrics.slaCompliance.rate}%`, sub: metrics.slaCompliance.breaches ? `${metrics.slaCompliance.breaches} breached now` : "All within SLA", tone: metrics.slaCompliance.rate < 80 ? "down" : "up" },
+    { key: "noShow", icon: "⚠️", color: "#D97706", label: "No-Show Rate", value: `${metrics.noShowRate.toFixed(1)}%`, sub: "this period", tone: metrics.noShowRate > 8 ? "down" : "up" },
+    { key: "completionRate", icon: "✅", color: "#7C3AED", label: "Completion Rate", value: `${Math.round(metrics.completionRate)}%`, sub: "this period", tone: metrics.completionRate >= 50 ? "up" : "neutral" }
   ];
 
   q("opsHighlightGrid").innerHTML = cards.map(c => `
@@ -2946,16 +3216,16 @@ function renderSnapshot() {
 }
 
 function openScheduleDetail(type) {
-  const items = bookings.filter(b => b.serviceType === type && b.date === today);
+  const items = bookings.filter(b => b.serviceType === type && b.date >= dashboardRange.start && b.date <= dashboardRange.end);
   const label = type.charAt(0).toUpperCase() + type.slice(1);
-  openDetailModal(`Today's ${label} Bookings`, `${items.length} booking(s) today.`, items.map(bookingDetailRow).join(""), { label: "Open Daily Overview", href: "dailyoverview.html" });
+  const rangeLabel = periodRangeLabel(currentDashboardPeriod, dashboardRange);
+  openDetailModal(`${label} Bookings`, `${items.length} booking(s) · ${rangeLabel}`, items.map(bookingDetailRow).join(""), { label: "Open Booking Dashboard", href: "booking.html" });
 }
 
-function renderScheduleOverview() {
-  const todayBookings = bookings.filter(b => b.date === today);
-  const total = todayBookings.length;
+function renderScheduleOverview(periodBookings) {
+  const total = periodBookings.length;
   const mix = ["grooming", "boarding", "daycare"].map(type => ({
-    type, count: todayBookings.filter(b => b.serviceType === type).length
+    type, count: periodBookings.filter(b => b.serviceType === type).length
   }));
 
   q("scheduleStackedBar").innerHTML = mix.map(m => {
@@ -2987,12 +3257,19 @@ function renderAnalyticsDashboard() {
   const weekChip = q("dashboardWeekChip");
   if (weekChip) weekChip.textContent = formatPeriodChip(metrics.period, metrics.range);
 
+  const periodLabel = periodRangeLabel(metrics.period, metrics.range);
   const granularity = { daily: "Hourly", weekly: "Daily", monthly: "Weekly" }[metrics.period];
-  const trendSub = `${granularity} · ${periodRangeLabel(metrics.period, metrics.range)}`;
+  const trendSub = `${granularity} · ${periodLabel}`;
   const revenueTrendSub = q("revenueTrendSub");
   if (revenueTrendSub) revenueTrendSub.textContent = trendSub;
   const customerGrowthSub = q("customerGrowthSub");
   if (customerGrowthSub) customerGrowthSub.textContent = trendSub;
+  const topServicesSub = q("topServicesSub");
+  if (topServicesSub) topServicesSub.textContent = periodLabel;
+  const serviceMixSub = q("serviceMixSub");
+  if (serviceMixSub) serviceMixSub.textContent = periodLabel;
+  const scheduleOverviewSub = q("scheduleOverviewSub");
+  if (scheduleOverviewSub) scheduleOverviewSub.textContent = periodLabel;
 
   renderKpiHeroGrid(metrics);
 
@@ -3000,7 +3277,7 @@ function renderAnalyticsDashboard() {
   const trendLabels = trendSeries.map(s => s.label);
 
   renderAreaTrendChart("revenueTrendChart", trendSeries.map(s => s.revenue), {
-    color: "#3B82F6", labels: trendLabels, onPointClick: i => `openTrendBucketDetail(${i})`
+    color: "#3B82F6", labels: trendLabels, format: formatCurrency, onPointClick: openTrendBucketDetail
   });
 
   renderServiceMixDonut(metrics.serviceMix);
@@ -3010,12 +3287,12 @@ function renderAnalyticsDashboard() {
     "customerGrowthChart",
     trendSeries.map(s => s.newCustomers),
     trendSeries.map(s => s.returningCustomers),
-    { colorA: "#3B82F6", colorB: "#10B981", labelA: "New Customers", labelB: "Returning Customers", labels: trendLabels, onPointClick: i => `openTrendBucketDetail(${i})` }
+    { colorA: "#3B82F6", colorB: "#10B981", labelA: "New Customers", labelB: "Returning Customers", labels: trendLabels, format: v => `${v}`, onPointClick: openTrendBucketDetail }
   );
 
   renderOpsHighlights(metrics);
   renderSnapshot();
-  renderScheduleOverview();
+  renderScheduleOverview(metrics.periodBookings);
 }
 
 function initAnalyticsDashboard() {
@@ -3042,4 +3319,329 @@ function initAnalyticsDashboard() {
   });
 
   renderAnalyticsDashboard();
+}
+
+/* ==========================================================================
+   SETTINGS (setting.html)
+   Business-configuration form ported from reg-setup.html, reorganised into
+   tabs. Persisted per business under pawfect_business_settings_<businessKey>
+   so changes survive a reload; editing the business name also propagates
+   into the account records so the sidebar/dashboard pick it up immediately.
+   ========================================================================== */
+
+const SETTINGS_DEFAULTS = {
+  logoName: "",
+  businessName: "", country: "Malaysia", street: "", city: "", state: "", zip: "", description: "",
+  hours: { Mon: "09:30 AM – 06:30 PM", Tue: "09:30 AM – 06:30 PM", Wed: "09:30 AM – 06:30 PM", Thu: "09:30 AM – 06:30 PM", Fri: "09:30 AM – 06:30 PM", Sat: "10:00 AM – 05:00 PM", Sun: "Closed" },
+  closedDates: "",
+  payment: { cash: true, card: true, qr: true, online: false },
+  invoicePrefix: "PAW", taxName: "SST 6%",
+  language: "English", timezone: "Kuala Lumpur (GMT+8)", currency: "MYR (RM)", weightUnit: "kg", heightUnit: "cm",
+  policies: {},
+  bookingUrl: "", whatsapp: "", confirmRule: "Auto-confirm if slot is available"
+};
+
+const SERVICE_META = {
+  grooming: { icon: "✂️", label: "Grooming" },
+  boarding: { icon: "🏨", label: "Boarding / Hotel" },
+  daycare: { icon: "🌞", label: "Daycare" }
+};
+
+function settingsStorageKey() {
+  const account = getCurrentAccount();
+  return "pawfect_business_settings_" + (account?.businessKey || "default");
+}
+
+function loadBusinessSettings() {
+  try {
+    const raw = localStorage.getItem(settingsStorageKey());
+    return raw ? { ...SETTINGS_DEFAULTS, ...JSON.parse(raw) } : { ...SETTINGS_DEFAULTS };
+  } catch (e) {
+    return { ...SETTINGS_DEFAULTS };
+  }
+}
+
+function showFilename(input, targetId) {
+  const el = q(targetId);
+  if (el && input.files.length) el.textContent = "📎 " + input.files[0].name;
+}
+
+function renderServicePolicyCards(account) {
+  const activeServices = account?.services || ["grooming", "boarding", "daycare"];
+  const settings = loadBusinessSettings();
+
+  const textEl = q("selectedServicesText");
+  if (textEl) textEl.textContent = activeServices.map(type => `${SERVICE_META[type]?.icon || "🐾"} ${SERVICE_META[type]?.label || type}`).join(" · ");
+
+  q("selectedServiceCards").innerHTML = activeServices.map(type => {
+    const meta = SERVICE_META[type] || { icon: "🐾", label: type };
+    const savedName = settings.policies?.[type];
+    return `
+      <div class="service-config-card">
+        <h3>${meta.icon} ${meta.label}</h3>
+        <p class="muted">Upload your ${meta.label.toLowerCase()} service policy document.</p>
+        <label class="logo-upload-label" for="policy_${type}">
+          <span class="upload-icon">📄</span>
+          <p id="policyFileName_${type}">${savedName ? "📎 " + savedName : "Click to upload policy file<br>(PDF, TXT, DOCX — max 10 MB)"}</p>
+          <input type="file" id="policy_${type}" accept=".pdf,.txt,.docx" onchange="showFilename(this,'policyFileName_${type}')">
+        </label>
+      </div>
+    `;
+  }).join("");
+}
+
+function populateSettingsForm(s, account) {
+  q("cfg_businessName").value = s.businessName || account?.businessName || "";
+  q("cfg_country").value = s.country;
+  q("cfg_street").value = s.street;
+  q("cfg_city").value = s.city;
+  q("cfg_state").value = s.state;
+  q("cfg_zip").value = s.zip;
+  q("cfg_description").value = s.description;
+  if (s.logoName) q("logoFileName").textContent = "📎 " + s.logoName;
+
+  ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"].forEach(day => { q("hour_" + day).value = s.hours[day] || ""; });
+  q("cfg_closedDates").value = s.closedDates;
+
+  q("pay_cash").checked = !!s.payment.cash;
+  q("pay_card").checked = !!s.payment.card;
+  q("pay_qr").checked = !!s.payment.qr;
+  q("pay_online").checked = !!s.payment.online;
+  q("cfg_invoicePrefix").value = s.invoicePrefix;
+  q("cfg_taxName").value = s.taxName;
+  q("cfg_language").value = s.language;
+  q("cfg_timezone").value = s.timezone;
+  q("cfg_currency").value = s.currency;
+  q("cfg_weight").value = s.weightUnit;
+  q("cfg_height").value = s.heightUnit;
+
+  q("cfg_bookingUrl").value = s.bookingUrl;
+  q("cfg_whatsapp").value = s.whatsapp;
+  q("cfg_confirmRule").value = s.confirmRule;
+}
+
+function collectServicePolicyNames() {
+  const account = getCurrentAccount();
+  const activeServices = account?.services || ["grooming", "boarding", "daycare"];
+  const existing = loadBusinessSettings().policies || {};
+  const result = {};
+  activeServices.forEach(type => {
+    const input = q("policy_" + type);
+    result[type] = input?.files[0]?.name || existing[type] || "";
+  });
+  return result;
+}
+
+function collectBusinessSettings() {
+  const existingLogo = loadBusinessSettings().logoName;
+  return {
+    logoName: q("cfg_logo").files[0]?.name || existingLogo || "",
+    businessName: q("cfg_businessName").value.trim(),
+    country: q("cfg_country").value,
+    street: q("cfg_street").value,
+    city: q("cfg_city").value,
+    state: q("cfg_state").value,
+    zip: q("cfg_zip").value,
+    description: q("cfg_description").value,
+    hours: {
+      Mon: q("hour_Mon").value, Tue: q("hour_Tue").value, Wed: q("hour_Wed").value,
+      Thu: q("hour_Thu").value, Fri: q("hour_Fri").value, Sat: q("hour_Sat").value, Sun: q("hour_Sun").value
+    },
+    closedDates: q("cfg_closedDates").value,
+    payment: { cash: q("pay_cash").checked, card: q("pay_card").checked, qr: q("pay_qr").checked, online: q("pay_online").checked },
+    invoicePrefix: q("cfg_invoicePrefix").value,
+    taxName: q("cfg_taxName").value,
+    language: q("cfg_language").value,
+    timezone: q("cfg_timezone").value,
+    currency: q("cfg_currency").value,
+    weightUnit: q("cfg_weight").value,
+    heightUnit: q("cfg_height").value,
+    policies: collectServicePolicyNames(),
+    bookingUrl: q("cfg_bookingUrl").value,
+    whatsapp: q("cfg_whatsapp").value,
+    confirmRule: q("cfg_confirmRule").value
+  };
+}
+
+function saveBusinessSettings() {
+  const settings = collectBusinessSettings();
+  localStorage.setItem(settingsStorageKey(), JSON.stringify(settings));
+
+  const account = getCurrentAccount();
+  if (account && settings.businessName && settings.businessName !== account.businessName) {
+    account.businessName = settings.businessName;
+    localStorage.setItem("pawfect_current_account", JSON.stringify(account));
+
+    const email = String(account.email || "").toLowerCase();
+    if (email) {
+      try {
+        const stateRaw = localStorage.getItem("pawfect_account_state_" + email);
+        const state = stateRaw ? JSON.parse(stateRaw) : {};
+        state.businessName = settings.businessName;
+        localStorage.setItem("pawfect_account_state_" + email, JSON.stringify(state));
+      } catch (e) { /* ignore malformed stored state */ }
+    }
+
+    renderSidebarAccount();
+    const chip = q("settingsBusinessChip");
+    if (chip) chip.textContent = `🏢 ${settings.businessName}`;
+  }
+
+  const note = q("settingsSavedNote");
+  if (note) {
+    note.style.opacity = "1";
+    clearTimeout(window.__settingsSavedTimer);
+    window.__settingsSavedTimer = setTimeout(() => { note.style.opacity = "0"; }, 2200);
+  }
+}
+
+function initSettings() {
+  const account = getCurrentAccount();
+  const chip = q("settingsBusinessChip");
+  if (chip) chip.textContent = `🏢 ${account?.businessName || "Business"}`;
+
+  document.querySelectorAll("#settingsTabs .tab-btn").forEach(btn => {
+    btn.addEventListener("click", () => {
+      document.querySelectorAll("#settingsTabs .tab-btn").forEach(b => b.classList.remove("active"));
+      btn.classList.add("active");
+      document.querySelectorAll(".settings-panel").forEach(panel => {
+        panel.classList.toggle("hidden", panel.id !== `panel-${btn.dataset.panel}`);
+      });
+    });
+  });
+
+  renderServicePolicyCards(account);
+  populateSettingsForm(loadBusinessSettings(), account);
+  renderAccountsPanel();
+}
+
+/* =========================
+   TEAM ACCOUNTS (Manager: full control · Staff: read-only)
+========================= */
+
+function customAccountsForSettings() {
+  try { return JSON.parse(localStorage.getItem("pawfect_custom_accounts") || "[]"); }
+  catch (e) { return []; }
+}
+
+function removedSeedAccountEmails() {
+  try { return JSON.parse(localStorage.getItem("pawfect_removed_seed_accounts") || "[]"); }
+  catch (e) { return []; }
+}
+
+function getBusinessAccounts(businessKey) {
+  const removedSeeds = removedSeedAccountEmails();
+
+  const seed = Object.values(DEMO_ACCOUNTS)
+    .filter(a => a.businessKey === businessKey && !removedSeeds.includes(a.email.toLowerCase()))
+    .map(a => ({ email: a.email, role: a.role, businessKey: a.businessKey, source: "seed" }));
+
+  const custom = customAccountsForSettings()
+    .filter(a => a.businessKey === businessKey)
+    .map(a => ({ email: a.email, role: a.role, businessKey: a.businessKey, source: "custom" }));
+
+  const byEmail = new Map();
+  [...seed, ...custom].forEach(a => byEmail.set(a.email.toLowerCase(), a));
+  return [...byEmail.values()];
+}
+
+function renderAccountsPanel() {
+  const account = getCurrentAccount();
+  const manager = isManager(account);
+
+  q("accountsManagerView").classList.toggle("hidden", !manager);
+  q("accountsStaffView").classList.toggle("hidden", manager);
+
+  if (!manager) {
+    q("staffOrgName").textContent = account?.businessName || "—";
+    q("staffOrgRole").textContent = account?.role || "—";
+    q("staffOrgEmail").textContent = account?.email || "—";
+    return;
+  }
+
+  const nameEl = q("accountsBusinessName");
+  if (nameEl) nameEl.textContent = account?.businessName || "this business";
+
+  const list = getBusinessAccounts(account?.businessKey);
+  const currentEmail = String(account?.email || "").toLowerCase();
+
+  q("accountsTableBody").innerHTML = list.map(a => {
+    const isSelf = a.email.toLowerCase() === currentEmail;
+    return `
+      <tr>
+        <td>${a.email}${isSelf ? ' <span class="field-note">(you)</span>' : ""}</td>
+        <td><span class="status-tag ${a.role === "Manager" ? "status-scheduled" : "status-done"}">${a.role}</span></td>
+        <td>${a.source === "seed" ? "Default" : "Added"}</td>
+        <td><button class="edit-btn" onclick="removeTeamAccount('${a.email}','${a.source}')">Remove</button></td>
+      </tr>
+    `;
+  }).join("");
+}
+
+function addTeamAccount() {
+  const account = getCurrentAccount();
+  const email = q("newAccountEmail").value.trim().toLowerCase();
+  const password = q("newAccountPassword").value;
+  const role = q("newAccountRole").value;
+  const note = q("accountsAddNote");
+
+  if (!email || !password) {
+    if (note) { note.textContent = "Enter an email and password."; note.style.color = "#DC2626"; }
+    return;
+  }
+
+  const alreadyExists = getBusinessAccounts(account?.businessKey).some(a => a.email.toLowerCase() === email);
+  if (alreadyExists) {
+    if (note) { note.textContent = "An account with this email already exists."; note.style.color = "#DC2626"; }
+    return;
+  }
+
+  const list = customAccountsForSettings().filter(a => a.email.toLowerCase() !== email);
+  list.push({
+    email, password, role,
+    businessKey: account?.businessKey, businessName: account?.businessName,
+    blankData: false, setupCompleted: true, services: account?.services || ["grooming", "boarding", "daycare"]
+  });
+  localStorage.setItem("pawfect_custom_accounts", JSON.stringify(list));
+
+  q("newAccountEmail").value = "";
+  q("newAccountPassword").value = "";
+  q("newAccountRole").value = "Staff";
+  if (note) { note.textContent = "✓ Account added."; note.style.color = "#059669"; }
+
+  renderAccountsPanel();
+}
+
+function removeTeamAccount(email, source) {
+  const account = getCurrentAccount();
+  const normalizedEmail = email.toLowerCase();
+  const list = getBusinessAccounts(account?.businessKey);
+  const target = list.find(a => a.email.toLowerCase() === normalizedEmail);
+  if (!target) return;
+
+  const managerCount = list.filter(a => a.role === "Manager").length;
+  if (target.role === "Manager" && managerCount <= 1) {
+    alert("You can't remove the only manager account for this business.");
+    return;
+  }
+
+  if (!confirm(`Remove ${email} from ${account?.businessName || "this business"}? This cannot be undone.`)) return;
+
+  if (source === "seed") {
+    const removed = removedSeedAccountEmails();
+    if (!removed.includes(normalizedEmail)) removed.push(normalizedEmail);
+    localStorage.setItem("pawfect_removed_seed_accounts", JSON.stringify(removed));
+  } else {
+    const updated = customAccountsForSettings().filter(a => a.email.toLowerCase() !== normalizedEmail);
+    localStorage.setItem("pawfect_custom_accounts", JSON.stringify(updated));
+  }
+
+  const isSelf = normalizedEmail === String(account?.email || "").toLowerCase();
+  if (isSelf) {
+    localStorage.removeItem("pawfect_current_account");
+    location.href = "login.html";
+    return;
+  }
+
+  renderAccountsPanel();
 }
