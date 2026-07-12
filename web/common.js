@@ -88,6 +88,10 @@ const CALENDAR_HOURS = [
 ========================= */
 
 document.addEventListener("DOMContentLoaded", () => {
+  if (document.getElementById("liveDateTime")) {
+    initLiveClock();
+  }
+
   if (document.getElementById("kanbanBoard")) {
     setupTabs();
     setupModalEvents();
@@ -114,7 +118,27 @@ document.addEventListener("DOMContentLoaded", () => {
   if (document.getElementById("settingsTabs")) {
     initSettings();
   }
+
+  if (document.getElementById("loyaltyPendingBody")) {
+    initLoyaltyPage();
+  }
 });
+
+/* =========================
+   LIVE DATE & TIME
+========================= */
+
+function initLiveClock() {
+  const el = q("liveDateTime");
+  const render = () => {
+    const now = new Date();
+    const dateStr = now.toLocaleDateString("en-US", { weekday: "short", day: "numeric", month: "short", year: "numeric" });
+    const timeStr = now.toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+    el.textContent = `🗓️ ${dateStr} · ${timeStr}`;
+  };
+  render();
+  setInterval(render, 1000);
+}
 
 /* =========================
    SETUP EVENTS
@@ -1972,15 +1996,7 @@ function approveLoyalty(id) {
    DAILY OVERVIEW INIT
 ========================= */
 
-function renderHeaderMeta() {
-  const now = new Date();
-  const datePart = now.toLocaleDateString('en-MY', { weekday: 'long', day: '2-digit', month: 'short', year: 'numeric' });
-  const timePart = now.toLocaleTimeString('en-MY', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
-  q('overviewDateChip').textContent = `🗓️ ${datePart} · ${timePart}`;
-}
-
 function renderDailyOverview() {
-  renderHeaderMeta();
   q('actionCards').innerHTML = buildActionCards(currentFilter).map(renderActionCard).join('');
   renderServiceLoadChart();
   renderRoomStatus(currentFilter);
@@ -2008,7 +2024,6 @@ function setupDailyOverview() {
   });
 
   renderDailyOverview();
-  setInterval(renderHeaderMeta, 1000);
 }
 
 /* ==========================================================================
@@ -2614,6 +2629,187 @@ function formatDate(dateString) {
     month: "short",
     year: "numeric"
   });
+}
+
+/* ==========================================================================
+   LOYALTY PROGRAM (loyalty.html)
+   Members are derived from the shared CRM customer records (existing
+   loyalty_id), plus any approved new-member sign-up requests below. Point
+   balances/tiers are deterministic mock values, not tracked transactionally.
+   ========================================================================== */
+
+let loyaltyMemberRequests = [
+  { id: 'LOYREG001', customerName: 'Nabila Hassan', phone: '+60 12-345 9901', requestedAt: '09:10', status: 'pending' },
+  { id: 'LOYREG002', customerName: 'Kelvin Ooi',     phone: '+60 12-345 9902', requestedAt: '10:35', status: 'pending' }
+];
+
+const LOYALTY_TIERS = [
+  { min: 1200, name: 'Platinum' },
+  { min: 700,  name: 'Gold' },
+  { min: 300,  name: 'Silver' },
+  { min: 0,    name: 'Bronze' }
+];
+
+function getLoyaltyTier(points) {
+  return LOYALTY_TIERS.find(tier => points >= tier.min).name;
+}
+
+function getMemberPoints(customerId) {
+  const n = parseInt(customerId.replace('CUST-', ''), 10) || 1;
+  return (n * 137 + 220) % 1800 + 50;
+}
+
+function buildLoyaltyMembers() {
+  const fromCrm = customers.map(c => ({
+    member_id: c.loyalty_id,
+    full_name: c.full_name,
+    phone: c.phone,
+    photo_icon: c.photo_icon,
+    points: getMemberPoints(c.customer_id)
+  }));
+
+  const fromApprovedRegs = loyaltyMemberRequests
+    .filter(r => r.status === 'approved')
+    .map(r => ({
+      member_id: r.id.replace('LOYREG', 'LOY-N'),
+      full_name: r.customerName,
+      phone: r.phone,
+      photo_icon: '👤',
+      points: 100
+    }));
+
+  return [...fromCrm, ...fromApprovedRegs].map(m => ({ ...m, tier: getLoyaltyTier(m.points) }));
+}
+
+function countApprovedRedemptions(fullName) {
+  return loyaltyRequests.filter(r => r.customerName === fullName && r.status === 'approved').length;
+}
+
+const loyaltySearchInput = document.getElementById("loyaltySearchInput");
+const loyaltyPendingBody = document.getElementById("loyaltyPendingBody");
+const loyaltyMemberBody = document.getElementById("loyaltyMemberBody");
+const loyaltyPendingRecordCount = document.getElementById("loyaltyPendingRecordCount");
+const loyaltyMemberRecordCount = document.getElementById("loyaltyMemberRecordCount");
+
+function initLoyaltyPage() {
+  document.querySelectorAll("#loyaltyTabs .tab-btn").forEach(btn => {
+    btn.addEventListener("click", () => {
+      document.querySelectorAll("#loyaltyTabs .tab-btn").forEach(b => b.classList.remove("active"));
+      btn.classList.add("active");
+      document.getElementById("loyaltyPendingPanel").classList.toggle("hidden", btn.dataset.panel !== "pending");
+      document.getElementById("loyaltyMembersPanel").classList.toggle("hidden", btn.dataset.panel !== "members");
+    });
+  });
+
+  loyaltySearchInput.addEventListener("input", renderLoyaltyLists);
+
+  updateLoyaltyKPI();
+  renderLoyaltyLists();
+}
+
+function updateLoyaltyKPI() {
+  const members = buildLoyaltyMembers();
+  const pendingCount =
+    loyaltyRequests.filter(r => r.status === "pending").length +
+    loyaltyMemberRequests.filter(r => r.status === "pending").length;
+  const pointsRedeemed = loyaltyRequests
+    .filter(r => r.status === "approved")
+    .reduce((sum, r) => sum + r.points, 0);
+
+  document.getElementById("loyaltyTotalMembers").textContent = members.length;
+  document.getElementById("loyaltyPendingCount").textContent = pendingCount;
+  document.getElementById("loyaltyGoldCount").textContent = members.filter(m => m.tier === "Gold" || m.tier === "Platinum").length;
+  document.getElementById("loyaltyPointsRedeemed").textContent = pointsRedeemed;
+}
+
+function renderLoyaltyLists() {
+  const searchValue = loyaltySearchInput.value.toLowerCase().trim();
+  renderLoyaltyPendingTable(searchValue);
+  renderLoyaltyMemberTable(searchValue);
+}
+
+function renderLoyaltyPendingTable(searchValue) {
+  const redemptions = loyaltyRequests
+    .filter(r => r.status === "pending")
+    .map(r => ({
+      id: r.id, member: r.customerName, type: r.type, detail: `${r.points} pts`,
+      requestedAt: r.requestedAt, kind: "redemption"
+    }));
+
+  const registrations = loyaltyMemberRequests
+    .filter(r => r.status === "pending")
+    .map(r => ({
+      id: r.id, member: r.customerName, type: "New Member Registration", detail: r.phone,
+      requestedAt: r.requestedAt, kind: "registration"
+    }));
+
+  const combined = [...redemptions, ...registrations]
+    .filter(item => item.member.toLowerCase().includes(searchValue) || item.type.toLowerCase().includes(searchValue))
+    .sort((a, b) => a.requestedAt.localeCompare(b.requestedAt));
+
+  loyaltyPendingRecordCount.textContent = `${combined.length} pending`;
+
+  if (combined.length === 0) {
+    loyaltyPendingBody.innerHTML = `<tr><td colspan="6" class="empty-row">No pending approvals.</td></tr>`;
+    return;
+  }
+
+  loyaltyPendingBody.innerHTML = combined.map(item => `
+    <tr>
+      <td><span class="key-chip">${item.id}</span></td>
+      <td><span class="profile-name">${item.member}</span></td>
+      <td>${item.type}</td>
+      <td>${item.detail}</td>
+      <td>${item.requestedAt}</td>
+      <td>
+        <button class="edit-btn" onclick="${item.kind === 'redemption' ? `approveLoyaltyRedemption('${item.id}')` : `approveLoyaltyRegistration('${item.id}')`}">Approve</button>
+      </td>
+    </tr>
+  `).join("");
+}
+
+function renderLoyaltyMemberTable(searchValue) {
+  const members = buildLoyaltyMembers().filter(m =>
+    m.full_name.toLowerCase().includes(searchValue) ||
+    m.phone.toLowerCase().includes(searchValue) ||
+    (m.member_id || "").toLowerCase().includes(searchValue)
+  );
+
+  loyaltyMemberRecordCount.textContent = `${members.length} members`;
+
+  if (members.length === 0) {
+    loyaltyMemberBody.innerHTML = `<tr><td colspan="5" class="empty-row">No member record found.</td></tr>`;
+    return;
+  }
+
+  loyaltyMemberBody.innerHTML = members
+    .sort((a, b) => b.points - a.points)
+    .map(m => `
+      <tr>
+        <td>
+          <span class="profile-name">${m.photo_icon || "👤"} ${m.full_name}</span>
+          <span class="profile-sub">${m.phone}</span>
+        </td>
+        <td><span class="key-chip">${m.member_id}</span></td>
+        <td><span class="status-tag tier-${m.tier.toLowerCase()}">${m.tier}</span></td>
+        <td>${m.points.toLocaleString()} pts</td>
+        <td>${countApprovedRedemptions(m.full_name)}</td>
+      </tr>
+    `).join("");
+}
+
+function approveLoyaltyRedemption(id) {
+  const request = loyaltyRequests.find(r => r.id === id);
+  if (request) request.status = "approved";
+  updateLoyaltyKPI();
+  renderLoyaltyLists();
+}
+
+function approveLoyaltyRegistration(id) {
+  const request = loyaltyMemberRequests.find(r => r.id === id);
+  if (request) request.status = "approved";
+  updateLoyaltyKPI();
+  renderLoyaltyLists();
 }
 
 /* ==========================================================================
@@ -3296,10 +3492,6 @@ function renderAnalyticsDashboard() {
 }
 
 function initAnalyticsDashboard() {
-  const account = getCurrentAccount();
-  const businessChip = q("dashboardBusinessChip");
-  if (businessChip) businessChip.textContent = `🏢 ${account?.businessName || "Business"} · Active`;
-
   document.querySelectorAll("#dashboardPeriodToggle .tab-btn").forEach(btn => {
     btn.addEventListener("click", () => {
       document.querySelectorAll("#dashboardPeriodToggle .tab-btn").forEach(b => b.classList.remove("active"));
@@ -3483,8 +3675,6 @@ function saveBusinessSettings() {
     }
 
     renderSidebarAccount();
-    const chip = q("settingsBusinessChip");
-    if (chip) chip.textContent = `🏢 ${settings.businessName}`;
   }
 
   const note = q("settingsSavedNote");
@@ -3497,8 +3687,6 @@ function saveBusinessSettings() {
 
 function initSettings() {
   const account = getCurrentAccount();
-  const chip = q("settingsBusinessChip");
-  if (chip) chip.textContent = `🏢 ${account?.businessName || "Business"}`;
 
   document.querySelectorAll("#settingsTabs .tab-btn").forEach(btn => {
     btn.addEventListener("click", () => {

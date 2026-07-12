@@ -1974,6 +1974,11 @@ select {
 .status-done      { background: #D1FAE5; color: #065F46; }
 .status-no_show   { background: #FEE2E2; color: #991B1B; }
 
+.tier-platinum { background: #EDE9FE; color: #5B21B6; }
+.tier-gold     { background: #FEF3C7; color: #92400E; }
+.tier-silver   { background: #F1F5F9; color: #475569; }
+.tier-bronze   { background: #FFE4D5; color: #9A3412; }
+
 /* ==========================================================================
    Dashboard — Listing view
    ========================================================================== */
@@ -2091,6 +2096,10 @@ select {
     font-weight: 600;
     color: var(--text-charcoal);
     white-space: nowrap;
+}
+
+.live-clock {
+    margin-left: auto;
 }
 
 .overview-panel-title {
