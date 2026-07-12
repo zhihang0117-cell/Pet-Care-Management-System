@@ -113,6 +113,7 @@
       <div class="bk-tab-group" id="loyaltyTabs">
         <button class="tab-btn active" data-panel="pending">🕒 Pending List</button>
         <button class="tab-btn" data-panel="members">🎖️ Member List</button>
+        <button class="tab-btn" data-panel="rules">⚙️ Point &amp; Redemption Rules</button>
       </div>
     </section>
 
@@ -150,7 +151,7 @@
         <table class="bk-table">
           <thead>
             <tr>
-              <th>Member</th><th>Loyalty ID</th><th>Tier</th><th>Points Balance</th><th>Redemptions Made</th>
+              <th>Member</th><th>Loyalty ID</th><th>Tier</th><th>Points Balance</th><th>Redemptions Made</th><th>Action</th>
             </tr>
           </thead>
           <tbody id="loyaltyMemberBody"></tbody>
@@ -158,7 +159,53 @@
       </div>
     </section>
 
+    <!-- Point & Redemption Rules -->
+    <section class="bk-section hidden" id="loyaltyRulesPanel">
+      <div class="bk-view-header" style="margin-bottom:16px;">
+        <div>
+          <h2 style="font-family:var(--font-serif);font-size:1.15rem;font-weight:700;margin-bottom:2px;">Point Earning Rate</h2>
+          <p style="font-size:0.78rem;color:var(--text-muted);">How many loyalty points a member earns per RM spent</p>
+        </div>
+      </div>
+      <div style="display:flex;gap:12px;flex-wrap:wrap;align-items:flex-end;">
+        <div class="form-group" style="max-width:220px;">
+          <label>Points earned per RM1 spent</label>
+          <input type="number" id="loyaltyEarnRateInput" min="0" step="0.1" />
+        </div>
+        <button class="btn btn-primary" onclick="saveLoyaltyEarnRate()" style="height:40px;">Save Rate</button>
+      </div>
+
+      <div class="bk-view-header" style="margin:28px 0 16px;padding-top:20px;border-top:1px solid var(--accent-sand);">
+        <div>
+          <h2 style="font-family:var(--font-serif);font-size:1.15rem;font-weight:700;margin-bottom:2px;">Redemption Rules</h2>
+          <p style="font-size:0.78rem;color:var(--text-muted);">How many points a member needs to redeem a discount or free service</p>
+        </div>
+        <button class="btn btn-primary" onclick="openRuleForm()">+ Add Rule</button>
+      </div>
+      <div class="bk-table-wrap">
+        <table class="bk-table">
+          <thead>
+            <tr>
+              <th>Points Required</th><th>Reward</th><th>Type</th><th>Action</th>
+            </tr>
+          </thead>
+          <tbody id="loyaltyRulesBody"></tbody>
+        </table>
+      </div>
+    </section>
+
   </main>
+</div>
+
+<!-- ── Detail Modal ──────────────────────────────────────────── -->
+<div class="bk-modal-backdrop" id="detailPage">
+  <div class="bk-modal" style="width:min(860px,100%);max-height:90vh;overflow-y:auto;">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:24px;">
+      <h2 id="detailTitle" style="margin:0;"></h2>
+      <button class="close-btn" onclick="closeDetailPage()">×</button>
+    </div>
+    <form id="detailForm" class="detail-form"></form>
+  </div>
 </div>
 
 <script src="auth.js"></script>

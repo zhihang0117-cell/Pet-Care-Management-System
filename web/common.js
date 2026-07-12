@@ -122,6 +122,10 @@ document.addEventListener("DOMContentLoaded", () => {
   if (document.getElementById("loyaltyPendingBody")) {
     initLoyaltyPage();
   }
+
+  if (document.getElementById("paymentPendingBody")) {
+    initPaymentPage();
+  }
 });
 
 /* =========================
@@ -248,7 +252,7 @@ function setupCalendarSlotEvents() {
       if (!booking) return;
       const newDate = cell.dataset.date;
       const newTime = cell.dataset.time || booking.time;
-      if (!canAddBookingToSlot(newDate, newTime, booking.staffId, booking.id)) {
+      if (!canAddBookingToSlot(newDate, newTime, booking.staffId, booking.duration, booking.id)) {
         alert("This slot is not available. Maximum 3 bookings are allowed per timeslot, and staff cannot be duplicated.");
         draggedBookingId = null;
         return;
@@ -743,7 +747,13 @@ function openNewBooking() {
 }
 
 function createBookingFromSlot(date, time) {
-  const availableStaff = getAvailableStaffForSlot(date, time);
+  const defaultService = services.find(service => {
+    if (currentServiceFilter === "all") return service.type === "grooming";
+    return service.type === currentServiceFilter;
+  });
+  const duration = defaultService?.duration || 60;
+
+  const availableStaff = getAvailableStaffForSlot(date, time, duration);
 
   if (getSlotBookings(date, time).length >= 3 || availableStaff.length === 0) {
     alert("This timeslot is fully booked. Maximum 3 bookings are allowed, and each booking must use a different staff.");
@@ -751,11 +761,6 @@ function createBookingFromSlot(date, time) {
   }
 
   const newId = `B${String(++_bookingIdCounter).padStart(3, "0")}`;
-
-  const defaultService = services.find(service => {
-    if (currentServiceFilter === "all") return service.type === "grooming";
-    return service.type === currentServiceFilter;
-  });
 
   _newBookingDraft = {
     id: newId,
@@ -767,7 +772,7 @@ function createBookingFromSlot(date, time) {
     roomId: "",
     date,
     time,
-    duration: defaultService?.duration || 60,
+    duration,
     status: "scheduled",
     amount: defaultService?.price || 0,
     checkInDate: "",
@@ -944,8 +949,9 @@ function saveBooking() {
   const newDate = document.getElementById("bookingDate").value;
   const newTime = document.getElementById("bookingTime").value;
   const newStaffId = document.getElementById("staffName").value;
+  const newDuration = Number(document.getElementById("duration").value);
 
-  if (!canAddBookingToSlot(newDate, newTime, newStaffId, bookingId)) {
+  if (!canAddBookingToSlot(newDate, newTime, newStaffId, newDuration, bookingId)) {
     alert("This booking cannot be saved. The selected timeslot already has 3 bookings or the selected staff is already assigned at this time.");
     return;
   }
@@ -958,7 +964,7 @@ function saveBooking() {
   booking.roomId = document.getElementById("roomName").value;
   booking.date = newDate;
   booking.time = newTime;
-  booking.duration = Number(document.getElementById("duration").value);
+  booking.duration = newDuration;
   booking.status = document.getElementById("bookingStatus").value;
   booking.amount = Number(document.getElementById("amount").value);
   booking.checkInDate = document.getElementById("checkInDate").value;
@@ -1119,29 +1125,39 @@ function getSlotBookings(date, time, excludeBookingId = "") {
   });
 }
 
-function isStaffAlreadyBooked(date, time, staffId, excludeBookingId = "") {
+function timeToMinutes(timeStr) {
+  const [hours, minutes] = timeStr.split(":").map(Number);
+  return hours * 60 + minutes;
+}
+
+function isStaffAlreadyBooked(date, time, staffId, duration = 60, excludeBookingId = "") {
+  const newStart = timeToMinutes(time);
+  const newEnd = newStart + duration;
+
   return bookings.some(booking => {
-    return booking.date === date &&
-      booking.time === time &&
-      booking.staffId === staffId &&
-      booking.id !== excludeBookingId;
+    if (booking.date !== date || booking.staffId !== staffId || booking.id === excludeBookingId) {
+      return false;
+    }
+    const existingStart = timeToMinutes(booking.time);
+    const existingEnd = existingStart + booking.duration;
+    return newStart < existingEnd && existingStart < newEnd;
   });
 }
 
-function getAvailableStaffForSlot(date, time, excludeBookingId = "") {
+function getAvailableStaffForSlot(date, time, duration = 60, excludeBookingId = "") {
   return staff.filter(member => {
-    return !isStaffAlreadyBooked(date, time, member.id, excludeBookingId);
+    return !isStaffAlreadyBooked(date, time, member.id, duration, excludeBookingId);
   });
 }
 
-function canAddBookingToSlot(date, time, staffId, excludeBookingId = "") {
+function canAddBookingToSlot(date, time, staffId, duration = 60, excludeBookingId = "") {
   const slotBookings = getSlotBookings(date, time, excludeBookingId);
 
   if (slotBookings.length >= 3) {
     return false;
   }
 
-  if (isStaffAlreadyBooked(date, time, staffId, excludeBookingId)) {
+  if (isStaffAlreadyBooked(date, time, staffId, duration, excludeBookingId)) {
     return false;
   }
 
@@ -1168,10 +1184,10 @@ function renderAddSlotArea(date, time) {
   `;
 }
 
-function findFirstAvailableTime(date) {
+function findFirstAvailableTime(date, duration = 60) {
   return CALENDAR_HOURS.find(hour => {
     const slotBookings = getSlotBookings(date, hour);
-    const availableStaff = getAvailableStaffForSlot(date, hour);
+    const availableStaff = getAvailableStaffForSlot(date, hour, duration);
 
     return slotBookings.length < 3 && availableStaff.length > 0;
   });
@@ -2698,6 +2714,7 @@ function initLoyaltyPage() {
       btn.classList.add("active");
       document.getElementById("loyaltyPendingPanel").classList.toggle("hidden", btn.dataset.panel !== "pending");
       document.getElementById("loyaltyMembersPanel").classList.toggle("hidden", btn.dataset.panel !== "members");
+      document.getElementById("loyaltyRulesPanel").classList.toggle("hidden", btn.dataset.panel !== "rules");
     });
   });
 
@@ -2705,6 +2722,7 @@ function initLoyaltyPage() {
 
   updateLoyaltyKPI();
   renderLoyaltyLists();
+  renderLoyaltyRulesPanel();
 }
 
 function updateLoyaltyKPI() {
@@ -2762,6 +2780,7 @@ function renderLoyaltyPendingTable(searchValue) {
       <td>${item.detail}</td>
       <td>${item.requestedAt}</td>
       <td>
+        <button class="action-btn" onclick="openLoyaltyPendingDetail('${item.id}','${item.kind}')">View</button>
         <button class="edit-btn" onclick="${item.kind === 'redemption' ? `approveLoyaltyRedemption('${item.id}')` : `approveLoyaltyRegistration('${item.id}')`}">Approve</button>
       </td>
     </tr>
@@ -2778,7 +2797,7 @@ function renderLoyaltyMemberTable(searchValue) {
   loyaltyMemberRecordCount.textContent = `${members.length} members`;
 
   if (members.length === 0) {
-    loyaltyMemberBody.innerHTML = `<tr><td colspan="5" class="empty-row">No member record found.</td></tr>`;
+    loyaltyMemberBody.innerHTML = `<tr><td colspan="6" class="empty-row">No member record found.</td></tr>`;
     return;
   }
 
@@ -2791,9 +2810,10 @@ function renderLoyaltyMemberTable(searchValue) {
           <span class="profile-sub">${m.phone}</span>
         </td>
         <td><span class="key-chip">${m.member_id}</span></td>
-        <td><span class="status-tag tier-${m.tier.toLowerCase()}">${m.tier}</span></td>
+        <td><span class="status-tag status-${m.tier.toLowerCase()}">${m.tier}</span></td>
         <td>${m.points.toLocaleString()} pts</td>
         <td>${countApprovedRedemptions(m.full_name)}</td>
+        <td><button class="action-btn" onclick="openLoyaltyMemberDetail('${m.member_id}')">View</button></td>
       </tr>
     `).join("");
 }
@@ -2803,6 +2823,7 @@ function approveLoyaltyRedemption(id) {
   if (request) request.status = "approved";
   updateLoyaltyKPI();
   renderLoyaltyLists();
+  closeDetailPage();
 }
 
 function approveLoyaltyRegistration(id) {
@@ -2810,6 +2831,554 @@ function approveLoyaltyRegistration(id) {
   if (request) request.status = "approved";
   updateLoyaltyKPI();
   renderLoyaltyLists();
+  closeDetailPage();
+}
+
+function openLoyaltyPendingDetail(id, kind) {
+  const isReg = kind === "registration";
+  const item = isReg ? loyaltyMemberRequests.find(r => r.id === id) : loyaltyRequests.find(r => r.id === id);
+  if (!item) return;
+
+  detailPage.style.display = "flex";
+  detailTitle.textContent = isReg ? `New Member Registration · ${item.id}` : `Loyalty Redemption · ${item.id}`;
+
+  detailForm.innerHTML = `
+    <div class="form-group">
+      <label>Request ID</label>
+      <input value="${item.id}" readonly />
+    </div>
+
+    <div class="form-group">
+      <label>Member</label>
+      <input value="${item.customerName}" readonly />
+    </div>
+
+    ${isReg ? `
+    <div class="form-group">
+      <label>Phone</label>
+      <input value="${item.phone}" readonly />
+    </div>
+    ` : `
+    <div class="form-group">
+      <label>Redemption Type</label>
+      <input value="${item.type}" readonly />
+    </div>
+
+    <div class="form-group">
+      <label>Points</label>
+      <input value="${item.points} pts" readonly />
+    </div>
+
+    <div class="form-group">
+      <label>Related Service</label>
+      <input value="${item.relatedService}" readonly />
+    </div>
+    `}
+
+    <div class="form-group">
+      <label>Requested At</label>
+      <input value="${item.requestedAt}" readonly />
+    </div>
+
+    <div class="form-group">
+      <label>Status</label>
+      <input value="${item.status}" readonly />
+    </div>
+
+    <div class="form-actions">
+      <button type="button" class="cancel-btn" onclick="closeDetailPage()">Close</button>
+      ${item.status === "pending" ? `<button type="button" class="save-btn" onclick="${isReg ? `approveLoyaltyRegistration('${item.id}')` : `approveLoyaltyRedemption('${item.id}')`}">Approve</button>` : ""}
+    </div>
+  `;
+}
+
+function openLoyaltyMemberDetail(memberId) {
+  const member = buildLoyaltyMembers().find(m => m.member_id === memberId);
+  if (!member) return;
+
+  const memberBookings = bookings
+    .filter(b => b.customerName === member.full_name)
+    .sort((a, b) => new Date(b.date) - new Date(a.date));
+
+  detailPage.style.display = "flex";
+  detailTitle.textContent = `Member Info · ${member.member_id}`;
+
+  detailForm.innerHTML = `
+    <div class="form-group">
+      <label>Loyalty ID</label>
+      <input value="${member.member_id}" readonly />
+    </div>
+
+    <div class="form-group">
+      <label>Name</label>
+      <input value="${member.full_name}" readonly />
+    </div>
+
+    <div class="form-group">
+      <label>Phone</label>
+      <input value="${member.phone}" readonly />
+    </div>
+
+    <div class="form-group">
+      <label>Tier</label>
+      <input value="${member.tier}" readonly />
+    </div>
+
+    <div class="form-group">
+      <label>Points Balance</label>
+      <input value="${member.points.toLocaleString()} pts" readonly />
+    </div>
+
+    <div class="form-group">
+      <label>Redemptions Made</label>
+      <input value="${countApprovedRedemptions(member.full_name)}" readonly />
+    </div>
+
+    <div class="form-group full">
+      <label>Linked Bookings</label>
+      <div class="crm-pet-list">
+        ${memberBookings.length === 0
+          ? `<p class="crm-pet-empty">No bookings linked to this member.</p>`
+          : memberBookings.map(b => `
+              <div class="crm-pet-card">
+                <div class="crm-pet-info">
+                  <span class="profile-name">${b.petName} · ${b.serviceType.charAt(0).toUpperCase()}${b.serviceType.slice(1)}</span>
+                  <span class="profile-sub">${formatDate(b.date)} · RM ${b.amount}</span>
+                </div>
+                <span class="status-tag status-${b.status}">${b.status.replace("_", " ")}</span>
+              </div>
+            `).join("")
+        }
+      </div>
+    </div>
+
+    <div class="form-actions">
+      <button type="button" class="cancel-btn" onclick="closeDetailPage()">Close</button>
+      <a class="btn btn-secondary" href="booking.html">Open Booking Dashboard</a>
+    </div>
+  `;
+}
+
+/* ==========================================================================
+   LOYALTY PROGRAM RULES (loyalty.html)
+   Points-per-RM earn rate and the redemption rules (points -> discount or
+   free service) are configurable and persisted per business, so they carry
+   over across sessions the same way business settings do.
+   ========================================================================== */
+
+const LOYALTY_RULES_DEFAULTS = {
+  earnRate: 1,
+  redemptionRules: [
+    { id: "RULE1", points: 200, reward: "RM10 Voucher", type: "discount", value: 10 },
+    { id: "RULE2", points: 400, reward: "RM20 Voucher", type: "discount", value: 20 },
+    { id: "RULE3", points: 800, reward: "Free Grooming Session", type: "free", value: 0 },
+    { id: "RULE4", points: 1200, reward: "Free Boarding Night", type: "free", value: 0 }
+  ]
+};
+
+function loyaltyRulesStorageKey() {
+  const account = getCurrentAccount();
+  return "pawfect_loyalty_rules_" + (account?.businessKey || "default");
+}
+
+function loadLoyaltyRules() {
+  try {
+    const raw = localStorage.getItem(loyaltyRulesStorageKey());
+    return raw ? { ...LOYALTY_RULES_DEFAULTS, ...JSON.parse(raw) } : { ...LOYALTY_RULES_DEFAULTS };
+  } catch (e) {
+    return { ...LOYALTY_RULES_DEFAULTS };
+  }
+}
+
+function persistLoyaltyRules(rules) {
+  localStorage.setItem(loyaltyRulesStorageKey(), JSON.stringify(rules));
+}
+
+function renderLoyaltyRulesPanel() {
+  const rules = loadLoyaltyRules();
+
+  const earnRateInput = document.getElementById("loyaltyEarnRateInput");
+  if (earnRateInput) earnRateInput.value = rules.earnRate;
+
+  document.getElementById("loyaltyRulesBody").innerHTML = rules.redemptionRules.map(r => `
+    <tr>
+      <td>${r.points.toLocaleString()} pts</td>
+      <td>${r.reward}</td>
+      <td>${r.type === "discount" ? `Discount (RM ${r.value})` : "Free Service"}</td>
+      <td>
+        <button class="edit-btn" onclick="openRuleForm('${r.id}')">Edit</button>
+      </td>
+    </tr>
+  `).join("");
+}
+
+function saveLoyaltyEarnRate() {
+  const rules = loadLoyaltyRules();
+  rules.earnRate = Number(document.getElementById("loyaltyEarnRateInput").value) || 0;
+  persistLoyaltyRules(rules);
+  renderLoyaltyRulesPanel();
+}
+
+function removeLoyaltyRule(ruleId) {
+  const rules = loadLoyaltyRules();
+  rules.redemptionRules = rules.redemptionRules.filter(r => r.id !== ruleId);
+  persistLoyaltyRules(rules);
+  renderLoyaltyRulesPanel();
+}
+
+function openRuleForm(ruleId = null) {
+  const isEdit = Boolean(ruleId);
+  const rules = loadLoyaltyRules();
+  const rule = isEdit
+    ? rules.redemptionRules.find(r => r.id === ruleId)
+    : { points: "", reward: "", type: "discount", value: "" };
+  if (isEdit && !rule) return;
+
+  detailPage.style.display = "flex";
+  detailTitle.textContent = isEdit ? `Edit Redemption Rule · ${rule.reward}` : "Add Redemption Rule";
+
+  detailForm.innerHTML = `
+    <div class="form-group">
+      <label>Points Required</label>
+      <input type="number" name="points" min="1" placeholder="e.g. 200" value="${rule.points}" required />
+    </div>
+
+    <div class="form-group">
+      <label>Reward Name</label>
+      <input name="reward" placeholder="e.g. RM10 Voucher" value="${rule.reward}" required />
+    </div>
+
+    <div class="form-group">
+      <label>Reward Type</label>
+      <select name="type" id="ruleTypeSelect" onchange="document.getElementById('ruleValueGroup').classList.toggle('hidden', this.value !== 'discount')">
+        <option value="discount" ${rule.type === "discount" ? "selected" : ""}>Discount (RM value)</option>
+        <option value="free" ${rule.type === "free" ? "selected" : ""}>Free Service</option>
+      </select>
+    </div>
+
+    <div class="form-group" id="ruleValueGroup">
+      <label>Discount Value (RM)</label>
+      <input type="number" name="value" min="0" placeholder="e.g. 10" value="${rule.value || ""}" />
+    </div>
+
+    <div class="form-actions">
+      <button type="button" class="cancel-btn" onclick="closeDetailPage()">Cancel</button>
+      ${isEdit ? `<button type="button" class="btn btn-secondary bk-danger-btn" onclick="removeLoyaltyRule('${rule.id}')">Remove Rule</button>` : ""}
+      <button type="submit" class="save-btn">${isEdit ? "Save Rule" : "Add Rule"}</button>
+    </div>
+  `;
+
+  detailForm.onsubmit = function(event) {
+    event.preventDefault();
+    const formData = new FormData(detailForm);
+    const latestRules = loadLoyaltyRules();
+
+    const updated = {
+      id: isEdit ? rule.id : `RULE${latestRules.redemptionRules.length + 1}_${Date.now()}`,
+      points: Number(formData.get("points")) || 0,
+      reward: formData.get("reward"),
+      type: formData.get("type"),
+      value: formData.get("type") === "discount" ? (Number(formData.get("value")) || 0) : 0
+    };
+
+    if (isEdit) {
+      const index = latestRules.redemptionRules.findIndex(r => r.id === rule.id);
+      latestRules.redemptionRules[index] = updated;
+    } else {
+      latestRules.redemptionRules.push(updated);
+    }
+
+    persistLoyaltyRules(latestRules);
+    renderLoyaltyRulesPanel();
+    closeDetailPage();
+  };
+}
+
+/* ==========================================================================
+   PAYMENT (payment.html)
+   Each booking becomes one payment record: final amount = base service price
+   + add-ons − loyalty redemption deduction (RM-voucher redemptions deduct
+   their RM value; "Free ..." redemptions cover the full base price). Each
+   approved loyalty redemption is applied to at most one matching booking.
+   ========================================================================== */
+
+const SERVICE_ADDONS = {
+  grooming: [
+    { id: "AO1", name: "Nail Trimming", price: 15 },
+    { id: "AO2", name: "Teeth Brushing", price: 20 },
+    { id: "AO3", name: "De-shedding Treatment", price: 30 }
+  ],
+  boarding: [
+    { id: "AO4", name: "Extra Playtime", price: 25 },
+    { id: "AO5", name: "Medication Administration", price: 15 }
+  ],
+  daycare: [
+    { id: "AO6", name: "Extra Meal", price: 10 },
+    { id: "AO7", name: "Photo Update Package", price: 12 }
+  ]
+};
+
+const PAYMENT_METHODS = ["Cash", "Card", "QR Pay", "Bank Transfer"];
+
+function getBookingAddons(booking, index) {
+  const pool = SERVICE_ADDONS[booking.serviceType] || [];
+  return pool.slice(0, index % (pool.length + 1));
+}
+
+function parseVoucherRM(type) {
+  return parseInt(type.match(/RM(\d+)/)?.[1] || "0", 10);
+}
+
+function buildPaymentRecords() {
+  const consumedRedemptions = new Set();
+  const earnRate = loadLoyaltyRules().earnRate;
+
+  return bookings.map((b, i) => {
+    const addons = getBookingAddons(b, i);
+    const addonsTotal = addons.reduce((sum, a) => sum + a.price, 0);
+
+    const redemption = loyaltyRequests.find(r =>
+      r.status === "approved" &&
+      !consumedRedemptions.has(r.id) &&
+      r.customerName === b.customerName &&
+      r.relatedService === b.serviceType
+    );
+
+    let loyaltyDiscount = 0;
+    let loyaltyNote = "";
+    let loyaltyPointsSpent = 0;
+    if (redemption) {
+      consumedRedemptions.add(redemption.id);
+      loyaltyDiscount = redemption.type.startsWith("Free") ? b.amount : parseVoucherRM(redemption.type);
+      loyaltyNote = redemption.type;
+      loyaltyPointsSpent = redemption.points;
+    }
+
+    const finalAmount = Math.max(0, b.amount + addonsTotal - loyaltyDiscount);
+
+    return {
+      payment_id: `PAY-${String(i + 1).padStart(4, "0")}`,
+      booking_id: b.id,
+      customerName: b.customerName,
+      petName: b.petName,
+      serviceType: b.serviceType,
+      serviceName: services.find(s => s.id === b.serviceId)?.name || b.serviceType,
+      date: b.date,
+      basePrice: b.amount,
+      addons,
+      addonsTotal,
+      loyaltyDiscount,
+      loyaltyNote,
+      loyaltyPointsSpent,
+      loyaltyPointsEarned: Math.round(finalAmount * earnRate),
+      finalAmount,
+      method: PAYMENT_METHODS[i % PAYMENT_METHODS.length],
+      status: i % 3 === 0 ? "pending" : "verified"
+    };
+  });
+}
+
+let paymentRecords = buildPaymentRecords();
+
+const paymentSearchInput = document.getElementById("paymentSearchInput");
+const paymentPendingBody = document.getElementById("paymentPendingBody");
+const paymentHistoryBody = document.getElementById("paymentHistoryBody");
+const paymentPendingRecordCount = document.getElementById("paymentPendingRecordCount");
+const paymentHistoryRecordCount = document.getElementById("paymentHistoryRecordCount");
+
+function initPaymentPage() {
+  document.querySelectorAll("#paymentTabs .tab-btn").forEach(btn => {
+    btn.addEventListener("click", () => {
+      document.querySelectorAll("#paymentTabs .tab-btn").forEach(b => b.classList.remove("active"));
+      btn.classList.add("active");
+      document.getElementById("paymentPendingPanel").classList.toggle("hidden", btn.dataset.panel !== "pending");
+      document.getElementById("paymentHistoryPanel").classList.toggle("hidden", btn.dataset.panel !== "history");
+    });
+  });
+
+  paymentSearchInput.addEventListener("input", renderPaymentLists);
+
+  updatePaymentKPI();
+  renderPaymentLists();
+}
+
+function updatePaymentKPI() {
+  const verified = paymentRecords.filter(p => p.status === "verified");
+
+  document.getElementById("paymentTotalRevenue").textContent = `RM ${verified.reduce((sum, p) => sum + p.finalAmount, 0).toLocaleString()}`;
+  document.getElementById("paymentPendingCount").textContent = paymentRecords.filter(p => p.status === "pending").length;
+  document.getElementById("paymentTotalCount").textContent = paymentRecords.length;
+  document.getElementById("paymentLoyaltyDiscount").textContent = `RM ${paymentRecords.reduce((sum, p) => sum + p.loyaltyDiscount, 0).toLocaleString()}`;
+}
+
+function filterPaymentRecords(records, searchValue) {
+  return records.filter(p =>
+    p.customerName.toLowerCase().includes(searchValue) ||
+    p.petName.toLowerCase().includes(searchValue) ||
+    p.payment_id.toLowerCase().includes(searchValue)
+  );
+}
+
+function renderPaymentLists() {
+  const searchValue = paymentSearchInput.value.toLowerCase().trim();
+  renderPaymentPendingTable(searchValue);
+  renderPaymentHistoryTable(searchValue);
+}
+
+function renderAddonChips(addons) {
+  if (addons.length === 0) return `<span class="profile-sub">No add-on</span>`;
+  return addons.map(a => `<span class="key-chip">${a.name} +RM${a.price}</span>`).join(" ");
+}
+
+function renderPaymentPendingTable(searchValue) {
+  const pending = filterPaymentRecords(paymentRecords.filter(p => p.status === "pending"), searchValue);
+
+  paymentPendingRecordCount.textContent = `${pending.length} pending`;
+
+  if (pending.length === 0) {
+    paymentPendingBody.innerHTML = `<tr><td colspan="7" class="empty-row">No payments awaiting verification.</td></tr>`;
+    return;
+  }
+
+  paymentPendingBody.innerHTML = pending.map(p => `
+    <tr>
+      <td><span class="key-chip">${p.payment_id}</span></td>
+      <td>
+        <span class="profile-name">${p.customerName}</span>
+        <span class="profile-sub">${p.petName}</span>
+      </td>
+      <td>${p.serviceName}</td>
+      <td>RM ${p.finalAmount.toLocaleString()}</td>
+      <td>${p.method}</td>
+      <td>${formatDate(p.date)}</td>
+      <td>
+        <button class="action-btn" onclick="openPaymentDetail('${p.payment_id}')">View</button>
+        <button class="edit-btn" onclick="verifyPayment('${p.payment_id}')">Verify</button>
+      </td>
+    </tr>
+  `).join("");
+}
+
+function renderPaymentHistoryTable(searchValue) {
+  const history = filterPaymentRecords(paymentRecords, searchValue)
+    .slice()
+    .sort((a, b) => new Date(b.date) - new Date(a.date));
+
+  paymentHistoryRecordCount.textContent = `${history.length} records`;
+
+  if (history.length === 0) {
+    paymentHistoryBody.innerHTML = `<tr><td colspan="13" class="empty-row">No transaction record found.</td></tr>`;
+    return;
+  }
+
+  paymentHistoryBody.innerHTML = history.map(p => `
+    <tr>
+      <td><span class="key-chip">${p.payment_id}</span></td>
+      <td>
+        <span class="profile-name">${p.customerName}</span>
+        <span class="profile-sub">${p.petName}</span>
+      </td>
+      <td>${p.serviceName}</td>
+      <td>RM ${p.basePrice.toLocaleString()}</td>
+      <td>${renderAddonChips(p.addons)}</td>
+      <td>${p.loyaltyDiscount > 0 ? `− RM ${p.loyaltyDiscount.toLocaleString()} <span class="profile-sub">${p.loyaltyNote}</span>` : "—"}</td>
+      <td><strong>RM ${p.finalAmount.toLocaleString()}</strong></td>
+      <td>${p.loyaltyPointsEarned > 0 ? `+${p.loyaltyPointsEarned.toLocaleString()} pts` : "—"}</td>
+      <td>${p.loyaltyPointsSpent > 0 ? `−${p.loyaltyPointsSpent.toLocaleString()} pts` : "—"}</td>
+      <td>${p.method}</td>
+      <td><span class="status-tag status-${p.status === "verified" ? "done" : "pending"}">${p.status === "verified" ? "Verified" : "Pending"}</span></td>
+      <td>${formatDate(p.date)}</td>
+      <td><button class="action-btn" onclick="openPaymentDetail('${p.payment_id}')">View</button></td>
+    </tr>
+  `).join("");
+}
+
+function verifyPayment(paymentId) {
+  const record = paymentRecords.find(p => p.payment_id === paymentId);
+  if (record) record.status = "verified";
+  updatePaymentKPI();
+  renderPaymentLists();
+  closeDetailPage();
+}
+
+function openPaymentDetail(paymentId) {
+  const p = paymentRecords.find(x => x.payment_id === paymentId);
+  if (!p) return;
+
+  detailPage.style.display = "flex";
+  detailTitle.textContent = `Payment Detail · ${p.payment_id}`;
+
+  detailForm.innerHTML = `
+    <div class="form-group">
+      <label>Payment ID</label>
+      <input value="${p.payment_id}" readonly />
+    </div>
+
+    <div class="form-group">
+      <label>Customer</label>
+      <input value="${p.customerName}" readonly />
+    </div>
+
+    <div class="form-group">
+      <label>Pet</label>
+      <input value="${p.petName}" readonly />
+    </div>
+
+    <div class="form-group">
+      <label>Service</label>
+      <input value="${p.serviceName}" readonly />
+    </div>
+
+    <div class="form-group">
+      <label>Base Price</label>
+      <input value="RM ${p.basePrice.toLocaleString()}" readonly />
+    </div>
+
+    <div class="form-group">
+      <label>Add-ons</label>
+      <input value="${p.addons.length === 0 ? "None" : p.addons.map(a => `${a.name} (+RM${a.price})`).join(", ")}" readonly />
+    </div>
+
+    <div class="form-group">
+      <label>Loyalty Discount</label>
+      <input value="${p.loyaltyDiscount > 0 ? `− RM ${p.loyaltyDiscount.toLocaleString()} (${p.loyaltyNote})` : "None"}" readonly />
+    </div>
+
+    <div class="form-group">
+      <label>Final Amount</label>
+      <input value="RM ${p.finalAmount.toLocaleString()}" readonly />
+    </div>
+
+    <div class="form-group">
+      <label>Loyalty Earn</label>
+      <input value="${p.loyaltyPointsEarned > 0 ? `+${p.loyaltyPointsEarned.toLocaleString()} pts` : "None"}" readonly />
+    </div>
+
+    <div class="form-group">
+      <label>Loyalty Spend</label>
+      <input value="${p.loyaltyPointsSpent > 0 ? `−${p.loyaltyPointsSpent.toLocaleString()} pts` : "None"}" readonly />
+    </div>
+
+    <div class="form-group">
+      <label>Payment Method</label>
+      <input value="${p.method}" readonly />
+    </div>
+
+    <div class="form-group">
+      <label>Date</label>
+      <input value="${formatDate(p.date)}" readonly />
+    </div>
+
+    <div class="form-group">
+      <label>Status</label>
+      <input value="${p.status === "verified" ? "Verified" : "Pending Verification"}" readonly />
+    </div>
+
+    <div class="form-actions">
+      <button type="button" class="cancel-btn" onclick="closeDetailPage()">Close</button>
+      ${p.status === "pending" ? `<button type="button" class="save-btn" onclick="verifyPayment('${p.payment_id}')">Verify</button>` : ""}
+    </div>
+  `;
 }
 
 /* ==========================================================================
@@ -3411,37 +3980,43 @@ function renderSnapshot() {
   `).join("");
 }
 
-function openScheduleDetail(type) {
-  const items = bookings.filter(b => b.serviceType === type && b.date >= dashboardRange.start && b.date <= dashboardRange.end);
-  const label = type.charAt(0).toUpperCase() + type.slice(1);
-  const rangeLabel = periodRangeLabel(currentDashboardPeriod, dashboardRange);
-  openDetailModal(`${label} Bookings`, `${items.length} booking(s) · ${rangeLabel}`, items.map(bookingDetailRow).join(""), { label: "Open Booking Dashboard", href: "booking.html" });
+const LOYALTY_TIER_COLORS = { Platinum: "#7C3AED", Gold: "#D97706", Silver: "#64748B", Bronze: "#B45309" };
+
+function openLoyaltyTierDetail(tier) {
+  const members = buildLoyaltyMembers().filter(m => m.tier === tier);
+  const rows = members.map(m => renderDetailRow({
+    title: m.full_name,
+    sub: `${m.member_id} · ${m.phone}`,
+    tag: tier.toLowerCase(),
+    tagLabel: `${m.points.toLocaleString()} pts`
+  })).join("");
+  openDetailModal(`${tier} Members`, `${members.length} member(s)`, rows, { label: "Open Loyalty Page", href: "loyalty.html" });
 }
 
-function renderScheduleOverview(periodBookings) {
-  const total = periodBookings.length;
-  const mix = ["grooming", "boarding", "daycare"].map(type => ({
-    type, count: periodBookings.filter(b => b.serviceType === type).length
+function renderLoyaltyMemberStatus() {
+  const members = buildLoyaltyMembers();
+  const total = members.length;
+  const mix = ["Platinum", "Gold", "Silver", "Bronze"].map(tier => ({
+    tier, count: members.filter(m => m.tier === tier).length
   }));
 
-  q("scheduleStackedBar").innerHTML = mix.map(m => {
+  q("loyaltyTierStackedBar").innerHTML = mix.map(m => {
     const pct = total ? (m.count / total) * 100 : 0;
-    return pct > 0 ? `<div class="stacked-bar-segment" style="width:${pct}%;background:${SERVICE_MIX_COLORS[m.type]};cursor:pointer;" onclick="openScheduleDetail('${m.type}')"></div>` : "";
+    return pct > 0 ? `<div class="stacked-bar-segment" style="width:${pct}%;background:${LOYALTY_TIER_COLORS[m.tier]};cursor:pointer;" onclick="openLoyaltyTierDetail('${m.tier}')"></div>` : "";
   }).join("");
 
-  q("scheduleBreakdownList").innerHTML = mix.map(m => {
+  q("loyaltyTierBreakdownList").innerHTML = mix.map(m => {
     const pct = total ? Math.round((m.count / total) * 100) : 0;
-    const label = m.type.charAt(0).toUpperCase() + m.type.slice(1);
     return `
-      <div class="schedule-breakdown-row" onclick="openScheduleDetail('${m.type}')">
-        <span class="legend-swatch" style="background:${SERVICE_MIX_COLORS[m.type]};"></span>
-        <span>${label}</span>
+      <div class="schedule-breakdown-row" onclick="openLoyaltyTierDetail('${m.tier}')">
+        <span class="legend-swatch" style="background:${LOYALTY_TIER_COLORS[m.tier]};"></span>
+        <span>${m.tier}</span>
         <span class="schedule-breakdown-count">${m.count} · ${pct}%</span>
       </div>
     `;
   }).join("") + `
     <div class="schedule-breakdown-total">
-      <span>Total Bookings</span>
+      <span>Total Members</span>
       <span>${total} · 100%</span>
     </div>
   `;
@@ -3464,8 +4039,8 @@ function renderAnalyticsDashboard() {
   if (topServicesSub) topServicesSub.textContent = periodLabel;
   const serviceMixSub = q("serviceMixSub");
   if (serviceMixSub) serviceMixSub.textContent = periodLabel;
-  const scheduleOverviewSub = q("scheduleOverviewSub");
-  if (scheduleOverviewSub) scheduleOverviewSub.textContent = periodLabel;
+  const loyaltyStatusSub = q("loyaltyStatusSub");
+  if (loyaltyStatusSub) loyaltyStatusSub.textContent = "All-time";
 
   renderKpiHeroGrid(metrics);
 
@@ -3488,7 +4063,7 @@ function renderAnalyticsDashboard() {
 
   renderOpsHighlights(metrics);
   renderSnapshot();
-  renderScheduleOverview(metrics.periodBookings);
+  renderLoyaltyMemberStatus();
 }
 
 function initAnalyticsDashboard() {

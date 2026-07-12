@@ -1,0 +1,178 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Payment | Pawfect AI</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Playfair+Display:wght@600;700&family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="index.css">
+</head>
+
+<body class="dash-page">
+<div class="dash-layout">
+
+  <!-- ── Sidebar ─────────────────────────────────────────────── -->
+  <aside class="dash-sidebar">
+
+    <div class="dash-brand">
+      <div class="dash-brand-avatar">🐾</div>
+      <div class="dash-brand-text">
+        <span class="dash-brand-name">Pawfect AI</span>
+        <span class="dash-brand-sub">Staff portal</span>
+      </div>
+    </div>
+
+    <nav class="dash-nav">
+      <a class="dash-nav-link" href="dailyoverview.html">🏠 &nbsp;&nbsp;Daily Overview</a>
+      <a class="dash-nav-link" href="booking.html">📅&nbsp;&nbsp;Booking Dashboard</a>
+      <a class="dash-nav-link" href="profile.html">🐾 Customer &amp; Pet Profile</a>
+      <a class="dash-nav-link" href="enquiries.html">💬&nbsp;&nbsp;Enquiries (WhatsApp)</a>
+      <a class="dash-nav-link active" href="payment.html">💳&nbsp;&nbsp;Payment</a>
+      <a class="dash-nav-link" href="loyalty.html">🎁&nbsp;&nbsp;Loyalty</a>
+      <a class="dash-nav-link" href="staff.html">👥&nbsp;&nbsp;Staff Management</a>
+      <a class="dash-nav-link" href="dashboard.html">📊&nbsp;&nbsp;Analytical Dashboard</a>
+      <a class="dash-nav-link" href="setting.html">⚙️&nbsp;&nbsp;Settings</a>
+    </nav>
+
+    <div class="dash-sidebar-footer">
+      <div class="sidebar-account">
+        <div class="sidebar-account-avatar" id="sidebarAccountAvatar">👤</div>
+        <div class="sidebar-account-info">
+          <span class="sidebar-account-role" id="sidebarAccountRole">Staff</span>
+          <span class="sidebar-account-business" id="sidebarAccountBusiness"></span>
+          <span class="sidebar-account-email" id="sidebarAccountEmail"></span>
+        </div>
+      </div>
+
+      <div class="sidebar-switch-wrap">
+        <button type="button" class="btn btn-secondary sidebar-switch-btn" onclick="toggleSwitchAccountMenu()">🔁 Switch Account</button>
+        <div class="sidebar-switch-menu" id="switchAccountMenu"></div>
+      </div>
+
+      <a href="login.html" id="logoutBtn" class="btn btn-secondary" style="width:100%;justify-content:center;font-size:0.88rem;">Logout</a>
+    </div>
+
+  </aside>
+
+  <!-- ── Main content ─────────────────────────────────────────── -->
+  <main class="dash-main">
+
+    <!-- Header + Search -->
+    <section class="bk-section">
+      <div class="bk-view-header" style="align-items:flex-start;">
+        <div>
+          <h1 class="bk-page-title" style="margin-bottom:8px;">Payment</h1>
+        </div>
+        <div style="display:flex;gap:10px;flex-wrap:wrap;flex-shrink:0;align-items:center;">
+          <span class="overview-chip" id="liveDateTime"></span>
+        </div>
+      </div>
+
+      <!-- Search row -->
+      <div style="display:flex;gap:12px;flex-wrap:wrap;margin-top:20px;padding-top:20px;border-top:1px solid var(--accent-sand);">
+        <input
+          type="text"
+          id="paymentSearchInput"
+          class="bk-search"
+          style="flex:1;min-width:220px;max-width:none;border-radius:var(--radius-small);"
+          placeholder="Search customer name, pet name, or payment ID…"
+        />
+      </div>
+    </section>
+
+    <!-- KPI Cards -->
+    <section class="bk-section bk-section-slim">
+      <div class="bk-kpi-grid">
+        <div class="metric-card">
+          <h3>Total Revenue</h3>
+          <p id="paymentTotalRevenue">RM 0</p>
+          <small style="font-size:0.78rem;color:var(--text-muted);">From verified transactions</small>
+        </div>
+        <div class="metric-card" style="border-color:#FEF3C7;">
+          <h3 style="color:#92400E;">Pending Verification</h3>
+          <p id="paymentPendingCount">0</p>
+          <small style="font-size:0.78rem;color:var(--text-muted);">Payments awaiting staff verification</small>
+        </div>
+        <div class="metric-card">
+          <h3>Total Transactions</h3>
+          <p id="paymentTotalCount">0</p>
+          <small style="font-size:0.78rem;color:var(--text-muted);">All recorded payments</small>
+        </div>
+        <div class="metric-card">
+          <h3>Loyalty Discounts Given</h3>
+          <p id="paymentLoyaltyDiscount">RM 0</p>
+          <small style="font-size:0.78rem;color:var(--text-muted);">Deducted via point redemption</small>
+        </div>
+      </div>
+    </section>
+
+    <!-- Filter tabs -->
+    <section class="bk-section bk-section-slim">
+      <div class="bk-tab-group" id="paymentTabs">
+        <button class="tab-btn active" data-panel="pending">🕒 Pending List</button>
+        <button class="tab-btn" data-panel="history">🧾 Transaction History</button>
+      </div>
+    </section>
+
+    <!-- Pending Verification List -->
+    <section class="bk-section" id="paymentPendingPanel">
+      <div class="bk-view-header" style="margin-bottom:16px;">
+        <div>
+          <h2 style="font-family:var(--font-serif);font-size:1.15rem;font-weight:700;margin-bottom:2px;">Pending Verification</h2>
+          <p style="font-size:0.78rem;color:var(--text-muted);">Payments made by customers, awaiting staff confirmation</p>
+        </div>
+        <span id="paymentPendingRecordCount" style="font-size:0.78rem;font-weight:700;color:var(--text-muted);white-space:nowrap;">0 pending</span>
+      </div>
+      <div class="bk-table-wrap">
+        <table class="bk-table">
+          <thead>
+            <tr>
+              <th>Payment ID</th><th>Customer</th><th>Service</th><th>Amount</th><th>Method</th><th>Date</th><th>Action</th>
+            </tr>
+          </thead>
+          <tbody id="paymentPendingBody"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- Transaction History -->
+    <section class="bk-section hidden" id="paymentHistoryPanel">
+      <div class="bk-view-header" style="margin-bottom:16px;">
+        <div>
+          <h2 style="font-family:var(--font-serif);font-size:1.15rem;font-weight:700;margin-bottom:2px;">Transaction History</h2>
+          <p style="font-size:0.78rem;color:var(--text-muted);">All past transactions, with base price, add-ons and loyalty deduction breakdown</p>
+        </div>
+        <span id="paymentHistoryRecordCount" style="font-size:0.78rem;font-weight:700;color:var(--text-muted);white-space:nowrap;">0 records</span>
+      </div>
+      <div class="bk-table-wrap">
+        <table class="bk-table">
+          <thead>
+            <tr>
+              <th>Payment ID</th><th>Customer</th><th>Service</th><th>Base Price</th><th>Add-ons</th><th>Loyalty Discount</th><th>Final Amount</th><th>Loyalty Earn</th><th>Loyalty Spend</th><th>Method</th><th>Status</th><th>Date</th><th>Action</th>
+            </tr>
+          </thead>
+          <tbody id="paymentHistoryBody"></tbody>
+        </table>
+      </div>
+    </section>
+
+  </main>
+</div>
+
+<!-- ── Detail Modal ──────────────────────────────────────────── -->
+<div class="bk-modal-backdrop" id="detailPage">
+  <div class="bk-modal" style="width:min(860px,100%);max-height:90vh;overflow-y:auto;">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:24px;">
+      <h2 id="detailTitle" style="margin:0;"></h2>
+      <button class="close-btn" onclick="closeDetailPage()">×</button>
+    </div>
+    <form id="detailForm" class="detail-form"></form>
+  </div>
+</div>
+
+<script src="auth.js"></script>
+<script src="common.js"></script>
+</body>
+</html>
