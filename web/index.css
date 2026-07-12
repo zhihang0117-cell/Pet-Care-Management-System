@@ -1979,6 +1979,8 @@ select {
 .status-silver   { background: #F1F5F9; color: #475569; }
 .status-bronze   { background: #FFE4D5; color: #9A3412; }
 
+.status-off      { background: #E5E7EB; color: #4B5563; }
+
 /* ==========================================================================
    Dashboard — Listing view
    ========================================================================== */

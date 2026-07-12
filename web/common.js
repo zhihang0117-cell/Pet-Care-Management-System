@@ -14,9 +14,9 @@ const services = [
 ];
 
 const staff = [
-  { id: "ST001", name: "Sarah Wong", role: "Manager" },
-  { id: "ST002", name: "Adam Tan", role: "Groomer" },
-  { id: "ST003", name: "Mei Ling", role: "Caretaker" }
+  { id: "ST001", name: "Sarah Wong", role: "Manager",   email: "sarah.wong@happypaws.my", phone: "+60 12-345 6801", offDays: ["Sunday"] },
+  { id: "ST002", name: "Adam Tan",   role: "Groomer",   email: "adam.tan@happypaws.my",   phone: "+60 12-345 6802", offDays: ["Monday"] },
+  { id: "ST003", name: "Mei Ling",   role: "Caretaker", email: "mei.ling@happypaws.my",   phone: "+60 12-345 6803", offDays: ["Tuesday", "Sunday"] }
 ];
 
 const rooms = [
@@ -51,11 +51,12 @@ let bookings = [
 ];
 
 let enquiries = [
-  { id: 'ENQ001', customerName: 'Priya Nathan',  channel: 'WhatsApp', message: 'Can I reschedule my grooming appointment to tomorrow?', relatedService: 'grooming', priority: 'normal', status: 'pending',  receivedAt: '08:12' },
-  { id: 'ENQ002', customerName: 'Ben Ooi',       channel: 'WhatsApp', message: "Is my dog's boarding room ready for early check-in?",    relatedService: 'boarding', priority: 'high',   status: 'pending',  receivedAt: '08:40' },
-  { id: 'ENQ003', customerName: 'Lim Hui Yi',    channel: 'WhatsApp', message: 'What time is daycare pickup cut-off?',                   relatedService: 'daycare',  priority: 'normal', status: 'pending',  receivedAt: '09:05' },
-  { id: 'ENQ004', customerName: 'Farid Azman',   channel: 'WhatsApp', message: 'Need to confirm deluxe boarding pricing.',               relatedService: 'boarding', priority: 'high',   status: 'pending',  receivedAt: '09:20' },
-  { id: 'ENQ005', customerName: 'Cheryl Wong',   channel: 'WhatsApp', message: 'Thanks for the update!',                                 relatedService: 'grooming', priority: 'normal', status: 'resolved', receivedAt: '07:50' }
+  { id: 'ENQ001', customerName: 'Priya Nathan',  phone: '+60 12-345 7001', channel: 'WhatsApp', message: 'Can I reschedule my grooming appointment to tomorrow?', relatedService: 'grooming', status: 'pending',  receivedAt: '08:12' },
+  { id: 'ENQ002', customerName: 'Ben Ooi',       phone: '+60 12-345 7002', channel: 'WhatsApp', message: "Is my dog's boarding room ready for early check-in?",    relatedService: 'boarding', status: 'pending',  receivedAt: '08:40' },
+  { id: 'ENQ003', customerName: 'Lim Hui Yi',    phone: '+60 12-345 7003', channel: 'WhatsApp', message: 'What time is daycare pickup cut-off?',                   relatedService: 'daycare',  status: 'pending',  receivedAt: '09:05' },
+  { id: 'ENQ004', customerName: 'Farid Azman',   phone: '+60 12-345 7004', channel: 'WhatsApp', message: 'Need to confirm deluxe boarding pricing.',               relatedService: 'boarding', status: 'pending',  receivedAt: '09:20' },
+  { id: 'ENQ005', customerName: 'Cheryl Wong',   phone: '+60 12-345 7005', channel: 'WhatsApp', message: 'Thanks for the update!',                                 relatedService: 'grooming', status: 'resolved', receivedAt: '07:50', handledBy: 'human' },
+  { id: 'ENQ006', customerName: 'Wong Mei',      phone: '+60 12-345 6705', channel: 'WhatsApp', message: 'What are your operating hours today?',                  relatedService: 'grooming', status: 'resolved', receivedAt: '07:15', handledBy: 'ai' }
 ];
 
 let loyaltyRequests = [
@@ -65,6 +66,11 @@ let loyaltyRequests = [
   { id: 'LOY004', customerName: 'David Chong',  type: 'RM10 Voucher Redemption', points: 200,  relatedService: 'boarding', status: 'approved', requestedAt: '07:30' }
 ];
 
+let leaveRequests = [
+  { id: 'LV001', staffId: 'ST002', staffName: 'Adam Tan', startDate: addDays(today, 2), endDate: addDays(today, 3), reason: 'Personal errand',      status: 'approved', appliedAt: '09:00' },
+  { id: 'LV002', staffId: 'ST003', staffName: 'Mei Ling', startDate: addDays(today, 5), endDate: addDays(today, 5), reason: 'Medical appointment',   status: 'pending',  appliedAt: '10:15' }
+];
+
 /* =========================
    STATE
 ========================= */
@@ -72,6 +78,7 @@ let loyaltyRequests = [
 let currentServiceFilter = "all";
 let currentView = "kanban";
 let kanbanDateMode = "today";
+let currentStaffFilter = "all";
 let draggedBookingId = null;
 let listingSearchKeyword = "";
 let calendarAnchorDate = getToday();
@@ -88,6 +95,8 @@ const CALENDAR_HOURS = [
 ========================= */
 
 document.addEventListener("DOMContentLoaded", () => {
+  promoteScheduledBookingsForToday();
+
   if (document.getElementById("liveDateTime")) {
     initLiveClock();
   }
@@ -125,6 +134,14 @@ document.addEventListener("DOMContentLoaded", () => {
 
   if (document.getElementById("paymentPendingBody")) {
     initPaymentPage();
+  }
+
+  if (document.getElementById("staffListBody")) {
+    initStaffPage();
+  }
+
+  if (document.getElementById("enquiryPendingBody")) {
+    initEnquiriesPage();
   }
 });
 
@@ -177,6 +194,18 @@ function setupTabs() {
     kanbanDateMode = "all";
     document.getElementById("allBtn").classList.add("active");
     document.getElementById("todayBtn").classList.remove("active");
+    renderKanban();
+  });
+
+  const kanbanStaffFilter = document.getElementById("kanbanStaffFilter");
+  staff.forEach(member => {
+    const option = document.createElement("option");
+    option.value = member.id;
+    option.textContent = member.name;
+    kanbanStaffFilter.appendChild(option);
+  });
+  kanbanStaffFilter.addEventListener("change", () => {
+    currentStaffFilter = kanbanStaffFilter.value;
     renderKanban();
   });
 
@@ -325,7 +354,8 @@ function getFilteredBookings() {
 
 function getKanbanBookings() {
   return getFilteredBookings().filter(booking => {
-    if (kanbanDateMode === "today") return booking.date === getToday();
+    if (kanbanDateMode === "today" && booking.date !== getToday()) return false;
+    if (currentStaffFilter !== "all" && booking.staffId !== currentStaffFilter) return false;
     return true;
   });
 }
@@ -410,11 +440,20 @@ function buildMetrics(filter, data) {
    KANBAN
 ========================= */
 
+function promoteScheduledBookingsForToday() {
+  const todayDate = getToday();
+  bookings.forEach(booking => {
+    if (booking.status === "scheduled" && booking.date === todayDate) {
+      booking.status = "pending";
+    }
+  });
+}
+
 function renderKanban() {
   const board = document.getElementById("kanbanBoard");
 
   const columns = [
-    { key: "pending", label: "Pending Service" },
+    { key: "pending", label: "Today Pending Service" },
     { key: "scheduled", label: "Scheduled" },
     { key: "done", label: "Done" },
     { key: "no_show", label: "No Show" }
@@ -720,8 +759,8 @@ function updateCalendarRangeByMode() {
 
 function openNewBooking() {
   const date = getToday();
-  const time = findFirstAvailableTime(date) || "09:00";
   const defaultService = services.find(s => s.type === "grooming") || services[0];
+  const time = findFirstAvailableTime(date, defaultService.duration) || "09:00";
 
   const newId = `B${String(++_bookingIdCounter).padStart(3, "0")}`;
 
@@ -1067,10 +1106,17 @@ function moveCalendar(direction) {
   renderCalendar();
 }
 
+function toLocalDateString(date) {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
 function addMonths(dateString, months) {
   const date = new Date(dateString);
   date.setMonth(date.getMonth() + months);
-  return date.toISOString().slice(0, 10);
+  return toLocalDateString(date);
 }
 
 function isSameMonth(dateString, monthReference) {
@@ -1258,13 +1304,13 @@ function formatStatus(status) {
 }
 
 function getToday() {
-  return new Date().toISOString().slice(0, 10);
+  return toLocalDateString(new Date());
 }
 
 function addDays(dateString, days) {
   const date = new Date(dateString);
   date.setDate(date.getDate() + days);
-  return date.toISOString().slice(0, 10);
+  return toLocalDateString(date);
 }
 
 function getStartOfWeek(dateString) {
@@ -1272,13 +1318,13 @@ function getStartOfWeek(dateString) {
   const day = date.getDay(); // 0 = Sun
   const diff = day === 0 ? -6 : 1 - day; // shift to Monday
   date.setDate(date.getDate() + diff);
-  return date.toISOString().slice(0, 10);
+  return toLocalDateString(date);
 }
 
 function getStartOfMonth(dateString) {
   const date = new Date(dateString);
   date.setDate(1);
-  return date.toISOString().slice(0, 10);
+  return toLocalDateString(date);
 }
 
 function formatCalendarHeader(dateString) {
@@ -1296,7 +1342,7 @@ function getDateRange(startDate, endDate) {
   const end = new Date(endDate);
 
   while (current <= end) {
-    dates.push(current.toISOString().slice(0, 10));
+    dates.push(toLocalDateString(current));
     current.setDate(current.getDate() + 1);
   }
 
@@ -1338,7 +1384,7 @@ function toneStyle(tone) {
    SLA
 ========================= */
 
-const SLA_MINUTES = { pendingService: 15, enquiry: 30, loyalty: 120 };
+const SLA_MINUTES = { pendingService: 15, enquiry: 180, loyalty: 120 };
 
 function toMinutes(hhmm) {
   const [h, m] = hhmm.split(':').map(Number);
@@ -1367,6 +1413,35 @@ function slaBadge(kind, timeStr) {
 }
 function slaBreachCount(kind, items, timeField) {
   return items.filter(item => slaStatus(kind, item[timeField]).breached).length;
+}
+
+/* =========================
+   ENQUIRY PRIORITY
+   Computed, not stored, so it can never go stale:
+     Urgent — still pending and past the 3-hour reply SLA
+     High   — boarding enquiries (guest may be waiting on-site right now)
+              or the message itself signals urgency
+     Normal — everything else
+========================= */
+
+const URGENT_KEYWORDS = ['urgent', 'asap', 'emergency', 'now', 'waiting', 'immediately', 'right now'];
+
+function computeEnquiryPriority(e) {
+  if (e.status === 'pending' && slaStatus('enquiry', e.receivedAt).breached) return 'urgent';
+  const msg = e.message.toLowerCase();
+  if (e.relatedService === 'boarding' || URGENT_KEYWORDS.some(k => msg.includes(k))) return 'high';
+  return 'normal';
+}
+
+function enquiryPriorityLabel(level) {
+  return level.charAt(0).toUpperCase() + level.slice(1);
+}
+
+function enquiryPriorityBadge(e) {
+  const level = computeEnquiryPriority(e);
+  if (level === 'urgent') return `<span class="status-tag status-no_show">🔴 Urgent</span>`;
+  if (level === 'high') return `<span class="status-tag status-pending">🟠 High</span>`;
+  return `<span class="status-tag status-off">Normal</span>`;
 }
 
 function computeSlaCompliance() {
@@ -1780,7 +1855,7 @@ function buildActionQueue(filter) {
     .forEach(e => {
       rows.push({
         time: e.receivedAt, typeIcon: '💬', type: 'Enquiry',
-        detail: `${e.priority === 'high' ? '🔴 ' : ''}${e.customerName} · ${e.channel} — "${e.message}"`,
+        detail: `${computeEnquiryPriority(e) !== 'normal' ? '🔴 ' : ''}${e.customerName} · ${e.channel} — "${e.message}"`,
         statusKey: 'pending', statusLabel: 'Needs Reply',
         sla: slaBadge('enquiry', e.receivedAt),
         actionLabel: 'Mark Replied', actionOnclick: `resolveEnquiry('${e.id}')`,
@@ -1879,9 +1954,10 @@ function bookingDetailRow(b) {
 }
 
 function enquiryDetailRow(e) {
+  const priority = computeEnquiryPriority(e);
   return renderDetailRow({
     title: `${e.customerName} · ${e.channel}`,
-    sub: `"${e.message}" — received ${e.receivedAt}${e.priority === 'high' ? ' · High priority' : ''}`,
+    sub: `"${e.message}" — received ${e.receivedAt}${priority !== 'normal' ? ` · ${enquiryPriorityLabel(priority)} priority` : ''}`,
     tag: e.status === 'pending' ? 'pending' : 'done',
     tagLabel: e.status === 'pending' ? 'Needs Reply' : 'Resolved',
     sla: e.status === 'pending' ? slaBadge('enquiry', e.receivedAt) : '',
@@ -1915,7 +1991,7 @@ function openCardDetail(cardKey) {
     openDetailModal('Pending Booking Confirmation', `${items.length} booking(s) scheduled today, awaiting confirmation.`, items.map(bookingDetailRow).join(''), cta);
   } else if (cardKey === 'pendingEnquiries') {
     const items = enquiries.filter(e => (filter === 'all' || e.relatedService === filter) && e.status === 'pending');
-    openDetailModal('Pending Enquiries', `${items.length} enquiries awaiting a reply. SLA: reply within 30 minutes.`, items.map(enquiryDetailRow).join(''), cta);
+    openDetailModal('Pending Enquiries', `${items.length} enquiries awaiting a reply. SLA: reply within 3 hours.`, items.map(enquiryDetailRow).join(''), cta);
   } else if (cardKey === 'pendingLoyalty') {
     const items = loyaltyRequests.filter(r => (filter === 'all' || r.relatedService === filter) && r.status === 'pending');
     openDetailModal('Pending Loyalty Redemption', `${items.length} redemption request(s) awaiting approval. SLA: approve within 2 hours.`, items.map(loyaltyDetailRow).join(''), cta);
@@ -3382,6 +3458,615 @@ function openPaymentDetail(paymentId) {
 }
 
 /* ==========================================================================
+   ENQUIRIES (enquiries.html)
+   Pending enquiries are tracked against a 3-hour reply SLA; once an
+   enquiry is resolved the SLA no longer applies (nothing left to breach).
+   HITL rate = share of RESOLVED enquiries that needed a human reply rather
+   than being fully handled by the AI assistant.
+   ========================================================================== */
+
+function getWhatsAppLink(phone) {
+  return `https://wa.me/${(phone || "").replace(/\D/g, "")}`;
+}
+
+const enquirySearchInput = document.getElementById("enquirySearchInput");
+const enquiryPendingBody = document.getElementById("enquiryPendingBody");
+const enquiryPendingRecordCount = document.getElementById("enquiryPendingRecordCount");
+const enquiryHistoryBody = document.getElementById("enquiryHistoryBody");
+const enquiryHistoryRecordCount = document.getElementById("enquiryHistoryRecordCount");
+
+function initEnquiriesPage() {
+  document.querySelectorAll("#enquiryTabs .tab-btn").forEach(btn => {
+    btn.addEventListener("click", () => {
+      document.querySelectorAll("#enquiryTabs .tab-btn").forEach(b => b.classList.remove("active"));
+      btn.classList.add("active");
+      document.getElementById("enquiryPendingPanel").classList.toggle("hidden", btn.dataset.panel !== "pending");
+      document.getElementById("enquiryHistoryPanel").classList.toggle("hidden", btn.dataset.panel !== "history");
+    });
+  });
+
+  enquirySearchInput.addEventListener("input", renderEnquiryLists);
+
+  updateEnquiryKPI();
+  renderEnquiryLists();
+}
+
+function updateEnquiryKPI() {
+  const total = enquiries.length;
+  const pending = enquiries.filter(e => e.status === "pending").length;
+  const resolved = enquiries.filter(e => e.status === "resolved");
+  const humanHandled = resolved.filter(e => e.handledBy === "human").length;
+
+  document.getElementById("enquiryTotalCount").textContent = total;
+  document.getElementById("enquiryPendingCount").textContent = pending;
+  document.getElementById("enquiryResolutionRate").textContent = `${total ? Math.round((resolved.length / total) * 100) : 0}%`;
+  document.getElementById("enquiryHitlRate").textContent = `${resolved.length ? Math.round((humanHandled / resolved.length) * 100) : 0}%`;
+}
+
+function filterEnquiries(list, searchValue) {
+  return list.filter(e =>
+    e.customerName.toLowerCase().includes(searchValue) ||
+    (e.phone || "").toLowerCase().includes(searchValue) ||
+    e.message.toLowerCase().includes(searchValue)
+  );
+}
+
+function renderEnquiryLists() {
+  const searchValue = enquirySearchInput.value.toLowerCase().trim();
+  renderEnquiryPendingTable(searchValue);
+  renderEnquiryHistoryTable(searchValue);
+}
+
+const PRIORITY_RANK = { urgent: 0, high: 1, normal: 2 };
+
+function renderEnquiryPendingTable(searchValue) {
+  const pending = filterEnquiries(enquiries.filter(e => e.status === "pending"), searchValue)
+    .sort((a, b) => PRIORITY_RANK[computeEnquiryPriority(a)] - PRIORITY_RANK[computeEnquiryPriority(b)] || a.receivedAt.localeCompare(b.receivedAt));
+
+  enquiryPendingRecordCount.textContent = `${pending.length} pending`;
+
+  if (pending.length === 0) {
+    enquiryPendingBody.innerHTML = `<tr><td colspan="6" class="empty-row">No pending enquiries.</td></tr>`;
+    return;
+  }
+
+  enquiryPendingBody.innerHTML = pending.map(e => `
+    <tr>
+      <td><span class="key-chip">${e.id}</span></td>
+      <td>
+        <span class="profile-name">${e.customerName}</span><br>
+        ${enquiryPriorityBadge(e)}
+        <span class="profile-sub">${e.phone || "—"}</span>
+      </td>
+      <td>${e.message}</td>
+      <td>${e.receivedAt}</td>
+      <td>${slaBadge("enquiry", e.receivedAt)}</td>
+      <td>
+        <button class="action-btn" onclick="openEnquiryDetailPage('${e.id}')">View</button>
+        <button class="edit-btn" onclick="resolveEnquiryAndRefresh('${e.id}')">Mark Replied</button>
+      </td>
+    </tr>
+  `).join("");
+}
+
+function renderEnquiryHistoryTable(searchValue) {
+  const history = filterEnquiries(enquiries, searchValue)
+    .sort((a, b) => b.receivedAt.localeCompare(a.receivedAt));
+
+  enquiryHistoryRecordCount.textContent = `${history.length} records`;
+
+  if (history.length === 0) {
+    enquiryHistoryBody.innerHTML = `<tr><td colspan="7" class="empty-row">No enquiries found.</td></tr>`;
+    return;
+  }
+
+  enquiryHistoryBody.innerHTML = history.map(e => `
+    <tr>
+      <td><span class="key-chip">${e.id}</span></td>
+      <td>
+        <span class="profile-name">${e.customerName}</span>
+        <span class="profile-sub">${e.phone || "—"}</span>
+      </td>
+      <td>${e.message}</td>
+      <td>${e.receivedAt}</td>
+      <td>${e.status === "resolved" ? (e.handledBy === "ai" ? "🤖 AI" : "🧑‍💼 Human") : "—"}</td>
+      <td><span class="status-tag status-${e.status === "resolved" ? "done" : "pending"}">${e.status === "resolved" ? "Resolved" : "Pending"}</span></td>
+      <td><button class="action-btn" onclick="openEnquiryDetailPage('${e.id}')">View</button></td>
+    </tr>
+  `).join("");
+}
+
+function openEnquiryDetailPage(id) {
+  const e = enquiries.find(x => x.id === id);
+  if (!e) return;
+
+  const isPending = e.status === "pending";
+
+  detailPage.style.display = "flex";
+  detailTitle.textContent = `Enquiry Detail · ${e.id}`;
+
+  detailForm.innerHTML = `
+    <div class="form-group">
+      <label>Customer</label>
+      <input value="${e.customerName}" readonly />
+    </div>
+
+    <div class="form-group">
+      <label>Phone</label>
+      <input value="${e.phone || "—"}" readonly />
+    </div>
+
+    <div class="form-group">
+      <label>Channel</label>
+      <input value="${e.channel}" readonly />
+    </div>
+
+    <div class="form-group">
+      <label>Related Service</label>
+      <input value="${e.relatedService}" readonly />
+    </div>
+
+    <div class="form-group">
+      <label>Priority</label>
+      <input value="${enquiryPriorityLabel(computeEnquiryPriority(e))}" readonly />
+    </div>
+
+    <div class="form-group">
+      <label>Received At</label>
+      <input value="${e.receivedAt}" readonly />
+    </div>
+
+    <div class="form-group full">
+      <label>Message</label>
+      <textarea readonly>${e.message}</textarea>
+    </div>
+
+    <div class="form-group">
+      <label>Status</label>
+      <input value="${isPending ? "Pending" : "Resolved"}" readonly />
+    </div>
+
+    ${!isPending ? `
+    <div class="form-group">
+      <label>Handled By</label>
+      <input value="${e.handledBy === "ai" ? "AI (no human needed)" : "Human"}" readonly />
+    </div>
+    ` : ""}
+
+    <div class="form-actions">
+      <button type="button" class="cancel-btn" onclick="closeDetailPage()">Close</button>
+      ${isPending ? `<a class="btn btn-secondary" href="${getWhatsAppLink(e.phone)}" target="_blank" rel="noopener">💬 Open WhatsApp</a>` : ""}
+      ${isPending ? `<button type="button" class="save-btn" onclick="resolveEnquiryAndRefresh('${e.id}')">Mark Replied</button>` : ""}
+    </div>
+  `;
+}
+
+function resolveEnquiryAndRefresh(id) {
+  const e = enquiries.find(x => x.id === id);
+  if (e) {
+    e.status = "resolved";
+    e.handledBy = "human";
+  }
+  updateEnquiryKPI();
+  renderEnquiryLists();
+  closeDetailPage();
+}
+
+/* ==========================================================================
+   STAFF MANAGEMENT (staff.html)
+   Duty status per staff/day = approved leave first, else the staff's weekly
+   off day, else on duty. "Today's Booking Volume" only counts bookings
+   whose assigned staff is actually on duty today (excludes bookings left
+   on a staff member's off day / approved leave).
+   ========================================================================== */
+
+function isStaffOnLeave(staffId, dateStr) {
+  return leaveRequests.some(lv =>
+    lv.staffId === staffId && lv.status === "approved" &&
+    dateStr >= lv.startDate && dateStr <= lv.endDate
+  );
+}
+
+function getStaffDutyStatus(staffId, dateStr) {
+  if (isStaffOnLeave(staffId, dateStr)) return "leave";
+  const member = findStaff(staffId);
+  if (!member) return "off";
+  const dayName = new Date(dateStr + "T00:00:00").toLocaleDateString("en-US", { weekday: "long" });
+  return (member.offDays || []).includes(dayName) ? "off" : "duty";
+}
+
+function isStaffOnDuty(staffId, dateStr) {
+  return getStaffDutyStatus(staffId, dateStr) === "duty";
+}
+
+function getActiveStaffBookingVolume(dateStr = getToday()) {
+  return bookings.filter(b => b.date === dateStr && isStaffOnDuty(b.staffId, dateStr)).length;
+}
+
+function countBookingsForStaffToday(staffId) {
+  const todayDate = getToday();
+  return bookings.filter(b => b.staffId === staffId && b.date === todayDate).length;
+}
+
+let staffDutyWeekAnchor = getStartOfWeek(getToday());
+
+const staffSearchInput = document.getElementById("staffSearchInput");
+const staffListBody = document.getElementById("staffListBody");
+const staffListRecordCount = document.getElementById("staffListRecordCount");
+const staffLeavePendingBody = document.getElementById("staffLeavePendingBody");
+const staffLeavePendingCount = document.getElementById("staffLeavePendingCount");
+
+function initStaffPage() {
+  if (!isManager(getCurrentAccount())) {
+    document.getElementById("addStaffBtn")?.remove();
+  }
+
+  document.querySelectorAll("#staffTabs .tab-btn").forEach(btn => {
+    btn.addEventListener("click", () => {
+      document.querySelectorAll("#staffTabs .tab-btn").forEach(b => b.classList.remove("active"));
+      btn.classList.add("active");
+      document.getElementById("staffCalendarPanel").classList.toggle("hidden", btn.dataset.panel !== "calendar");
+      document.getElementById("staffListPanel").classList.toggle("hidden", btn.dataset.panel !== "list");
+      document.getElementById("staffLeaveHistoryPanel").classList.toggle("hidden", btn.dataset.panel !== "leave");
+    });
+  });
+
+  staffSearchInput.addEventListener("input", renderStaffListTable);
+
+  document.getElementById("dutyCalPrevBtn").addEventListener("click", () => { staffDutyWeekAnchor = addDays(staffDutyWeekAnchor, -7); renderDutyCalendar(); });
+  document.getElementById("dutyCalNextBtn").addEventListener("click", () => { staffDutyWeekAnchor = addDays(staffDutyWeekAnchor, 7); renderDutyCalendar(); });
+  document.getElementById("dutyCalTodayBtn").addEventListener("click", () => { staffDutyWeekAnchor = getStartOfWeek(getToday()); renderDutyCalendar(); });
+
+  updateStaffKPI();
+  renderStaffListTable();
+  renderPendingLeaveTable();
+  renderLeaveHistoryTable();
+  renderDutyCalendar();
+}
+
+function updateStaffKPI() {
+  const todayDate = getToday();
+  document.getElementById("staffTotalCount").textContent = staff.length;
+  document.getElementById("staffOnDutyCount").textContent = staff.filter(s => isStaffOnDuty(s.id, todayDate)).length;
+  document.getElementById("staffOnLeaveCount").textContent = staff.filter(s => isStaffOnLeave(s.id, todayDate)).length;
+  document.getElementById("staffBookingVolume").textContent = getActiveStaffBookingVolume(todayDate);
+}
+
+function renderStaffListTable() {
+  const searchValue = staffSearchInput.value.toLowerCase().trim();
+  const manager = isManager(getCurrentAccount());
+  const todayDate = getToday();
+
+  const filtered = staff.filter(s =>
+    s.name.toLowerCase().includes(searchValue) ||
+    s.role.toLowerCase().includes(searchValue) ||
+    (s.email || "").toLowerCase().includes(searchValue)
+  );
+
+  staffListRecordCount.textContent = `${filtered.length} staff`;
+
+  if (filtered.length === 0) {
+    staffListBody.innerHTML = `<tr><td colspan="7" class="empty-row">No staff record found.</td></tr>`;
+    return;
+  }
+
+  staffListBody.innerHTML = filtered.map(s => {
+    const status = getStaffDutyStatus(s.id, todayDate);
+    const statusLabel = status === "duty" ? "On Duty" : status === "leave" ? "On Leave" : "Off Today";
+    const statusClass = status === "duty" ? "done" : status === "leave" ? "no_show" : "off";
+
+    return `
+      <tr>
+        <td>
+          <span class="profile-name">🧑‍💼 ${s.name}</span>
+          <span class="profile-sub">${s.id}</span>
+        </td>
+        <td>${s.role}</td>
+        <td>
+          <span class="profile-sub">${s.email || "—"}</span>
+          <span class="profile-sub">${s.phone || "—"}</span>
+        </td>
+        <td>${(s.offDays || []).join(", ") || "—"}</td>
+        <td>${countBookingsForStaffToday(s.id)}</td>
+        <td><span class="status-tag status-${statusClass}">${statusLabel}</span></td>
+        <td>
+          <button class="${manager ? "edit-btn" : "action-btn"}" onclick="openStaffForm('${s.id}')">${manager ? "Edit" : "View"}</button>
+        </td>
+      </tr>
+    `;
+  }).join("");
+}
+
+function openStaffForm(staffId = null) {
+  const manager = isManager(getCurrentAccount());
+  const isEdit = Boolean(staffId);
+  const member = isEdit
+    ? staff.find(s => s.id === staffId)
+    : { id: `ST${String(staff.length + 1).padStart(3, "0")}`, name: "", role: "Groomer", email: "", phone: "", offDays: ["Sunday"] };
+  if (isEdit && !member) return;
+
+  const readonly = !manager;
+  const dayOptions = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
+
+  detailPage.style.display = "flex";
+  detailTitle.textContent = isEdit ? `Staff Info · ${member.id}` : "Add Staff";
+
+  detailForm.innerHTML = `
+    <div class="form-group">
+      <label>Staff ID</label>
+      <input value="${member.id}" readonly />
+    </div>
+
+    <div class="form-group">
+      <label>Name</label>
+      <input name="name" value="${member.name}" placeholder="Full name" ${readonly ? "readonly" : "required"} />
+    </div>
+
+    <div class="form-group">
+      <label>Role</label>
+      ${readonly
+        ? `<input value="${member.role}" readonly />`
+        : `<select name="role">
+            <option value="Manager" ${member.role === "Manager" ? "selected" : ""}>Manager</option>
+            <option value="Groomer" ${member.role === "Groomer" ? "selected" : ""}>Groomer</option>
+            <option value="Caretaker" ${member.role === "Caretaker" ? "selected" : ""}>Caretaker</option>
+          </select>`
+      }
+    </div>
+
+    <div class="form-group">
+      <label>Email</label>
+      <input name="email" type="email" value="${member.email || ""}" placeholder="name@business.my" ${readonly ? "readonly" : ""} />
+    </div>
+
+    <div class="form-group">
+      <label>Phone</label>
+      <input name="phone" value="${member.phone || ""}" placeholder="+60..." ${readonly ? "readonly" : ""} />
+    </div>
+
+    <div class="form-group full">
+      <label>Weekly Off Day(s)</label>
+      ${readonly
+        ? `<input value="${(member.offDays || []).join(", ") || "None"}" readonly />`
+        : `<div style="display:flex;flex-wrap:wrap;gap:14px;padding:10px 0;">
+            ${dayOptions.map(d => `
+              <label style="display:inline-flex;align-items:center;gap:6px;font-weight:500;font-size:0.85rem;color:var(--text-charcoal);">
+                <input type="checkbox" name="offDays" value="${d}" ${(member.offDays || []).includes(d) ? "checked" : ""} />
+                ${d}
+              </label>
+            `).join("")}
+          </div>`
+      }
+    </div>
+
+    <div class="form-actions">
+      <button type="button" class="cancel-btn" onclick="closeDetailPage()">${manager ? "Cancel" : "Close"}</button>
+      ${manager && isEdit ? `<button type="button" class="btn btn-secondary bk-danger-btn" onclick="removeStaffMember('${member.id}')">Remove Staff</button>` : ""}
+      ${manager ? `<button type="submit" class="save-btn">${isEdit ? "Save Staff" : "Add Staff"}</button>` : ""}
+    </div>
+  `;
+
+  detailForm.onsubmit = function(event) {
+    event.preventDefault();
+    if (!manager) return;
+
+    const formData = new FormData(detailForm);
+    const updated = {
+      id: member.id,
+      name: formData.get("name"),
+      role: formData.get("role"),
+      email: formData.get("email"),
+      phone: formData.get("phone"),
+      offDays: formData.getAll("offDays")
+    };
+
+    if (isEdit) {
+      const index = staff.findIndex(s => s.id === member.id);
+      staff[index] = updated;
+    } else {
+      staff.push(updated);
+    }
+
+    updateStaffKPI();
+    renderStaffListTable();
+    renderDutyCalendar();
+    closeDetailPage();
+  };
+}
+
+function removeStaffMember(staffId) {
+  if (!confirm("Remove this staff member? This cannot be undone.")) return;
+  const index = staff.findIndex(s => s.id === staffId);
+  if (index >= 0) staff.splice(index, 1);
+
+  updateStaffKPI();
+  renderStaffListTable();
+  renderDutyCalendar();
+  closeDetailPage();
+}
+
+function renderPendingLeaveTable() {
+  const manager = isManager(getCurrentAccount());
+  const pending = leaveRequests.filter(lv => lv.status === "pending");
+
+  staffLeavePendingCount.textContent = `${pending.length} pending`;
+
+  if (pending.length === 0) {
+    staffLeavePendingBody.innerHTML = `<tr><td colspan="5" class="empty-row">No pending leave requests.</td></tr>`;
+    return;
+  }
+
+  staffLeavePendingBody.innerHTML = pending.map(lv => `
+    <tr>
+      <td><span class="profile-name">${lv.staffName}</span></td>
+      <td>${lv.startDate === lv.endDate ? formatDate(lv.startDate) : `${formatDate(lv.startDate)} – ${formatDate(lv.endDate)}`}</td>
+      <td>${lv.reason}</td>
+      <td>${lv.appliedAt}</td>
+      <td>${manager ? `<button class="edit-btn" onclick="approveLeaveRequest('${lv.id}')">Approve</button>` : `<span class="profile-sub">Awaiting manager</span>`}</td>
+    </tr>
+  `).join("");
+}
+
+function approveLeaveRequest(id) {
+  const lv = leaveRequests.find(r => r.id === id);
+  if (lv) lv.status = "approved";
+
+  updateStaffKPI();
+  renderPendingLeaveTable();
+  renderLeaveHistoryTable();
+  renderDutyCalendar();
+  renderStaffListTable();
+}
+
+function renderLeaveHistoryTable() {
+  const manager = isManager(getCurrentAccount());
+  const history = leaveRequests
+    .slice()
+    .sort((a, b) => new Date(b.startDate) - new Date(a.startDate));
+
+  document.getElementById("staffLeaveHistoryCount").textContent = `${history.length} records`;
+
+  if (history.length === 0) {
+    document.getElementById("staffLeaveHistoryBody").innerHTML = `<tr><td colspan="7" class="empty-row">No leave applications found.</td></tr>`;
+    return;
+  }
+
+  document.getElementById("staffLeaveHistoryBody").innerHTML = history.map(lv => `
+    <tr>
+      <td><span class="key-chip">${lv.id.split("_")[0]}</span></td>
+      <td><span class="profile-name">${lv.staffName}</span></td>
+      <td>${lv.startDate === lv.endDate ? formatDate(lv.startDate) : `${formatDate(lv.startDate)} – ${formatDate(lv.endDate)}`}</td>
+      <td>${lv.reason}</td>
+      <td>${lv.appliedAt}</td>
+      <td><span class="status-tag status-${lv.status === "approved" ? "done" : "pending"}">${lv.status === "approved" ? "Approved" : "Pending"}</span></td>
+      <td>${manager && lv.status === "pending" ? `<button class="edit-btn" onclick="approveLeaveRequest('${lv.id}')">Approve</button>` : "—"}</td>
+    </tr>
+  `).join("");
+}
+
+function openApplyLeaveForm() {
+  detailPage.style.display = "flex";
+  detailTitle.textContent = "Apply Leave";
+
+  detailForm.innerHTML = `
+    <div class="form-group full">
+      <label>Staff</label>
+      <select name="staffId" required>
+        ${staff.map(s => `<option value="${s.id}">${s.name} (${s.role})</option>`).join("")}
+      </select>
+    </div>
+
+    <div class="form-group">
+      <label>Start Date</label>
+      <input type="date" name="startDate" value="${getToday()}" required />
+    </div>
+
+    <div class="form-group">
+      <label>End Date</label>
+      <input type="date" name="endDate" value="${getToday()}" required />
+    </div>
+
+    <div class="form-group full">
+      <label>Reason</label>
+      <input name="reason" placeholder="e.g. Medical, Personal, Emergency" required />
+    </div>
+
+    <div class="form-actions">
+      <button type="button" class="cancel-btn" onclick="closeDetailPage()">Cancel</button>
+      <button type="submit" class="save-btn">Submit Application</button>
+    </div>
+  `;
+
+  detailForm.onsubmit = function(event) {
+    event.preventDefault();
+    const formData = new FormData(detailForm);
+    const selectedStaffId = formData.get("staffId");
+    const member = findStaff(selectedStaffId);
+
+    leaveRequests.push({
+      id: `LV${String(leaveRequests.length + 1).padStart(3, "0")}_${Date.now()}`,
+      staffId: selectedStaffId,
+      staffName: member?.name || "",
+      startDate: formData.get("startDate"),
+      endDate: formData.get("endDate"),
+      reason: formData.get("reason"),
+      status: "pending",
+      appliedAt: new Date().toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" })
+    });
+
+    updateStaffKPI();
+    renderPendingLeaveTable();
+    renderLeaveHistoryTable();
+    renderDutyCalendar();
+    closeDetailPage();
+  };
+}
+
+function renderDutyCalendar() {
+  const dates = getDateRange(staffDutyWeekAnchor, addDays(staffDutyWeekAnchor, 6));
+  const todayDate = getToday();
+
+  document.getElementById("dutyCalWeekLabel").textContent = `${formatShortDate(staffDutyWeekAnchor)} – ${formatShortDate(addDays(staffDutyWeekAnchor, 6))}`;
+
+  document.getElementById("dutyCalendarHead").innerHTML = `
+    <th>Staff</th>
+    ${dates.map(d => {
+      const dateObj = new Date(d + "T00:00:00");
+      const isToday = d === todayDate;
+      return `<th style="${isToday ? "color:var(--btn-brown);" : ""}">${dateObj.toLocaleDateString("en-MY", { weekday: "short" })} ${dateObj.getDate()}</th>`;
+    }).join("")}
+  `;
+
+  document.getElementById("dutyCalendarBody").innerHTML = staff.map(s => `
+    <tr>
+      <td>
+        <span class="profile-name">${s.name}</span>
+        <span class="profile-sub">${s.role}</span>
+      </td>
+      ${dates.map(d => {
+        const status = getStaffDutyStatus(s.id, d);
+        const label = status === "duty" ? "Duty" : status === "leave" ? "Leave" : "Off";
+        const cls = status === "duty" ? "done" : status === "leave" ? "no_show" : "off";
+        const isLeave = status === "leave";
+        return `<td ${isLeave ? `style="cursor:pointer;" onclick="openLeaveCellDetail('${s.id}','${d}')"` : ""}><span class="status-tag status-${cls}">${label}</span></td>`;
+      }).join("")}
+    </tr>
+  `).join("");
+}
+
+function openLeaveCellDetail(staffId, dateStr) {
+  const lv = leaveRequests.find(r =>
+    r.staffId === staffId && r.status === "approved" &&
+    dateStr >= r.startDate && dateStr <= r.endDate
+  );
+  if (!lv) return;
+
+  detailPage.style.display = "flex";
+  detailTitle.textContent = `Leave Detail · ${lv.staffName}`;
+
+  detailForm.innerHTML = `
+    <div class="form-group">
+      <label>Staff</label>
+      <input value="${lv.staffName}" readonly />
+    </div>
+
+    <div class="form-group">
+      <label>Leave Dates</label>
+      <input value="${lv.startDate === lv.endDate ? formatDate(lv.startDate) : `${formatDate(lv.startDate)} – ${formatDate(lv.endDate)}`}" readonly />
+    </div>
+
+    <div class="form-group full">
+      <label>Reason</label>
+      <input value="${lv.reason}" readonly />
+    </div>
+
+    <div class="form-actions">
+      <button type="button" class="cancel-btn" onclick="closeDetailPage()">Close</button>
+    </div>
+  `;
+}
+
+/* ==========================================================================
    ANALYTICAL DASHBOARD (dashboard.html) — Manager only.
    Every number and every chart/card drill-down is derived from the shared
    bookings/CRM/enquiry/loyalty data. Only the AI-performance panel and the
@@ -3959,8 +4644,14 @@ function openSnapshotDetail(key) {
     const rows = pets.map(p => renderDetailRow({ title: `${p.pet_name} (${p.species})`, sub: `Owner: ${getCustomerById(p.customer_id)?.full_name || "Unknown"}`, tag: "done", tagLabel: p.species })).join("");
     openDetailModal("Total Pets", `${pets.length} registered pet(s).`, rows, { label: "Open CRM", href: "profile.html" });
   } else if (key === "staff") {
-    const rows = staff.map(s => renderDetailRow({ title: s.name, sub: s.role || "Staff", tag: "done", tagLabel: "On Duty" })).join("");
-    openDetailModal("Staff On Duty", `${staff.length} staff member(s).`, rows, { label: "Open Staff Management", href: "staff.html" });
+    const rows = staff.map(s => {
+      const status = getStaffDutyStatus(s.id, today);
+      const tagLabel = status === "duty" ? "On Duty" : status === "leave" ? "On Leave" : "Off Today";
+      const tag = status === "duty" ? "done" : status === "leave" ? "no_show" : "off";
+      return renderDetailRow({ title: s.name, sub: s.role || "Staff", tag, tagLabel });
+    }).join("");
+    const onDutyCount = staff.filter(s => isStaffOnDuty(s.id, today)).length;
+    openDetailModal("Staff On Duty", `${onDutyCount} of ${staff.length} staff member(s) on duty today.`, rows, { label: "Open Staff Management", href: "staff.html" });
   }
 }
 
@@ -3968,7 +4659,7 @@ function renderSnapshot() {
   const rows = [
     { key: "members", icon: "👥", label: "Active Members", value: customers.length.toLocaleString("en-MY") },
     { key: "pets", icon: "🐾", label: "Total Pets", value: pets.length.toLocaleString("en-MY") },
-    { key: "staff", icon: "🧑‍💼", label: "Staff On Duty Today", value: staff.length },
+    { key: "staff", icon: "🧑‍💼", label: "Staff On Duty Today", value: staff.filter(s => isStaffOnDuty(s.id, today)).length },
     { key: null, icon: "🕐", label: "Operating Hours", value: "8:00 AM – 8:00 PM" }
   ];
 
@@ -4064,6 +4755,499 @@ function renderAnalyticsDashboard() {
   renderOpsHighlights(metrics);
   renderSnapshot();
   renderLoyaltyMemberStatus();
+
+  renderStaffDashboard();
+  renderSystemDashboard();
+}
+
+/* ==========================================================================
+   STAFF & SYSTEM DASHBOARDS (dashboard.html)
+   Mirror the Operation tab's layout (KPI hero → 2 chart rows → ops grid)
+   using the same period/date-range state. Staff numbers are all real,
+   derived from the shared staff/booking/leave data. System numbers are real
+   where a real source exists (enquiries, payments, loyalty); anything with
+   no real backing (AI accuracy, uptime, response time) is clearly marked
+   "Illustrative" and left non-clickable, same convention as the rest of
+   this dashboard.
+   ========================================================================== */
+
+const STAFF_DUTY_COLORS = { duty: "#059669", off: "#94A3B8", leave: "#DC2626" };
+
+function renderStaffDashboard() {
+  const metrics = computeDashboardMetrics(currentDashboardPeriod);
+  const todayDate = getToday();
+  const periodLabel = periodRangeLabel(metrics.period, metrics.range);
+  const granularity = { daily: "Hourly", weekly: "Daily", monthly: "Weekly" }[metrics.period];
+
+  const workloadSub = q("staffWorkloadTrendSub");
+  if (workloadSub) workloadSub.textContent = `${granularity} · ${periodLabel}`;
+  const bookingRankSub = q("staffBookingRankSub");
+  if (bookingRankSub) bookingRankSub.textContent = periodLabel;
+
+  renderStaffKpiHero(metrics, todayDate);
+  renderStaffWorkloadTrend(metrics);
+  renderStaffBookingRanking(metrics);
+  renderStaffDutyDonut(todayDate);
+  renderStaffLeaveSnapshot(todayDate);
+  renderStaffHighlights(metrics, todayDate);
+  renderStaffRoleSnapshot();
+  renderStaffWeekDutyMix();
+}
+
+function renderStaffKpiHero(metrics, todayDate) {
+  const onDuty = staff.filter(s => isStaffOnDuty(s.id, todayDate)).length;
+  const onLeave = staff.filter(s => isStaffOnLeave(s.id, todayDate)).length;
+
+  const cards = [
+    { icon: "🧑‍💼", color: "#3B82F6", label: "Total Staff", value: staff.length, sub: "Registered team members" },
+    { icon: "✅", color: "#059669", label: "On Duty Today", value: onDuty, sub: `of ${staff.length} staff` },
+    { icon: "🌴", color: "#D97706", label: "On Leave Today", value: onLeave, sub: onLeave ? "Approved leave" : "None today" },
+    { icon: "📅", color: "#7C3AED", label: "Bookings Handled", value: metrics.periodBookings.length.toLocaleString("en-MY"), sub: "this period" }
+  ];
+
+  q("staffKpiHeroGrid").innerHTML = cards.map(c => `
+    <div class="kpi-hero-card">
+      <div class="kpi-hero-top">
+        <div class="kpi-hero-icon" style="background:${c.color};">${c.icon}</div>
+        <div>
+          <div class="kpi-hero-label">${c.label}</div>
+          <div class="kpi-hero-value">${c.value}</div>
+        </div>
+      </div>
+      <div class="kpi-hero-delta">${c.sub}</div>
+    </div>
+  `).join("");
+}
+
+function renderStaffWorkloadTrend(metrics) {
+  const buckets = buildTrendBuckets(metrics.period, metrics.range);
+  const values = buckets.map(b => bookings.filter(b.matches).length);
+  const labels = buckets.map(b => b.label);
+
+  renderAreaTrendChart("staffWorkloadTrendChart", values, {
+    color: "#3B82F6", labels, format: v => `${v} booking(s)`, onPointClick: openTrendBucketDetail
+  });
+}
+
+function openStaffBookingDetail(staffId) {
+  const items = bookings
+    .filter(b => b.staffId === staffId && b.date >= dashboardRange.start && b.date <= dashboardRange.end)
+    .sort((a, b) => a.date.localeCompare(b.date) || a.time.localeCompare(b.time));
+  const member = findStaff(staffId);
+  const label = periodRangeLabel(currentDashboardPeriod, dashboardRange);
+  openDetailModal(`${member?.name || "Staff"} — Bookings`, `${items.length} booking(s) · ${label}`, items.map(bookingDetailRow).join(""), { label: "Open Staff Management", href: "staff.html" });
+}
+
+function renderStaffBookingRanking(metrics) {
+  const ranked = staff
+    .map(s => ({ staff: s, count: metrics.periodBookings.filter(b => b.staffId === s.id).length }))
+    .sort((a, b) => b.count - a.count);
+
+  const max = ranked.length && ranked[0].count ? ranked[0].count : 1;
+
+  q("staffBookingRankList").innerHTML = ranked.map(r => `
+    <div class="top-service-row" onclick="openStaffBookingDetail('${r.staff.id}')">
+      <div class="top-service-row-head">
+        <span>${r.staff.name}</span>
+        <span>${r.count} booking(s)</span>
+      </div>
+      <div class="top-service-bar-track">
+        <div class="top-service-bar" style="width:${Math.max((r.count / max) * 100, 4)}%;"></div>
+      </div>
+    </div>
+  `).join("");
+}
+
+function openStaffDutyDetail(key) {
+  const todayDate = getToday();
+  const members = staff.filter(s => getStaffDutyStatus(s.id, todayDate) === key);
+  const label = key === "duty" ? "On Duty" : key === "leave" ? "On Leave" : "Off Today";
+  const tag = key === "duty" ? "done" : key === "leave" ? "no_show" : "off";
+  const rows = members.map(s => renderDetailRow({ title: s.name, sub: s.role, tag, tagLabel: label })).join("");
+  openDetailModal(`Staff ${label}`, `${members.length} of ${staff.length} staff member(s).`, rows, { label: "Open Staff Management", href: "staff.html" });
+}
+
+function renderStaffDutyDonut(todayDate) {
+  const counts = { duty: 0, off: 0, leave: 0 };
+  staff.forEach(s => { counts[getStaffDutyStatus(s.id, todayDate)]++; });
+
+  const segments = [
+    { key: "duty", label: "On Duty", count: counts.duty, color: STAFF_DUTY_COLORS.duty },
+    { key: "off", label: "Off Today", count: counts.off, color: STAFF_DUTY_COLORS.off },
+    { key: "leave", label: "On Leave", count: counts.leave, color: STAFF_DUTY_COLORS.leave }
+  ];
+  const total = staff.length || 1;
+
+  q("staffDutyDonutLegend").innerHTML = segments.map(s => `
+    <div class="chart-legend-item" onclick="openStaffDutyDetail('${s.key}')">
+      <span class="legend-swatch" style="background:${s.color};"></span>
+      <span>${s.label} ${s.count} (${Math.round((s.count / total) * 100)}%)</span>
+    </div>
+  `).join("");
+
+  renderInteractiveDonut({
+    chartElId: "staffDutyDonut",
+    totalElId: "staffDutyDonutTotal",
+    legendElId: "staffDutyDonutLegend",
+    segments,
+    onSegmentClick: openStaffDutyDetail
+  });
+}
+
+function openStaffLeaveSnapshotDetail(key) {
+  let items, title;
+  if (key === "pending") { items = leaveRequests.filter(lv => lv.status === "pending"); title = "Pending Leave Requests"; }
+  else if (key === "approved") { items = leaveRequests.filter(lv => lv.status === "approved"); title = "Approved Leave"; }
+  else { items = leaveRequests; title = "All Leave Applications"; }
+
+  const rows = items.map(lv => renderDetailRow({
+    title: lv.staffName,
+    sub: `${lv.startDate === lv.endDate ? formatDate(lv.startDate) : `${formatDate(lv.startDate)} – ${formatDate(lv.endDate)}`} · ${lv.reason}`,
+    tag: lv.status === "approved" ? "done" : "pending",
+    tagLabel: lv.status === "approved" ? "Approved" : "Pending"
+  })).join("");
+  openDetailModal(title, `${items.length} record(s).`, rows, { label: "Open Staff Management", href: "staff.html" });
+}
+
+function renderStaffLeaveSnapshot(todayDate) {
+  const pendingCount = leaveRequests.filter(lv => lv.status === "pending").length;
+  const approvedCount = leaveRequests.filter(lv => lv.status === "approved").length;
+
+  const rows = [
+    { key: "pending", icon: "🕒", label: "Pending Requests", value: pendingCount },
+    { key: "approved", icon: "✅", label: "Approved Requests", value: approvedCount },
+    { key: "all", icon: "📋", label: "Total Applications", value: leaveRequests.length },
+    { key: null, icon: "🌴", label: "On Leave Today", value: staff.filter(s => isStaffOnLeave(s.id, todayDate)).length }
+  ];
+
+  q("staffLeaveSnapshotList").innerHTML = rows.map(r => `
+    <div class="snapshot-row ${r.key ? "clickable" : ""}" ${r.key ? `onclick="openStaffLeaveSnapshotDetail('${r.key}')"` : ""}>
+      <span class="snapshot-row-label">${r.icon} ${r.label}</span>
+      <span class="snapshot-row-value">${r.value}</span>
+    </div>
+  `).join("");
+}
+
+function openStaffHighlightDetail(key) {
+  if (key === "pendingLeave") return openStaffLeaveSnapshotDetail("pending");
+  if (key === "onDutyRate") return openStaffDutyDetail("duty");
+
+  const metrics = computeDashboardMetrics(currentDashboardPeriod);
+  const rows = staff
+    .map(s => ({ s, count: metrics.periodBookings.filter(b => b.staffId === s.id).length }))
+    .sort((a, b) => b.count - a.count)
+    .map(r => renderDetailRow({ title: r.s.name, sub: r.s.role, tag: "done", tagLabel: `${r.count} booking(s)` }))
+    .join("");
+  openDetailModal("Bookings per Staff", periodRangeLabel(currentDashboardPeriod, dashboardRange), rows, { label: "Open Staff Management", href: "staff.html" });
+}
+
+function renderStaffHighlights(metrics, todayDate) {
+  const ranked = staff
+    .map(s => ({ staff: s, count: metrics.periodBookings.filter(b => b.staffId === s.id).length }))
+    .sort((a, b) => b.count - a.count);
+  const busiest = ranked[0];
+  const activeStaffCount = staff.filter(s => isStaffOnDuty(s.id, todayDate)).length;
+  const avgBookings = activeStaffCount ? Math.round((getActiveStaffBookingVolume(todayDate) / activeStaffCount) * 10) / 10 : 0;
+  const pendingLeaveCount = leaveRequests.filter(lv => lv.status === "pending").length;
+  const onDutyRate = staff.length ? Math.round((activeStaffCount / staff.length) * 100) : 0;
+
+  const cards = [
+    { key: "busiest", icon: "🏆", color: "#3B82F6", label: "Busiest Staff", value: busiest?.staff.name || "—", sub: `${busiest?.count || 0} booking(s) this period`, tone: "neutral" },
+    { key: "avgLoad", icon: "📊", color: "#059669", label: "Avg Bookings / Active Staff", value: avgBookings, sub: "today", tone: "neutral" },
+    { key: "pendingLeave", icon: "🕒", color: "#D97706", label: "Pending Leave Requests", value: pendingLeaveCount, sub: pendingLeaveCount ? "Needs review" : "All clear", tone: pendingLeaveCount ? "down" : "up" },
+    { key: "onDutyRate", icon: "✅", color: "#7C3AED", label: "On-Duty Rate Today", value: `${onDutyRate}%`, sub: "of total staff", tone: "neutral" }
+  ];
+
+  q("staffHighlightGrid").innerHTML = cards.map(c => `
+    <div class="ops-highlight-card" onclick="openStaffHighlightDetail('${c.key}')">
+      <div class="ops-highlight-icon" style="background:${c.color};">${c.icon}</div>
+      <span class="ops-highlight-label">${c.label}</span>
+      <span class="ops-highlight-value">${c.value}</span>
+      <span class="ops-highlight-sub ${c.tone}">${c.sub}</span>
+    </div>
+  `).join("");
+}
+
+function openStaffRoleDetail(role) {
+  const members = staff.filter(s => s.role === role);
+  const rows = members.map(s => renderDetailRow({ title: s.name, sub: s.email || s.phone || "", tag: "done", tagLabel: role })).join("");
+  openDetailModal(`${role}s`, `${members.length} ${role.toLowerCase()}(s).`, rows, { label: "Open Staff Management", href: "staff.html" });
+}
+
+function renderStaffRoleSnapshot() {
+  const roleMeta = { Manager: "👑", Groomer: "✂️", Caretaker: "🐾" };
+  const rows = Object.keys(roleMeta).map(role => ({
+    key: role, icon: roleMeta[role], label: `${role}s`, value: staff.filter(s => s.role === role).length
+  }));
+  rows.push({ key: null, icon: "🧑‍💼", label: "Total Staff", value: staff.length });
+
+  q("staffRoleSnapshotList").innerHTML = rows.map(r => `
+    <div class="snapshot-row ${r.key ? "clickable" : ""}" ${r.key ? `onclick="openStaffRoleDetail('${r.key}')"` : ""}>
+      <span class="snapshot-row-label">${r.icon} ${r.label}</span>
+      <span class="snapshot-row-value">${r.value}</span>
+    </div>
+  `).join("");
+}
+
+function renderStaffWeekDutyMix() {
+  const weekStart = getStartOfWeek(getToday());
+  const dates = getDateRange(weekStart, addDays(weekStart, 6));
+  const weekMixSub = q("staffWeekMixSub");
+  if (weekMixSub) weekMixSub.textContent = `${formatShortDate(weekStart)} – ${formatShortDate(addDays(weekStart, 6))}`;
+
+  const counts = { duty: 0, off: 0, leave: 0 };
+  staff.forEach(s => dates.forEach(d => { counts[getStaffDutyStatus(s.id, d)]++; }));
+
+  const total = staff.length * dates.length;
+  const mix = [
+    { label: "Duty", count: counts.duty, color: STAFF_DUTY_COLORS.duty },
+    { label: "Off", count: counts.off, color: STAFF_DUTY_COLORS.off },
+    { label: "Leave", count: counts.leave, color: STAFF_DUTY_COLORS.leave }
+  ];
+
+  q("staffWeekMixBar").innerHTML = mix.map(m => {
+    const pct = total ? (m.count / total) * 100 : 0;
+    return pct > 0 ? `<div class="stacked-bar-segment" style="width:${pct}%;background:${m.color};"></div>` : "";
+  }).join("");
+
+  q("staffWeekMixList").innerHTML = mix.map(m => {
+    const pct = total ? Math.round((m.count / total) * 100) : 0;
+    return `
+      <div class="schedule-breakdown-row">
+        <span class="legend-swatch" style="background:${m.color};"></span>
+        <span>${m.label}</span>
+        <span class="schedule-breakdown-count">${m.count} · ${pct}%</span>
+      </div>
+    `;
+  }).join("") + `
+    <div class="schedule-breakdown-total">
+      <span>Total Staff-Days</span>
+      <span>${total} · 100%</span>
+    </div>
+  `;
+}
+
+function openSystemKpiDetail(key) {
+  const label = periodRangeLabel(currentDashboardPeriod, dashboardRange);
+  if (key === "enquiry") {
+    const rows = enquiries.map(enquiryDetailRow).join("");
+    openDetailModal("Enquiry Resolution", `${enquiries.filter(e => e.status === "resolved").length} of ${enquiries.length} resolved.`, rows, { label: "Open Enquiries", href: "enquiries.html" });
+  } else if (key === "payment") {
+    const rows = paymentRecords.map(p => renderDetailRow({
+      title: p.customerName, sub: `${p.payment_id} · RM ${p.finalAmount.toLocaleString()}`,
+      tag: p.status === "verified" ? "done" : "pending", tagLabel: p.status === "verified" ? "Verified" : "Pending"
+    })).join("");
+    openDetailModal("Payment Verification", `${paymentRecords.filter(p => p.status === "verified").length} of ${paymentRecords.length} verified · ${label}`, rows, { label: "Open Payment", href: "payment.html" });
+  } else if (key === "loyalty") {
+    const rows = loyaltyRequests.map(loyaltyDetailRow).join("");
+    openDetailModal("Loyalty Requests", `${loyaltyRequests.filter(r => r.status === "approved").length} of ${loyaltyRequests.length} approved.`, rows, { label: "Open Loyalty", href: "loyalty.html" });
+  }
+}
+
+function renderSystemKpiHero() {
+  const totalEnquiries = enquiries.length;
+  const resolvedEnquiries = enquiries.filter(e => e.status === "resolved").length;
+  const totalPayments = paymentRecords.length;
+  const verifiedPayments = paymentRecords.filter(p => p.status === "verified").length;
+  const totalLoyalty = loyaltyRequests.length;
+  const approvedLoyalty = loyaltyRequests.filter(r => r.status === "approved").length;
+
+  const cards = [
+    { key: "enquiry", icon: "💬", color: "#3B82F6", label: "Enquiry Resolution Rate", value: `${totalEnquiries ? Math.round((resolvedEnquiries / totalEnquiries) * 100) : 0}%`, sub: `${resolvedEnquiries}/${totalEnquiries} resolved`, clickable: true },
+    { key: "payment", icon: "💳", color: "#059669", label: "Payment Verification Rate", value: `${totalPayments ? Math.round((verifiedPayments / totalPayments) * 100) : 0}%`, sub: `${verifiedPayments}/${totalPayments} verified`, clickable: true },
+    { key: "loyalty", icon: "🎁", color: "#D97706", label: "Loyalty Requests Processed", value: `${totalLoyalty ? Math.round((approvedLoyalty / totalLoyalty) * 100) : 0}%`, sub: `${approvedLoyalty}/${totalLoyalty} approved`, clickable: true },
+    { key: null, icon: "🤖", color: "#7C3AED", label: "AI Response Accuracy", value: "96.4%", sub: "Illustrative", clickable: false }
+  ];
+
+  q("systemKpiHeroGrid").innerHTML = cards.map(c => `
+    <div class="kpi-hero-card" ${c.clickable ? `onclick="openSystemKpiDetail('${c.key}')"` : `style="cursor:default;"`}>
+      <div class="kpi-hero-top">
+        <div class="kpi-hero-icon" style="background:${c.color};">${c.icon}</div>
+        <div>
+          <div class="kpi-hero-label">${c.label}</div>
+          <div class="kpi-hero-value">${c.value}</div>
+        </div>
+      </div>
+      <div class="kpi-hero-delta">${c.sub}</div>
+    </div>
+  `).join("");
+}
+
+function renderSystemAutomationTrend(metrics) {
+  const buckets = buildTrendBuckets(metrics.period, metrics.range);
+  const values = buckets.map((b, idx) => Math.round((95 + Math.sin(idx * 1.3) * 2.2 + Math.cos(idx * 0.7)) * 10) / 10);
+  const labels = buckets.map(b => b.label);
+
+  renderAreaTrendChart("systemAutomationTrendChart", values, {
+    color: "#7C3AED", labels, format: v => `${v}%`
+  });
+}
+
+function renderSystemPendingByType() {
+  const todayDate = getToday();
+  const items = [
+    { label: "Pending Grooming Today", count: bookings.filter(b => b.serviceType === "grooming" && b.date === todayDate && b.status === "pending").length, href: "dailyoverview.html" },
+    { label: "Pending Enquiries", count: enquiries.filter(e => e.status === "pending").length, href: "enquiries.html" },
+    { label: "Pending Loyalty Redemptions", count: loyaltyRequests.filter(r => r.status === "pending").length, href: "loyalty.html" },
+    { label: "Pending Payment Verification", count: paymentRecords.filter(p => p.status === "pending").length, href: "payment.html" },
+    { label: "Pending Leave Requests", count: leaveRequests.filter(lv => lv.status === "pending").length, href: "staff.html" }
+  ].sort((a, b) => b.count - a.count);
+
+  const max = items.length && items[0].count ? items[0].count : 1;
+
+  q("systemPendingByTypeList").innerHTML = items.map(item => `
+    <div class="top-service-row" onclick="location.href='${item.href}'">
+      <div class="top-service-row-head">
+        <span>${item.label}</span>
+        <span>${item.count}</span>
+      </div>
+      <div class="top-service-bar-track">
+        <div class="top-service-bar" style="width:${Math.max((item.count / max) * 100, 4)}%;"></div>
+      </div>
+    </div>
+  `).join("");
+}
+
+function openSystemEnquiryDetail(key) {
+  const items = enquiries.filter(e => e.status === key);
+  const rows = items.map(enquiryDetailRow).join("");
+  openDetailModal(key === "resolved" ? "Resolved Enquiries" : "Pending Enquiries", `${items.length} enquirie(s).`, rows, { label: "Open Enquiries", href: "enquiries.html" });
+}
+
+function openEnquiryHandledByDetail(handledBy) {
+  const items = enquiries.filter(e => e.status === "resolved" && e.handledBy === handledBy);
+  const rows = items.map(enquiryDetailRow).join("");
+  openDetailModal(handledBy === "ai" ? "Auto-Resolved Enquiries" : "Human-Resolved Enquiries", `${items.length} enquirie(s) resolved by ${handledBy === "ai" ? "AI, no human needed" : "staff"}.`, rows, { label: "Open Enquiries", href: "enquiries.html" });
+}
+
+function renderSystemEnquiryDonut() {
+  const resolved = enquiries.filter(e => e.status === "resolved").length;
+  const pending = enquiries.filter(e => e.status === "pending").length;
+  const total = enquiries.length || 1;
+
+  const segments = [
+    { key: "resolved", label: "Resolved", count: resolved, color: "#059669" },
+    { key: "pending", label: "Pending", count: pending, color: "#D97706" }
+  ];
+
+  q("systemEnquiryDonutLegend").innerHTML = segments.map(s => `
+    <div class="chart-legend-item" onclick="openSystemEnquiryDetail('${s.key}')">
+      <span class="legend-swatch" style="background:${s.color};"></span>
+      <span>${s.label} ${s.count} (${Math.round((s.count / total) * 100)}%)</span>
+    </div>
+  `).join("");
+
+  renderInteractiveDonut({
+    chartElId: "systemEnquiryDonut",
+    totalElId: "systemEnquiryDonutTotal",
+    legendElId: "systemEnquiryDonutLegend",
+    segments,
+    onSegmentClick: openSystemEnquiryDetail
+  });
+}
+
+function renderSystemIntegrationSnapshot() {
+  const rows = [
+    { icon: "💬", label: "WhatsApp Business API", value: "Connected" },
+    { icon: "💳", label: "Payment Gateway", value: "Connected" },
+    { icon: "📅", label: "Booking Calendar Sync", value: "Active" },
+    { icon: "🕐", label: "Last Sync", value: "Just now" }
+  ];
+
+  q("systemIntegrationSnapshotList").innerHTML = rows.map(r => `
+    <div class="snapshot-row">
+      <span class="snapshot-row-label">${r.icon} ${r.label}</span>
+      <span class="snapshot-row-value">${r.value}</span>
+    </div>
+  `).join("");
+}
+
+function renderSystemHighlights() {
+  const autoResolved = enquiries.filter(e => e.status === "resolved" && e.handledBy === "ai").length;
+
+  const cards = [
+    { icon: "🟢", color: "#059669", label: "API Uptime", value: "99.9%", sub: "Illustrative", clickable: false },
+    { icon: "⚡", color: "#3B82F6", label: "Avg AI Response Time", value: "1.2s", sub: "Illustrative", clickable: false },
+    { icon: "✅", color: "#7C3AED", label: "Auto-Resolved Enquiries", value: autoResolved, sub: "All-time, no human needed", clickable: true, onclick: "openEnquiryHandledByDetail('ai')" },
+    { icon: "⚠️", color: "#D97706", label: "Error Rate", value: "0.3%", sub: "Illustrative", clickable: false }
+  ];
+
+  q("systemHighlightGrid").innerHTML = cards.map(c => `
+    <div class="ops-highlight-card" ${c.clickable ? `onclick="${c.onclick}"` : `style="cursor:default;"`}>
+      <div class="ops-highlight-icon" style="background:${c.color};">${c.icon}</div>
+      <span class="ops-highlight-label">${c.label}</span>
+      <span class="ops-highlight-value">${c.value}</span>
+      <span class="ops-highlight-sub">${c.sub}</span>
+    </div>
+  `).join("");
+}
+
+function renderSystemQueueSnapshot() {
+  const todayDate = getToday();
+  const rows = [
+    { icon: "✂️", label: "Pending Grooming Today", value: bookings.filter(b => b.serviceType === "grooming" && b.date === todayDate && b.status === "pending").length, href: "dailyoverview.html" },
+    { icon: "💬", label: "Pending Enquiries", value: enquiries.filter(e => e.status === "pending").length, href: "enquiries.html" },
+    { icon: "🎁", label: "Pending Loyalty Redemptions", value: loyaltyRequests.filter(r => r.status === "pending").length, href: "loyalty.html" },
+    { icon: "💳", label: "Pending Payment Verification", value: paymentRecords.filter(p => p.status === "pending").length, href: "payment.html" }
+  ];
+
+  q("systemQueueSnapshotList").innerHTML = rows.map(r => `
+    <div class="snapshot-row clickable" onclick="location.href='${r.href}'">
+      <span class="snapshot-row-label">${r.icon} ${r.label}</span>
+      <span class="snapshot-row-value">${r.value}</span>
+    </div>
+  `).join("");
+}
+
+const SYSTEM_QUEUE_COLORS = { grooming: "#3B82F6", enquiries: "#10B981", loyalty: "#D97706", payment: "#7C3AED", leave: "#DC2626" };
+
+function renderSystemQueueMix() {
+  const todayDate = getToday();
+  const labels = { grooming: "Grooming", enquiries: "Enquiries", loyalty: "Loyalty", payment: "Payment", leave: "Leave" };
+  const counts = {
+    grooming: bookings.filter(b => b.serviceType === "grooming" && b.date === todayDate && b.status === "pending").length,
+    enquiries: enquiries.filter(e => e.status === "pending").length,
+    loyalty: loyaltyRequests.filter(r => r.status === "pending").length,
+    payment: paymentRecords.filter(p => p.status === "pending").length,
+    leave: leaveRequests.filter(lv => lv.status === "pending").length
+  };
+
+  const total = Object.values(counts).reduce((a, b) => a + b, 0);
+  const mix = Object.keys(counts).map(key => ({ label: labels[key], count: counts[key], color: SYSTEM_QUEUE_COLORS[key] }));
+
+  q("systemQueueMixBar").innerHTML = mix.map(m => {
+    const pct = total ? (m.count / total) * 100 : 0;
+    return pct > 0 ? `<div class="stacked-bar-segment" style="width:${pct}%;background:${m.color};"></div>` : "";
+  }).join("");
+
+  q("systemQueueMixList").innerHTML = mix.map(m => {
+    const pct = total ? Math.round((m.count / total) * 100) : 0;
+    return `
+      <div class="schedule-breakdown-row">
+        <span class="legend-swatch" style="background:${m.color};"></span>
+        <span>${m.label}</span>
+        <span class="schedule-breakdown-count">${m.count} · ${pct}%</span>
+      </div>
+    `;
+  }).join("") + `
+    <div class="schedule-breakdown-total">
+      <span>Total Pending</span>
+      <span>${total} · 100%</span>
+    </div>
+  `;
+}
+
+function renderSystemDashboard() {
+  const metrics = computeDashboardMetrics(currentDashboardPeriod);
+
+  renderSystemKpiHero();
+  renderSystemAutomationTrend(metrics);
+  renderSystemPendingByType();
+  renderSystemEnquiryDonut();
+  renderSystemIntegrationSnapshot();
+  renderSystemHighlights();
+  renderSystemQueueSnapshot();
+  renderSystemQueueMix();
 }
 
 function initAnalyticsDashboard() {
@@ -4080,6 +5264,16 @@ function initAnalyticsDashboard() {
   q("dashboardPrevBtn")?.addEventListener("click", () => shiftDashboardAnchor(-1));
   q("dashboardNextBtn")?.addEventListener("click", () => shiftDashboardAnchor(1));
   q("dashboardTodayBtn")?.addEventListener("click", () => { dashboardAnchorDate = today; renderAnalyticsDashboard(); });
+
+  document.querySelectorAll("#dashboardSectionTabs .tab-btn").forEach(btn => {
+    btn.addEventListener("click", () => {
+      document.querySelectorAll("#dashboardSectionTabs .tab-btn").forEach(b => b.classList.remove("active"));
+      btn.classList.add("active");
+      q("dashboardOperationPanel").classList.toggle("hidden", btn.dataset.section !== "operation");
+      q("dashboardStaffPanel").classList.toggle("hidden", btn.dataset.section !== "staff");
+      q("dashboardSystemPanel").classList.toggle("hidden", btn.dataset.section !== "system");
+    });
+  });
 
   q("detailModal")?.addEventListener("click", event => {
     if (event.target.id === "detailModal") closeDetailModal();

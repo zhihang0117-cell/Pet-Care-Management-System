@@ -84,7 +84,16 @@
           <span class="overview-chip" id="dashboardWeekChip" style="margin:0 0 0 6px;">🗓️ This Week</span>
         </div>
       </div>
+
+      <div class="bk-tab-group" id="dashboardSectionTabs" style="margin-top:20px;padding-top:20px;border-top:1px solid var(--accent-sand);">
+        <button class="tab-btn active" data-section="operation">📊 Operation</button>
+        <button class="tab-btn" data-section="staff">🧑‍💼 Staff</button>
+        <button class="tab-btn" data-section="system">⚙️ System</button>
+      </div>
     </section>
+
+    <!-- ══════════════════════ OPERATION ══════════════════════ -->
+    <div id="dashboardOperationPanel">
 
     <!-- KPI Hero Row -->
     <section class="bk-section bk-section-slim">
@@ -164,6 +173,173 @@
       </section>
 
     </div>
+
+    </div>
+    <!-- ════════════════════ /OPERATION ═══════════════════════ -->
+
+    <!-- ═══════════════════════ STAFF ══════════════════════════ -->
+    <div id="dashboardStaffPanel" class="hidden">
+
+    <!-- KPI Hero Row -->
+    <section class="bk-section bk-section-slim">
+      <div class="kpi-hero-grid" id="staffKpiHeroGrid"></div>
+    </section>
+
+    <!-- Staff Workload Trend + Bookings per Staff -->
+    <div class="dash-chart-grid-2col">
+
+      <section class="bk-section">
+        <div class="bk-view-header" style="margin-bottom:16px;">
+          <h3 class="overview-panel-title" style="margin-bottom:0;">Staff Workload Trend</h3>
+          <span class="overview-panel-sub" style="margin-bottom:0;" id="staffWorkloadTrendSub"></span>
+        </div>
+        <div id="staffWorkloadTrendChart"></div>
+      </section>
+
+      <section class="bk-section">
+        <div class="bk-view-header" style="margin-bottom:16px;">
+          <h3 class="overview-panel-title" style="margin-bottom:0;">Bookings Handled per Staff</h3>
+          <span class="overview-panel-sub" style="margin-bottom:0;" id="staffBookingRankSub"></span>
+        </div>
+        <div id="staffBookingRankList" class="top-services-list"></div>
+      </section>
+
+    </div>
+
+    <!-- Duty Status Today + Leave Overview -->
+    <div class="dash-chart-grid-2col">
+
+      <section class="bk-section dash-donut-card">
+        <div class="bk-view-header" style="margin-bottom:16px;">
+          <h3 class="overview-panel-title" style="margin-bottom:0;">Duty Status Today</h3>
+          <span class="overview-panel-sub" style="margin-bottom:0;">All staff</span>
+        </div>
+        <div class="chart-donut-row">
+          <div class="donut-chart" id="staffDutyDonut">
+            <div class="donut-center">
+              <strong id="staffDutyDonutTotal">0</strong>
+              <span>Staff</span>
+            </div>
+          </div>
+          <div class="chart-legend" id="staffDutyDonutLegend"></div>
+        </div>
+      </section>
+
+      <section class="bk-section">
+        <h3 class="overview-panel-title" style="margin-bottom:16px;">Leave Overview</h3>
+        <div class="snapshot-list" id="staffLeaveSnapshotList"></div>
+      </section>
+
+    </div>
+
+    <!-- Staff Highlights + Role Snapshot + Weekly Duty Mix -->
+    <div class="dash-ops-grid">
+
+      <section class="bk-section">
+        <h3 class="overview-panel-title" style="margin-bottom:16px;">Staff Highlights</h3>
+        <div class="ops-highlight-grid" id="staffHighlightGrid"></div>
+      </section>
+
+      <section class="bk-section">
+        <h3 class="overview-panel-title" style="margin-bottom:16px;">Role Snapshot</h3>
+        <div class="snapshot-list" id="staffRoleSnapshotList"></div>
+      </section>
+
+      <section class="bk-section">
+        <div class="bk-view-header" style="margin-bottom:16px;">
+          <h3 class="overview-panel-title" style="margin-bottom:0;">Weekly Duty Mix</h3>
+          <span class="overview-panel-sub" style="margin-bottom:0;" id="staffWeekMixSub"></span>
+        </div>
+        <div class="stacked-bar" id="staffWeekMixBar"></div>
+        <div class="schedule-breakdown-list" id="staffWeekMixList"></div>
+      </section>
+
+    </div>
+
+    </div>
+    <!-- ═════════════════════ /STAFF ═══════════════════════════ -->
+
+    <!-- ═══════════════════════ SYSTEM ═════════════════════════ -->
+    <div id="dashboardSystemPanel" class="hidden">
+
+    <!-- KPI Hero Row -->
+    <section class="bk-section bk-section-slim">
+      <div class="kpi-hero-grid" id="systemKpiHeroGrid"></div>
+    </section>
+
+    <!-- Automation Trend + Pending Approvals by Type -->
+    <div class="dash-chart-grid-2col">
+
+      <section class="bk-section">
+        <div class="bk-view-header" style="margin-bottom:16px;">
+          <h3 class="overview-panel-title" style="margin-bottom:0;">AI Automation Trend</h3>
+          <span class="overview-panel-sub" style="margin-bottom:0;" id="systemAutomationTrendSub">Illustrative</span>
+        </div>
+        <div id="systemAutomationTrendChart"></div>
+      </section>
+
+      <section class="bk-section">
+        <div class="bk-view-header" style="margin-bottom:16px;">
+          <h3 class="overview-panel-title" style="margin-bottom:0;">Pending Approvals by Type</h3>
+          <span class="overview-panel-sub" style="margin-bottom:0;">Right now</span>
+        </div>
+        <div id="systemPendingByTypeList" class="top-services-list"></div>
+      </section>
+
+    </div>
+
+    <!-- Enquiry Resolution + Integration Snapshot -->
+    <div class="dash-chart-grid-2col">
+
+      <section class="bk-section dash-donut-card">
+        <div class="bk-view-header" style="margin-bottom:16px;">
+          <h3 class="overview-panel-title" style="margin-bottom:0;">Enquiry Resolution Status</h3>
+          <span class="overview-panel-sub" style="margin-bottom:0;">All-time</span>
+        </div>
+        <div class="chart-donut-row">
+          <div class="donut-chart" id="systemEnquiryDonut">
+            <div class="donut-center">
+              <strong id="systemEnquiryDonutTotal">0</strong>
+              <span>Enquiries</span>
+            </div>
+          </div>
+          <div class="chart-legend" id="systemEnquiryDonutLegend"></div>
+        </div>
+      </section>
+
+      <section class="bk-section">
+        <h3 class="overview-panel-title" style="margin-bottom:16px;">Integration Snapshot</h3>
+        <div class="snapshot-list" id="systemIntegrationSnapshotList"></div>
+      </section>
+
+    </div>
+
+    <!-- System Highlights + Queue Snapshot + Work Queue Mix -->
+    <div class="dash-ops-grid">
+
+      <section class="bk-section">
+        <h3 class="overview-panel-title" style="margin-bottom:16px;">System Highlights</h3>
+        <div class="ops-highlight-grid" id="systemHighlightGrid"></div>
+      </section>
+
+      <section class="bk-section">
+        <h3 class="overview-panel-title" style="margin-bottom:16px;">Queue Snapshot</h3>
+        <div class="snapshot-list" id="systemQueueSnapshotList"></div>
+      </section>
+
+      <section class="bk-section">
+        <div class="bk-view-header" style="margin-bottom:16px;">
+          <h3 class="overview-panel-title" style="margin-bottom:0;">Work Queue Mix</h3>
+          <span class="overview-panel-sub" style="margin-bottom:0;">Right now</span>
+        </div>
+        <div class="stacked-bar" id="systemQueueMixBar"></div>
+        <div class="schedule-breakdown-list" id="systemQueueMixList"></div>
+      </section>
+
+    </div>
+
+    </div>
+    <!-- ════════════════════ /SYSTEM ═══════════════════════════ -->
 
   </main>
 </div>
