@@ -1599,6 +1599,18 @@ select {
     gap: 20px;
 }
 
+/* Dashboard tab panels (Operation/Staff/System) sit as a single child of
+   .dash-main, so they need their own flex+gap to space their inner
+   sections — otherwise .dash-main's gap only applies around the whole
+   panel, not between the sections inside it. */
+#dashboardOperationPanel,
+#dashboardStaffPanel,
+#dashboardSystemPanel {
+    display: flex;
+    flex-direction: column;
+    gap: 20px;
+}
+
 /* ==========================================================================
    Dashboard — Booking sections
    ========================================================================== */

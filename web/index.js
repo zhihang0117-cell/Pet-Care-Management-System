@@ -165,17 +165,16 @@ function accountSlug(name) {
     return (name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'new-business') + '-' + Date.now().toString().slice(-5);
 }
 function registerBusinessAccount() {
-    const businessName = q('reg_business_name')?.value.trim();
     const email    = q('reg_email')?.value.trim();
     const password = q('reg_password')?.value;
     const confirm  = q('reg_confirm')?.value;
     const services = selectedServices();
-    if (!businessName) { alert('Please enter business name.'); return; }
-    if (!email)        { alert('Please enter login email.'); return; }
+    if (!email)        { alert('Please enter manager login email.'); return; }
     if (!services.length) { alert('Please select at least one service.'); return; }
     if (!password || password.length < 8) { alert('Password must be at least 8 characters.'); return; }
     if (password !== confirm) { alert('Password and confirm password must match.'); return; }
-    const businessKey = accountSlug(businessName);
+    const businessName = '';
+    const businessKey = accountSlug(email.split('@')[0]);
     const account = { email, password, role: 'Manager', businessKey, businessName, blankData: true, setupCompleted: false, services };
     const list = customAccounts().filter(a => a.email.toLowerCase() !== email.toLowerCase());
     list.push(account);
@@ -197,3 +196,86 @@ function saveServiceConfiguration() {
     // extend with actual save logic as needed
     alert('Configuration saved.');
 }
+
+// ── Setup page: Staff Accounts ────────────────────────────────────────────────
+// Reuses the same pawfect_custom_accounts storage as Settings → Accounts, so
+// anyone added here already shows up there once the portal is entered.
+function getCurrentAccount() {
+    try { return JSON.parse(localStorage.getItem('pawfect_current_account') || 'null'); } catch (e) { return null; }
+}
+function getSetupBusinessAccounts(businessKey) {
+    const seed = Object.values(EXISTING_ACCOUNTS)
+        .filter(a => a.businessKey === businessKey)
+        .map(a => ({ email: a.email, role: a.role }));
+    const custom = customAccounts()
+        .filter(a => a.businessKey === businessKey)
+        .map(a => ({ email: a.email, role: a.role }));
+    const byEmail = new Map();
+    [...seed, ...custom].forEach(a => byEmail.set(a.email.toLowerCase(), a));
+    return [...byEmail.values()];
+}
+function renderSetupAccountsPanel() {
+    const tbody = q('setupAccountsTableBody');
+    if (!tbody) return;
+
+    const account = getCurrentAccount();
+    const list = getSetupBusinessAccounts(account?.businessKey);
+    const currentEmail = String(account?.email || '').toLowerCase();
+
+    tbody.innerHTML = list.map(a => {
+        const isSelf = a.email.toLowerCase() === currentEmail;
+        return `
+            <tr>
+                <td>${a.email}${isSelf ? ' <span class="field-note">(you)</span>' : ''}</td>
+                <td><span class="status-tag ${a.role === 'Manager' ? 'status-scheduled' : 'status-done'}">${a.role}</span></td>
+                <td>${isSelf ? '<span class="field-note">—</span>' : `<button class="edit-btn" onclick="removeSetupStaffAccount('${a.email}')">Remove</button>`}</td>
+            </tr>
+        `;
+    }).join('');
+}
+function addSetupStaffAccount() {
+    const account = getCurrentAccount();
+    const email = q('setupAccountEmail').value.trim().toLowerCase();
+    const password = q('setupAccountPassword').value;
+    const role = q('setupAccountRole').value;
+    const note = q('setupAccountsAddNote');
+
+    if (!email || !password) {
+        if (note) { note.textContent = 'Enter an email and password.'; note.style.color = '#DC2626'; }
+        return;
+    }
+    if (password.length < 8) {
+        if (note) { note.textContent = 'Password must be at least 8 characters.'; note.style.color = '#DC2626'; }
+        return;
+    }
+    if (getSetupBusinessAccounts(account?.businessKey).some(a => a.email.toLowerCase() === email)) {
+        if (note) { note.textContent = 'An account with this email already exists.'; note.style.color = '#DC2626'; }
+        return;
+    }
+
+    const list = customAccounts().filter(a => a.email.toLowerCase() !== email);
+    list.push({
+        email, password, role,
+        businessKey: account?.businessKey, businessName: account?.businessName,
+        blankData: false, setupCompleted: true, services: account?.services || ['grooming', 'boarding', 'daycare']
+    });
+    localStorage.setItem('pawfect_custom_accounts', JSON.stringify(list));
+
+    q('setupAccountEmail').value = '';
+    q('setupAccountPassword').value = '';
+    q('setupAccountRole').value = 'Staff';
+    if (note) { note.textContent = '✓ Account added.'; note.style.color = '#059669'; }
+
+    renderSetupAccountsPanel();
+}
+function removeSetupStaffAccount(email) {
+    const account = getCurrentAccount();
+    const normalizedEmail = email.toLowerCase();
+    if (normalizedEmail === String(account?.email || '').toLowerCase()) return;
+    if (!confirm(`Remove ${email}? This cannot be undone.`)) return;
+
+    const updated = customAccounts().filter(a => a.email.toLowerCase() !== normalizedEmail);
+    localStorage.setItem('pawfect_custom_accounts', JSON.stringify(updated));
+    renderSetupAccountsPanel();
+}
+if (q('setupAccountsTableBody')) renderSetupAccountsPanel();

@@ -165,27 +165,7 @@
                     </div>
                 </div>
 
-                <div class="section-divider-label">Invoice Settings</div>
-                <div class="form-grid-2">
-                    <div class="form-group">
-                        <label for="cfg_invoicePrefix">Invoice Prefix <span class="req">*</span></label>
-                        <select id="cfg_invoicePrefix" required>
-                            <option>PAW</option>
-                            <option>HP</option>
-                            <option>INV</option>
-                            <option>MEOW</option>
-                        </select>
-                    </div>
-                    <div class="form-group">
-                        <label for="cfg_taxName">Tax Format <span class="req">*</span></label>
-                        <select id="cfg_taxName" required>
-                            <option>SST 0%</option>
-                            <option>SST 6%</option>
-                            <option>GST 9%</option>
-                            <option>No Tax</option>
-                        </select>
-                    </div>
-                </div>
+
 
                 <div class="section-divider-label">Localization</div>
                 <div class="form-grid-2">
@@ -211,13 +191,6 @@
                             <option>MYR (RM)</option>
                             <option>SGD (S$)</option>
                             <option>THB (฿)</option>
-                        </select>
-                    </div>
-                    <div class="form-group">
-                        <label for="weight">Weight Unit <span class="req">*</span></label>
-                        <select id="weight" required>
-                            <option>kg</option>
-                            <option>lb</option>
                         </select>
                     </div>
                     <div class="form-group">
@@ -301,6 +274,55 @@
                         </select>
                     </div>
                 </div>
+            </div>
+        </section>
+
+        <!-- ── Staff Accounts ───────────────────────────────── -->
+        <section class="setup-section">
+            <div class="setup-section-head">
+                <h3>👥 Staff Accounts</h3>
+                <span class="field-note">Manage this anytime from Settings → Accounts</span>
+            </div>
+            <div class="setup-section-body">
+
+                <p class="field-note">Everyone below gets staff-portal access under your business. Add a teammate now, or skip and add them later.</p>
+
+                <div class="bk-table-wrap">
+                    <table class="bk-table">
+                        <thead>
+                            <tr>
+                                <th>Email</th>
+                                <th>Role</th>
+                                <th>Action</th>
+                            </tr>
+                        </thead>
+                        <tbody id="setupAccountsTableBody"></tbody>
+                    </table>
+                </div>
+
+                <div class="section-divider-label">Add Staff Account</div>
+                <div class="form-grid-2">
+                    <div class="form-group">
+                        <label for="setupAccountEmail">Email <span class="req">*</span></label>
+                        <input type="email" id="setupAccountEmail" placeholder="staff2@happypaws.my">
+                    </div>
+                    <div class="form-group">
+                        <label for="setupAccountPassword">Temporary Password <span class="req">*</span></label>
+                        <input type="text" id="setupAccountPassword" placeholder="password123">
+                    </div>
+                    <div class="form-group">
+                        <label for="setupAccountRole">Role <span class="req">*</span></label>
+                        <select id="setupAccountRole">
+                            <option value="Staff">Staff</option>
+                            <option value="Manager">Manager</option>
+                        </select>
+                    </div>
+                </div>
+                <div style="display:flex;align-items:center;gap:12px;">
+                    <button class="btn btn-primary" type="button" onclick="addSetupStaffAccount()">+ Add Account</button>
+                    <span id="setupAccountsAddNote" style="font-size:0.82rem;font-weight:700;"></span>
+                </div>
+
             </div>
         </section>
 
