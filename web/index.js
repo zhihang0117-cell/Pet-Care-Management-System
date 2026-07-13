@@ -190,7 +190,7 @@ function registerBusinessAccount() {
 // ── Setup page helpers ────────────────────────────────────────────────────────
 function showFilename(input, targetId) {
     const el = q(targetId);
-    if (el && input.files.length) el.textContent = '📎 ' + input.files[0].name;
+    if (el && input.files.length) el.innerHTML = '<img src="icon/upload.png" alt="" class="row-icon">' + input.files[0].name;
 }
 function saveServiceConfiguration() {
     // extend with actual save logic as needed

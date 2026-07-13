@@ -38,6 +38,13 @@ function toggleSwitchAccountMenu() {
     document.getElementById('switchAccountMenu')?.classList.toggle('open');
 }
 
+function toggleMobileNav() {
+    const nav = document.querySelector('.dash-nav');
+    const isOpen = nav?.classList.toggle('mobile-nav-open');
+    const img = document.querySelector('#mobileNavToggle img');
+    if (img) img.src = isOpen ? 'icon/close-circle.png' : 'icon/list-view.png';
+}
+
 function renderSidebarAccount() {
     const account = getCurrentAccount();
     const role = account?.role || 'Staff';
@@ -51,16 +58,19 @@ function renderSidebarAccount() {
     if (roleEl) roleEl.textContent = role;
     if (businessEl) businessEl.textContent = businessName;
     if (emailEl) emailEl.textContent = email;
-    if (avatarEl) avatarEl.textContent = isManager(account) ? '👑' : '🧑‍💼';
+    if (avatarEl) avatarEl.innerHTML = isManager(account)
+        ? '<img src="icon/team.png" alt="" class="account-avatar-img">'
+        : '<img src="icon/user-outline.png" alt="" class="account-avatar-img">';
 
     const menu = document.getElementById('switchAccountMenu');
     if (!menu) return;
 
     menu.innerHTML = Object.entries(DEMO_ACCOUNTS).map(([key, acc]) => {
         const isCurrent = acc.email.toLowerCase() === (email || '').toLowerCase();
+        const icon = isManager(acc) ? 'team.png' : 'user-outline.png';
         return `
             <button class="${isCurrent ? 'switch-current' : ''}" onclick="switchToAccount('${key}')">
-                ${isManager(acc) ? '👑' : '🧑‍💼'} ${acc.role} Demo${isCurrent ? ' (current)' : ''}
+                <span class="nav-icon-wrap switch-btn-icon-wrap"><img src="icon/${icon}" alt="" class="nav-icon"></span> ${acc.role} Demo${isCurrent ? ' (current)' : ''}
             </button>
         `;
     }).join('') + `
@@ -78,6 +88,15 @@ document.addEventListener('DOMContentLoaded', () => {
         const wrap = document.querySelector('.sidebar-switch-wrap');
         if (wrap && !wrap.contains(event.target)) {
             document.getElementById('switchAccountMenu')?.classList.remove('open');
+        }
+
+        const navEl = document.querySelector('.dash-nav');
+        const toggleBtn = document.getElementById('mobileNavToggle');
+        if (navEl && navEl.classList.contains('mobile-nav-open') &&
+            !navEl.contains(event.target) && !toggleBtn?.contains(event.target)) {
+            navEl.classList.remove('mobile-nav-open');
+            const img = toggleBtn?.querySelector('img');
+            if (img) img.src = 'icon/list-view.png';
         }
     });
 

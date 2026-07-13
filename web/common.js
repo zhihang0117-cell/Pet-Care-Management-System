@@ -155,7 +155,7 @@ function initLiveClock() {
     const now = new Date();
     const dateStr = now.toLocaleDateString("en-US", { weekday: "short", day: "numeric", month: "short", year: "numeric" });
     const timeStr = now.toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
-    el.textContent = `🗓️ ${dateStr} · ${timeStr}`;
+    el.innerHTML = `<img src="icon/calendar-simple.png" alt="" class="row-icon">${dateStr} · ${timeStr}`;
   };
   render();
   setInterval(render, 1000);
@@ -237,18 +237,9 @@ function setupModalEvents() {
     saveBooking();
   });
 
-  document.getElementById("noShowBtn").addEventListener("click", () => {
-    document.getElementById("bookingStatus").value = "no_show";
-    saveBooking();
-  });
-
   document.getElementById("openPetProfileBtn").addEventListener("click", () => {
     const petName = document.getElementById("petName").value;
     alert(`Open pet profile: ${petName}`);
-  });
-
-  document.getElementById("cancelBookingBtn").addEventListener("click", () => {
-    cancelBooking();
   });
 
   document.getElementById("bookingModal").addEventListener("click", event => {
@@ -948,29 +939,6 @@ function closeModal() {
   document.getElementById("bookingModal").style.display = "none";
 }
 
-function cancelBooking() {
-  const bookingId = document.getElementById("bookingId").value;
-  if (!bookingId) return;
-
-  if (_newBookingDraft && _newBookingDraft.id === bookingId) {
-    closeModal();
-    return;
-  }
-
-  const booking = bookings.find(b => b.id === bookingId);
-  if (!booking) return;
-
-  const label = booking.petName
-    ? `${booking.petName} (${booking.customerName || "unknown"})`
-    : bookingId;
-
-  if (!confirm(`Cancel booking for ${label}? This cannot be undone.`)) return;
-
-  bookings = bookings.filter(b => b.id !== bookingId);
-  closeModal();
-  renderAll();
-}
-
 function saveBooking() {
   const bookingId = document.getElementById("bookingId").value;
   let booking = bookings.find(item => item.id === bookingId);
@@ -1439,8 +1407,8 @@ function enquiryPriorityLabel(level) {
 
 function enquiryPriorityBadge(e) {
   const level = computeEnquiryPriority(e);
-  if (level === 'urgent') return `<span class="status-tag status-no_show">🔴 Urgent</span>`;
-  if (level === 'high') return `<span class="status-tag status-pending">🟠 High</span>`;
+  if (level === 'urgent') return `<span class="status-tag status-no_show">Urgent</span>`;
+  if (level === 'high') return `<span class="status-tag status-pending">High</span>`;
   return `<span class="status-tag status-off">Normal</span>`;
 }
 
@@ -1489,7 +1457,7 @@ function buildActionCards(filter) {
     const groomingSlaBreaches = slaBreachCount('pendingService', groomingPending, 'time');
     cards.push({
       key: 'pendingGrooming',
-      icon: '✂️', label: 'Pending Grooming', value: groomingPending.length,
+      icon: 'grooming-scissors.png', label: 'Pending Grooming', value: groomingPending.length,
       sub: groomingSlaBreaches > 0 ? `${groomingSlaBreaches} breaching 15-min SLA` : 'Within SLA',
       tone: groomingSlaBreaches > 0 ? 'alert' : 'info'
     });
@@ -1498,17 +1466,17 @@ function buildActionCards(filter) {
   cards.push(
     {
       key: 'pendingConfirmation',
-      icon: '✅', label: 'Pending Booking Confirmation', value: pendingConfirmation,
+      icon: 'confirm-circle.png', label: 'Pending Booking Confirmation', value: pendingConfirmation,
       sub: 'Scheduled today, awaiting confirmation', tone: 'info'
     },
     {
       key: 'pendingEnquiries',
-      icon: '💬', label: 'Pending Enquiries', value: pendingEnquiries.length,
+      icon: 'chat-message.png', label: 'Pending Enquiries', value: pendingEnquiries.length,
       sub: enquirySlaBreaches > 0 ? `${enquirySlaBreaches} breaching 30-min reply SLA` : 'Within SLA', tone: enquirySlaBreaches > 0 ? 'alert' : 'purple'
     },
     {
       key: 'pendingLoyalty',
-      icon: '🎁', label: 'Pending Loyalty Redemption', value: pendingLoyalty.length,
+      icon: 'loyalty-reward-gift.png', label: 'Pending Loyalty Redemption', value: pendingLoyalty.length,
       sub: loyaltySlaBreaches > 0 ? `${loyaltySlaBreaches} breaching 2h approval SLA` : 'Within SLA', tone: loyaltySlaBreaches > 0 ? 'alert' : 'pink'
     }
   );
@@ -1519,8 +1487,8 @@ function buildActionCards(filter) {
     const checkOutsDue = boardingBookings.filter(b => b.checkOutDate === today).length;
 
     cards.push(
-      { key: 'boardingCheckIn', icon: '🚪', label: 'Boarding Check-In Due', value: checkInsDue, sub: 'Arrivals to confirm', tone: 'success' },
-      { key: 'boardingCheckOut', icon: '🧳', label: 'Boarding Check-Out Due', value: checkOutsDue, sub: 'Departures to confirm', tone: 'warning' }
+      { key: 'boardingCheckIn', icon: 'login.png', label: 'Boarding Check-In Due', value: checkInsDue, sub: 'Arrivals to confirm', tone: 'success' },
+      { key: 'boardingCheckOut', icon: 'logout.png', label: 'Boarding Check-Out Due', value: checkOutsDue, sub: 'Departures to confirm', tone: 'warning' }
     );
   }
 
@@ -1530,8 +1498,8 @@ function buildActionCards(filter) {
     const pendingPickup = daycareBookings.filter(b => b.status === 'done').length;
 
     cards.push(
-      { key: 'daycareCheckIn', icon: '🎒', label: 'Daycare Check-In Due', value: checkInsDue, sub: 'Drop-offs to confirm', tone: 'success' },
-      { key: 'daycarePendingPickup', icon: '👋', label: 'Daycare Pending Pick-Up', value: pendingPickup, sub: 'Waiting for parent pickup', tone: 'warning' }
+      { key: 'daycareCheckIn', icon: 'login.png', label: 'Daycare Check-In Due', value: checkInsDue, sub: 'Drop-offs to confirm', tone: 'success' },
+      { key: 'daycarePendingPickup', icon: 'logout.png', label: 'Daycare Pending Pick-Up', value: pendingPickup, sub: 'Waiting for parent pickup', tone: 'warning' }
     );
   }
 
@@ -1540,11 +1508,13 @@ function buildActionCards(filter) {
 
 function renderActionCard(card) {
   const tone = TONES[card.tone] || TONES.info;
-  const isAlert = card.tone === 'alert';
   return `
-    <div class="metric-card" style="border-color:${tone.bg};cursor:pointer;" onclick="openCardDetail('${card.key}')" title="${card.sub}">
-      <h3 style="color:${tone.color};">${card.icon} ${card.label}</h3>
-      <p style="${isAlert ? `color:${tone.color};` : ''}">${card.value}</p>
+    <div class="kpi-hero-card action-card clickable" style="border-color:${tone.bg};" onclick="openCardDetail('${card.key}')" title="${card.sub}">
+      <div class="action-card-head">
+        <img src="icon/${card.icon}" alt="" class="card-icon">
+        <span class="kpi-hero-label">${card.label}</span>
+      </div>
+      <div class="action-card-value">${card.value}</div>
     </div>
   `;
 }
@@ -1555,9 +1525,9 @@ function renderActionCard(card) {
 
 function renderServiceLoadChart() {
   const types = [
-    { key: 'grooming', label: '✂️ Grooming', tone: 'info' },
-    { key: 'boarding', label: '🏨 Boarding', tone: 'purple' },
-    { key: 'daycare',  label: '🌞 Daycare',  tone: 'warning' }
+    { key: 'grooming', icon: 'grooming-scissors.png', label: 'Grooming', tone: 'info' },
+    { key: 'boarding', icon: 'boarding.png', label: 'Boarding', tone: 'purple' },
+    { key: 'daycare',  icon: 'dog-play.png', label: 'Daycare',  tone: 'warning' }
   ];
   const counts = types.map(t => bookings.filter(b => b.serviceType === t.key && b.date === today).length);
   const max = Math.max(...counts, 1);
@@ -1571,7 +1541,7 @@ function renderServiceLoadChart() {
       <div class="bar-track">
         <div class="mini-bar" style="height:${Math.max((counts[i] / max) * 100, counts[i] ? 8 : 2)}%;${toneStyle(t.tone)}background-color:var(--tone-color);"></div>
       </div>
-      <span class="bar-name">${t.label}</span>
+      <span class="bar-name"><img src="icon/${t.icon}" alt="" class="bar-icon">${t.label}</span>
     </div>
   `).join('');
 }
@@ -1806,7 +1776,7 @@ function buildActionQueue(filter) {
   todaysBookings.forEach(b => {
     if (b.status === 'pending') {
       rows.push({
-        time: b.time, typeIcon: '📋', type: 'Service Due',
+        time: b.time, typeIcon: 'list-view.png', type: 'Service Due',
         detail: `${b.petName} (${b.customerName}) — ${findServiceName(b.serviceId)}`,
         statusKey: 'pending', statusLabel: 'Needs Action',
         sla: slaBadge('pendingService', b.time),
@@ -1815,7 +1785,7 @@ function buildActionQueue(filter) {
       });
     } else if (b.status === 'scheduled') {
       rows.push({
-        time: b.time, typeIcon: '✅', type: 'Booking Confirmation',
+        time: b.time, typeIcon: 'confirm-circle.png', type: 'Booking Confirmation',
         detail: `${b.petName} (${b.customerName}) — ${findServiceName(b.serviceId)}`,
         statusKey: 'scheduled', statusLabel: 'Awaiting Confirmation',
         sla: '',
@@ -1829,7 +1799,7 @@ function buildActionQueue(filter) {
     filterBookingsByService(filter).forEach(b => {
       if (b.checkInDate === today && b.status !== 'done' && b.status !== 'no_show') {
         rows.push({
-          time: b.time, typeIcon: '🚪', type: 'Check-In Due',
+          time: b.time, typeIcon: 'login.png', type: 'Check-In Due',
           detail: `${b.petName} (${b.customerName}) — ${findRoomName(b.roomId)}`,
           statusKey: 'scheduled', statusLabel: 'Awaiting Check-In',
           sla: '',
@@ -1839,7 +1809,7 @@ function buildActionQueue(filter) {
       }
       if (b.checkOutDate === today) {
         rows.push({
-          time: b.time, typeIcon: '🧳', type: 'Check-Out Due',
+          time: b.time, typeIcon: 'logout.png', type: 'Check-Out Due',
           detail: `${b.petName} (${b.customerName}) — ${findRoomName(b.roomId)}`,
           statusKey: 'scheduled', statusLabel: 'Awaiting Check-Out',
           sla: '',
@@ -1854,8 +1824,8 @@ function buildActionQueue(filter) {
     .filter(e => (filter === 'all' || e.relatedService === filter) && e.status === 'pending')
     .forEach(e => {
       rows.push({
-        time: e.receivedAt, typeIcon: '💬', type: 'Enquiry',
-        detail: `${computeEnquiryPriority(e) !== 'normal' ? '🔴 ' : ''}${e.customerName} · ${e.channel} — "${e.message}"`,
+        time: e.receivedAt, typeIcon: 'chat-message.png', type: 'Enquiry',
+        detail: `${e.customerName} · ${e.channel} — "${e.message}"`,
         statusKey: 'pending', statusLabel: 'Needs Reply',
         sla: slaBadge('enquiry', e.receivedAt),
         actionLabel: 'Mark Replied', actionOnclick: `resolveEnquiry('${e.id}')`,
@@ -1867,7 +1837,7 @@ function buildActionQueue(filter) {
     .filter(r => (filter === 'all' || r.relatedService === filter) && r.status === 'pending')
     .forEach(r => {
       rows.push({
-        time: r.requestedAt, typeIcon: '🎁', type: 'Loyalty Redemption',
+        time: r.requestedAt, typeIcon: 'loyalty-reward-gift.png', type: 'Loyalty Redemption',
         detail: `${r.customerName} — ${r.type} (${r.points} pts)`,
         statusKey: 'pending', statusLabel: 'Needs Approval',
         sla: slaBadge('loyalty', r.requestedAt),
@@ -1886,14 +1856,14 @@ function renderActionQueue(filter) {
   const tbody = q('actionQueueBody');
 
   if (!rows.length) {
-    tbody.innerHTML = `<tr><td colspan="6" class="queue-empty">Nothing pending right now — all caught up! 🎉</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="6" class="queue-empty">Nothing pending right now — all caught up!</td></tr>`;
     return;
   }
 
   tbody.innerHTML = rows.map(row => `
     <tr onclick="${row.rowOnclick}">
       <td>${row.time}</td>
-      <td>${row.typeIcon} ${row.type}</td>
+      <td><span class="queue-type-cell"><img src="icon/${row.typeIcon}" alt="" class="row-icon">${row.type}</span></td>
       <td>${row.detail}</td>
       <td><span class="status-tag status-${row.statusKey}">${row.statusLabel}</span></td>
       <td>${row.sla}</td>
@@ -2338,7 +2308,7 @@ function renderCustomerTable(data) {
       <td>${getBookingsByCustomerId(customer.customer_id).length}</td>
 
       <td>
-        <button class="action-btn" onclick="openCustomerForm('${customer.customer_id}')">View / Edit</button>
+        <button class="action-btn" onclick="openCustomerForm('${customer.customer_id}')"><img src="icon/view.png" alt="" class="btn-icon">View</button>
       </td>
     `;
 
@@ -2396,7 +2366,7 @@ function renderPetTable(data) {
       </td>
 
       <td>
-        <button class="action-btn" onclick="openPetForm('${pet.pet_id}')">View / Edit</button>
+        <button class="action-btn" onclick="openPetForm('${pet.pet_id}')"><img src="icon/view.png" alt="" class="btn-icon">View</button>
       </td>
     `;
 
@@ -2474,7 +2444,7 @@ function openCustomerForm(customerId = null) {
                   <span class="profile-sub">${pet.species} · ${pet.breed} · ${pet.weight} · ${pet.colour}</span>
                   <span class="profile-sub">Service: ${pet.service_preference}${pet.special_care_note ? ` &nbsp;|&nbsp; Care: ${pet.special_care_note}` : ""}</span>
                 </div>
-                <button type="button" class="action-btn" onclick="openPetForm('${pet.pet_id}')">View / Edit</button>
+                <button type="button" class="action-btn" onclick="openPetForm('${pet.pet_id}')"><img src="icon/view.png" alt="" class="btn-icon">View</button>
               </div>
             `).join("")
         }
@@ -2483,9 +2453,9 @@ function openCustomerForm(customerId = null) {
     ` : ""}
 
     <div class="form-actions">
-      <button type="button" class="cancel-btn" onclick="closeDetailPage()">Cancel</button>
-      ${isEdit ? `<button type="button" class="btn btn-secondary bk-danger-btn" onclick="removeCustomer('${customer.customer_id}')">Remove Customer</button>` : ""}
-      <button type="submit" class="save-btn">${isEdit ? "Save Customer" : "Create Customer"}</button>
+      <button type="button" class="cancel-btn" onclick="closeDetailPage()"><img src="icon/close-circle.png" alt="" class="btn-icon">Cancel</button>
+      ${isEdit ? `<button type="button" class="btn btn-secondary bk-danger-btn" onclick="removeCustomer('${customer.customer_id}')"><img src="icon/delete.png" alt="" class="btn-icon">Remove Customer</button>` : ""}
+      <button type="submit" class="save-btn"><img src="icon/confirm-circle.png" alt="" class="btn-icon solid-btn-icon">${isEdit ? "Save Customer" : "Create Customer"}</button>
     </div>
   `;
 
@@ -2610,9 +2580,9 @@ function openPetForm(petId = null) {
     </div>
 
     <div class="form-actions">
-      <button type="button" class="cancel-btn" onclick="closeDetailPage()">Cancel</button>
-      ${isEdit ? `<button type="button" class="btn btn-secondary bk-danger-btn" onclick="removePet('${pet.pet_id}')">Remove Pet</button>` : ""}
-      <button type="submit" class="save-btn">${isEdit ? "Save Pet" : "Create Pet"}</button>
+      <button type="button" class="cancel-btn" onclick="closeDetailPage()"><img src="icon/close-circle.png" alt="" class="btn-icon">Cancel</button>
+      ${isEdit ? `<button type="button" class="btn btn-secondary bk-danger-btn" onclick="removePet('${pet.pet_id}')"><img src="icon/delete.png" alt="" class="btn-icon">Remove Pet</button>` : ""}
+      <button type="submit" class="save-btn"><img src="icon/confirm-circle.png" alt="" class="btn-icon solid-btn-icon">${isEdit ? "Save Pet" : "Create Pet"}</button>
     </div>
   `;
 
@@ -2856,8 +2826,7 @@ function renderLoyaltyPendingTable(searchValue) {
       <td>${item.detail}</td>
       <td>${item.requestedAt}</td>
       <td>
-        <button class="action-btn" onclick="openLoyaltyPendingDetail('${item.id}','${item.kind}')">View</button>
-        <button class="edit-btn" onclick="${item.kind === 'redemption' ? `approveLoyaltyRedemption('${item.id}')` : `approveLoyaltyRegistration('${item.id}')`}">Approve</button>
+        <button class="action-btn" onclick="openLoyaltyPendingDetail('${item.id}','${item.kind}')"><img src="icon/view.png" alt="" class="btn-icon">View</button>
       </td>
     </tr>
   `).join("");
@@ -2889,7 +2858,7 @@ function renderLoyaltyMemberTable(searchValue) {
         <td><span class="status-tag status-${m.tier.toLowerCase()}">${m.tier}</span></td>
         <td>${m.points.toLocaleString()} pts</td>
         <td>${countApprovedRedemptions(m.full_name)}</td>
-        <td><button class="action-btn" onclick="openLoyaltyMemberDetail('${m.member_id}')">View</button></td>
+        <td><button class="action-btn" onclick="openLoyaltyMemberDetail('${m.member_id}')"><img src="icon/view.png" alt="" class="btn-icon">View</button></td>
       </tr>
     `).join("");
 }
@@ -2962,8 +2931,8 @@ function openLoyaltyPendingDetail(id, kind) {
     </div>
 
     <div class="form-actions">
-      <button type="button" class="cancel-btn" onclick="closeDetailPage()">Close</button>
-      ${item.status === "pending" ? `<button type="button" class="save-btn" onclick="${isReg ? `approveLoyaltyRegistration('${item.id}')` : `approveLoyaltyRedemption('${item.id}')`}">Approve</button>` : ""}
+      <button type="button" class="cancel-btn" onclick="closeDetailPage()"><img src="icon/close-circle.png" alt="" class="btn-icon">Close</button>
+      ${item.status === "pending" ? `<button type="button" class="save-btn" onclick="${isReg ? `approveLoyaltyRegistration('${item.id}')` : `approveLoyaltyRedemption('${item.id}')`}"><img src="icon/confirm-circle.png" alt="" class="btn-icon solid-btn-icon">Approve</button>` : ""}
     </div>
   `;
 }
@@ -3029,8 +2998,8 @@ function openLoyaltyMemberDetail(memberId) {
     </div>
 
     <div class="form-actions">
-      <button type="button" class="cancel-btn" onclick="closeDetailPage()">Close</button>
-      <a class="btn btn-secondary" href="booking.html">Open Booking Dashboard</a>
+      <button type="button" class="cancel-btn" onclick="closeDetailPage()"><img src="icon/close-circle.png" alt="" class="btn-icon">Close</button>
+      <a class="btn btn-secondary" href="booking.html"><img src="icon/calendar-simple.png" alt="" class="btn-icon">Open Booking Dashboard</a>
     </div>
   `;
 }
@@ -3138,9 +3107,9 @@ function openRuleForm(ruleId = null) {
     </div>
 
     <div class="form-actions">
-      <button type="button" class="cancel-btn" onclick="closeDetailPage()">Cancel</button>
-      ${isEdit ? `<button type="button" class="btn btn-secondary bk-danger-btn" onclick="removeLoyaltyRule('${rule.id}')">Remove Rule</button>` : ""}
-      <button type="submit" class="save-btn">${isEdit ? "Save Rule" : "Add Rule"}</button>
+      <button type="button" class="cancel-btn" onclick="closeDetailPage()"><img src="icon/close-circle.png" alt="" class="btn-icon">Cancel</button>
+      ${isEdit ? `<button type="button" class="btn btn-secondary bk-danger-btn" onclick="removeLoyaltyRule('${rule.id}')"><img src="icon/delete.png" alt="" class="btn-icon">Remove Rule</button>` : ""}
+      <button type="submit" class="save-btn"><img src="icon/confirm-circle.png" alt="" class="btn-icon solid-btn-icon">${isEdit ? "Save Rule" : "Add Rule"}</button>
     </div>
   `;
 
@@ -3328,8 +3297,7 @@ function renderPaymentPendingTable(searchValue) {
       <td>${p.method}</td>
       <td>${formatDate(p.date)}</td>
       <td>
-        <button class="action-btn" onclick="openPaymentDetail('${p.payment_id}')">View</button>
-        <button class="edit-btn" onclick="verifyPayment('${p.payment_id}')">Verify</button>
+        <button class="action-btn" onclick="openPaymentDetail('${p.payment_id}')"><img src="icon/view.png" alt="" class="btn-icon">View</button>
       </td>
     </tr>
   `).join("");
@@ -3364,7 +3332,7 @@ function renderPaymentHistoryTable(searchValue) {
       <td>${p.method}</td>
       <td><span class="status-tag status-${p.status === "verified" ? "done" : "pending"}">${p.status === "verified" ? "Verified" : "Pending"}</span></td>
       <td>${formatDate(p.date)}</td>
-      <td><button class="action-btn" onclick="openPaymentDetail('${p.payment_id}')">View</button></td>
+      <td><button class="action-btn" onclick="openPaymentDetail('${p.payment_id}')"><img src="icon/view.png" alt="" class="btn-icon">View</button></td>
     </tr>
   `).join("");
 }
@@ -3451,8 +3419,8 @@ function openPaymentDetail(paymentId) {
     </div>
 
     <div class="form-actions">
-      <button type="button" class="cancel-btn" onclick="closeDetailPage()">Close</button>
-      ${p.status === "pending" ? `<button type="button" class="save-btn" onclick="verifyPayment('${p.payment_id}')">Verify</button>` : ""}
+      <button type="button" class="cancel-btn" onclick="closeDetailPage()"><img src="icon/close-circle.png" alt="" class="btn-icon">Close</button>
+      ${p.status === "pending" ? `<button type="button" class="save-btn" onclick="verifyPayment('${p.payment_id}')"><img src="icon/confirm-circle.png" alt="" class="btn-icon solid-btn-icon">Verify</button>` : ""}
     </div>
   `;
 }
@@ -3542,8 +3510,7 @@ function renderEnquiryPendingTable(searchValue) {
       <td>${e.receivedAt}</td>
       <td>${slaBadge("enquiry", e.receivedAt)}</td>
       <td>
-        <button class="action-btn" onclick="openEnquiryDetailPage('${e.id}')">View</button>
-        <button class="edit-btn" onclick="resolveEnquiryAndRefresh('${e.id}')">Mark Replied</button>
+        <button class="action-btn" onclick="openEnquiryDetailPage('${e.id}')"><img src="icon/view.png" alt="" class="btn-icon">View</button>
       </td>
     </tr>
   `).join("");
@@ -3569,9 +3536,9 @@ function renderEnquiryHistoryTable(searchValue) {
       </td>
       <td>${e.message}</td>
       <td>${e.receivedAt}</td>
-      <td>${e.status === "resolved" ? (e.handledBy === "ai" ? "🤖 AI" : "🧑‍💼 Human") : "—"}</td>
+      <td>${e.status === "resolved" ? (e.handledBy === "ai" ? '<img src="icon/analytics-dashboard.png" alt="" class="row-icon">AI' : '<img src="icon/team.png" alt="" class="row-icon">Human') : "—"}</td>
       <td><span class="status-tag status-${e.status === "resolved" ? "done" : "pending"}">${e.status === "resolved" ? "Resolved" : "Pending"}</span></td>
-      <td><button class="action-btn" onclick="openEnquiryDetailPage('${e.id}')">View</button></td>
+      <td><button class="action-btn" onclick="openEnquiryDetailPage('${e.id}')"><img src="icon/view.png" alt="" class="btn-icon">View</button></td>
     </tr>
   `).join("");
 }
@@ -3634,9 +3601,9 @@ function openEnquiryDetailPage(id) {
     ` : ""}
 
     <div class="form-actions">
-      <button type="button" class="cancel-btn" onclick="closeDetailPage()">Close</button>
-      ${isPending ? `<a class="btn btn-secondary" href="${getWhatsAppLink(e.phone)}" target="_blank" rel="noopener">💬 Open WhatsApp</a>` : ""}
-      ${isPending ? `<button type="button" class="save-btn" onclick="resolveEnquiryAndRefresh('${e.id}')">Mark Replied</button>` : ""}
+      <button type="button" class="cancel-btn" onclick="closeDetailPage()"><img src="icon/close-circle.png" alt="" class="btn-icon">Close</button>
+      ${isPending ? `<a class="btn btn-secondary" href="${getWhatsAppLink(e.phone)}" target="_blank" rel="noopener"><img src="icon/chat-message.png" alt="" class="btn-icon">Open WhatsApp</a>` : ""}
+      ${isPending ? `<button type="button" class="save-btn" onclick="resolveEnquiryAndRefresh('${e.id}')"><img src="icon/confirm-circle.png" alt="" class="btn-icon solid-btn-icon">Mark Replied</button>` : ""}
     </div>
   `;
 }
@@ -3758,7 +3725,7 @@ function renderStaffListTable() {
     return `
       <tr>
         <td>
-          <span class="profile-name">🧑‍💼 ${s.name}</span>
+          <span class="profile-name"><img src="icon/team.png" alt="" class="row-icon">${s.name}</span>
           <span class="profile-sub">${s.id}</span>
         </td>
         <td>${s.role}</td>
@@ -4078,10 +4045,10 @@ function openLeaveCellDetail(staffId, dateStr) {
 const SERVICE_MIX_COLORS = { grooming: "#3B82F6", boarding: "#10B981", daycare: "#F59E0B" };
 
 const KPI_DEFS = [
-  { key: "revenue",   icon: "💰", color: "#3B82F6", label: "Total Revenue",               deltaPct: 12.4, onClick: "openKpiDetail('revenue')" },
-  { key: "bookings",  icon: "📅", color: "#059669", label: "Total Bookings",               deltaPct: 8.7,  onClick: "openKpiDetail('bookings')" },
-  { key: "repeat",    icon: "👥", color: "#7C3AED", label: "Repeat Customer Rate",          deltaPct: 5.3,  onClick: "openKpiDetail('repeat')" },
-  { key: "occupancy", icon: "🥧", color: "#D97706", label: "Occupancy / Slot Utilisation",  deltaPct: 6.1,  onClick: "openKpiDetail('occupancy')" }
+  { key: "revenue",   icon: "payment-card.png",      label: "Total Revenue",               deltaPct: 12.4, onClick: "openKpiDetail('revenue')" },
+  { key: "bookings",  icon: "calendar-simple.png",    label: "Total Bookings",               deltaPct: 8.7,  onClick: "openKpiDetail('bookings')" },
+  { key: "repeat",    icon: "users.png",              label: "Repeat Customer Rate",          deltaPct: 5.3,  onClick: "openKpiDetail('repeat')" },
+  { key: "occupancy", icon: "line-chart.png",        label: "Occupancy / Slot Utilisation",  deltaPct: 6.1,  onClick: "openKpiDetail('occupancy')" }
 ];
 
 let currentDashboardPeriod = "weekly";
@@ -4123,7 +4090,7 @@ function periodRangeLabel(period, range) {
 }
 
 function formatPeriodChip(period, range) {
-  return `🗓️ ${periodRangeLabel(period, range)}`;
+  return `<img src="icon/calendar-simple.png" alt="" class="row-icon">${periodRangeLabel(period, range)}`;
 }
 
 function isRoomOccupiedOnDate(roomId, date) {
@@ -4205,7 +4172,7 @@ function renderKpiHeroGrid(metrics) {
     return `
       <div class="kpi-hero-card ${def.onClick ? "clickable" : ""}" ${def.onClick ? `onclick="${def.onClick}"` : ""}>
         <div class="kpi-hero-top">
-          <div class="kpi-hero-icon" style="background:${def.color};">${def.icon}</div>
+          <div class="kpi-hero-icon"><img src="icon/${def.icon}" alt="" class="kpi-icon-img"></div>
           <div>
             <div class="kpi-hero-label">${def.label}</div>
             <div class="kpi-hero-value">${values[def.key]}</div>
@@ -4620,15 +4587,15 @@ function openOpsHighlightDetail(key) {
 
 function renderOpsHighlights(metrics) {
   const cards = [
-    { key: "pendingTasks", icon: "📋", color: "#3B82F6", label: "Pending Tasks", value: metrics.pendingTasks, sub: "Needs action now", tone: "neutral" },
-    { key: "slaCompliance", icon: "⏱️", color: "#059669", label: "SLA Compliance", value: `${metrics.slaCompliance.rate}%`, sub: metrics.slaCompliance.breaches ? `${metrics.slaCompliance.breaches} breached now` : "All within SLA", tone: metrics.slaCompliance.rate < 80 ? "down" : "up" },
-    { key: "noShow", icon: "⚠️", color: "#D97706", label: "No-Show Rate", value: `${metrics.noShowRate.toFixed(1)}%`, sub: "this period", tone: metrics.noShowRate > 8 ? "down" : "up" },
-    { key: "completionRate", icon: "✅", color: "#7C3AED", label: "Completion Rate", value: `${Math.round(metrics.completionRate)}%`, sub: "this period", tone: metrics.completionRate >= 50 ? "up" : "neutral" }
+    { key: "pendingTasks", icon: "list-view.png", label: "Pending Tasks", value: metrics.pendingTasks, sub: "Needs action now", tone: "neutral" },
+    { key: "slaCompliance", icon: "time.png", label: "SLA Compliance", value: `${metrics.slaCompliance.rate}%`, sub: metrics.slaCompliance.breaches ? `${metrics.slaCompliance.breaches} breached now` : "All within SLA", tone: metrics.slaCompliance.rate < 80 ? "down" : "up" },
+    { key: "noShow", icon: "notification-bell.png", label: "No-Show Rate", value: `${metrics.noShowRate.toFixed(1)}%`, sub: "this period", tone: metrics.noShowRate > 8 ? "down" : "up" },
+    { key: "completionRate", icon: "confirm-circle.png", label: "Completion Rate", value: `${Math.round(metrics.completionRate)}%`, sub: "this period", tone: metrics.completionRate >= 50 ? "up" : "neutral" }
   ];
 
   q("opsHighlightGrid").innerHTML = cards.map(c => `
     <div class="ops-highlight-card" onclick="openOpsHighlightDetail('${c.key}')">
-      <div class="ops-highlight-icon" style="background:${c.color};">${c.icon}</div>
+      <div class="ops-highlight-icon"><img src="icon/${c.icon}" alt="" class="ops-icon-img"></div>
       <span class="ops-highlight-label">${c.label}</span>
       <span class="ops-highlight-value">${c.value}</span>
       <span class="ops-highlight-sub ${c.tone}">${c.sub}</span>
@@ -4657,15 +4624,15 @@ function openSnapshotDetail(key) {
 
 function renderSnapshot() {
   const rows = [
-    { key: "members", icon: "👥", label: "Active Members", value: customers.length.toLocaleString("en-MY") },
-    { key: "pets", icon: "🐾", label: "Total Pets", value: pets.length.toLocaleString("en-MY") },
-    { key: "staff", icon: "🧑‍💼", label: "Staff On Duty Today", value: staff.filter(s => isStaffOnDuty(s.id, today)).length },
-    { key: null, icon: "🕐", label: "Operating Hours", value: "8:00 AM – 8:00 PM" }
+    { key: "members", icon: "users.png", label: "Active Members", value: customers.length.toLocaleString("en-MY") },
+    { key: "pets", icon: "paw-print.png", label: "Total Pets", value: pets.length.toLocaleString("en-MY") },
+    { key: "staff", icon: "team.png", label: "Staff On Duty Today", value: staff.filter(s => isStaffOnDuty(s.id, today)).length },
+    { key: null, icon: "time.png", label: "Operating Hours", value: "8:00 AM – 8:00 PM" }
   ];
 
   q("snapshotList").innerHTML = rows.map(r => `
     <div class="snapshot-row ${r.key ? "clickable" : ""}" ${r.key ? `onclick="openSnapshotDetail('${r.key}')"` : ""}>
-      <span class="snapshot-row-label">${r.icon} ${r.label}</span>
+      <span class="snapshot-row-label"><img src="icon/${r.icon}" alt="" class="snapshot-icon">${r.label}</span>
       <span class="snapshot-row-value">${r.value}</span>
     </div>
   `).join("");
@@ -4717,7 +4684,7 @@ function renderAnalyticsDashboard() {
   const metrics = computeDashboardMetrics(currentDashboardPeriod);
 
   const weekChip = q("dashboardWeekChip");
-  if (weekChip) weekChip.textContent = formatPeriodChip(metrics.period, metrics.range);
+  if (weekChip) weekChip.innerHTML = formatPeriodChip(metrics.period, metrics.range);
 
   const periodLabel = periodRangeLabel(metrics.period, metrics.range);
   const granularity = { daily: "Hourly", weekly: "Daily", monthly: "Weekly" }[metrics.period];
@@ -4799,16 +4766,16 @@ function renderStaffKpiHero(metrics, todayDate) {
   const onLeave = staff.filter(s => isStaffOnLeave(s.id, todayDate)).length;
 
   const cards = [
-    { icon: "🧑‍💼", color: "#3B82F6", label: "Total Staff", value: staff.length, sub: "Registered team members" },
-    { icon: "✅", color: "#059669", label: "On Duty Today", value: onDuty, sub: `of ${staff.length} staff` },
-    { icon: "🌴", color: "#D97706", label: "On Leave Today", value: onLeave, sub: onLeave ? "Approved leave" : "None today" },
-    { icon: "📅", color: "#7C3AED", label: "Bookings Handled", value: metrics.periodBookings.length.toLocaleString("en-MY"), sub: "this period" }
+    { icon: "team.png", label: "Total Staff", value: staff.length, sub: "Registered team members" },
+    { icon: "confirm-circle.png", label: "On Duty Today", value: onDuty, sub: `of ${staff.length} staff` },
+    { icon: "logout.png", label: "On Leave Today", value: onLeave, sub: onLeave ? "Approved leave" : "None today" },
+    { icon: "calendar-simple.png", label: "Bookings Handled", value: metrics.periodBookings.length.toLocaleString("en-MY"), sub: "this period" }
   ];
 
   q("staffKpiHeroGrid").innerHTML = cards.map(c => `
     <div class="kpi-hero-card">
       <div class="kpi-hero-top">
-        <div class="kpi-hero-icon" style="background:${c.color};">${c.icon}</div>
+        <div class="kpi-hero-icon"><img src="icon/${c.icon}" alt="" class="kpi-icon-img"></div>
         <div>
           <div class="kpi-hero-label">${c.label}</div>
           <div class="kpi-hero-value">${c.value}</div>
@@ -4914,15 +4881,15 @@ function renderStaffLeaveSnapshot(todayDate) {
   const approvedCount = leaveRequests.filter(lv => lv.status === "approved").length;
 
   const rows = [
-    { key: "pending", icon: "🕒", label: "Pending Requests", value: pendingCount },
-    { key: "approved", icon: "✅", label: "Approved Requests", value: approvedCount },
-    { key: "all", icon: "📋", label: "Total Applications", value: leaveRequests.length },
-    { key: null, icon: "🌴", label: "On Leave Today", value: staff.filter(s => isStaffOnLeave(s.id, todayDate)).length }
+    { key: "pending", icon: "time.png", label: "Pending Requests", value: pendingCount },
+    { key: "approved", icon: "confirm-circle.png", label: "Approved Requests", value: approvedCount },
+    { key: "all", icon: "list-view.png", label: "Total Applications", value: leaveRequests.length },
+    { key: null, icon: "logout.png", label: "On Leave Today", value: staff.filter(s => isStaffOnLeave(s.id, todayDate)).length }
   ];
 
   q("staffLeaveSnapshotList").innerHTML = rows.map(r => `
     <div class="snapshot-row ${r.key ? "clickable" : ""}" ${r.key ? `onclick="openStaffLeaveSnapshotDetail('${r.key}')"` : ""}>
-      <span class="snapshot-row-label">${r.icon} ${r.label}</span>
+      <span class="snapshot-row-label"><img src="icon/${r.icon}" alt="" class="snapshot-icon">${r.label}</span>
       <span class="snapshot-row-value">${r.value}</span>
     </div>
   `).join("");
@@ -4952,15 +4919,15 @@ function renderStaffHighlights(metrics, todayDate) {
   const onDutyRate = staff.length ? Math.round((activeStaffCount / staff.length) * 100) : 0;
 
   const cards = [
-    { key: "busiest", icon: "🏆", color: "#3B82F6", label: "Busiest Staff", value: busiest?.staff.name || "—", sub: `${busiest?.count || 0} booking(s) this period`, tone: "neutral" },
-    { key: "avgLoad", icon: "📊", color: "#059669", label: "Avg Bookings / Active Staff", value: avgBookings, sub: "today", tone: "neutral" },
-    { key: "pendingLeave", icon: "🕒", color: "#D97706", label: "Pending Leave Requests", value: pendingLeaveCount, sub: pendingLeaveCount ? "Needs review" : "All clear", tone: pendingLeaveCount ? "down" : "up" },
-    { key: "onDutyRate", icon: "✅", color: "#7C3AED", label: "On-Duty Rate Today", value: `${onDutyRate}%`, sub: "of total staff", tone: "neutral" }
+    { key: "busiest", icon: "bar-chart.png", label: "Busiest Staff", value: busiest?.staff.name || "—", sub: `${busiest?.count || 0} booking(s) this period`, tone: "neutral" },
+    { key: "avgLoad", icon: "line-chart.png", label: "Avg Bookings / Active Staff", value: avgBookings, sub: "today", tone: "neutral" },
+    { key: "pendingLeave", icon: "time.png", label: "Pending Leave Requests", value: pendingLeaveCount, sub: pendingLeaveCount ? "Needs review" : "All clear", tone: pendingLeaveCount ? "down" : "up" },
+    { key: "onDutyRate", icon: "confirm-circle.png", label: "On-Duty Rate Today", value: `${onDutyRate}%`, sub: "of total staff", tone: "neutral" }
   ];
 
   q("staffHighlightGrid").innerHTML = cards.map(c => `
     <div class="ops-highlight-card" onclick="openStaffHighlightDetail('${c.key}')">
-      <div class="ops-highlight-icon" style="background:${c.color};">${c.icon}</div>
+      <div class="ops-highlight-icon"><img src="icon/${c.icon}" alt="" class="ops-icon-img"></div>
       <span class="ops-highlight-label">${c.label}</span>
       <span class="ops-highlight-value">${c.value}</span>
       <span class="ops-highlight-sub ${c.tone}">${c.sub}</span>
@@ -4975,15 +4942,15 @@ function openStaffRoleDetail(role) {
 }
 
 function renderStaffRoleSnapshot() {
-  const roleMeta = { Manager: "👑", Groomer: "✂️", Caretaker: "🐾" };
+  const roleMeta = { Manager: "team.png", Groomer: "grooming-scissors.png", Caretaker: "paw-print.png" };
   const rows = Object.keys(roleMeta).map(role => ({
     key: role, icon: roleMeta[role], label: `${role}s`, value: staff.filter(s => s.role === role).length
   }));
-  rows.push({ key: null, icon: "🧑‍💼", label: "Total Staff", value: staff.length });
+  rows.push({ key: null, icon: "team.png", label: "Total Staff", value: staff.length });
 
   q("staffRoleSnapshotList").innerHTML = rows.map(r => `
     <div class="snapshot-row ${r.key ? "clickable" : ""}" ${r.key ? `onclick="openStaffRoleDetail('${r.key}')"` : ""}>
-      <span class="snapshot-row-label">${r.icon} ${r.label}</span>
+      <span class="snapshot-row-label"><img src="icon/${r.icon}" alt="" class="snapshot-icon">${r.label}</span>
       <span class="snapshot-row-value">${r.value}</span>
     </div>
   `).join("");
@@ -5053,16 +5020,16 @@ function renderSystemKpiHero() {
   const approvedLoyalty = loyaltyRequests.filter(r => r.status === "approved").length;
 
   const cards = [
-    { key: "enquiry", icon: "💬", color: "#3B82F6", label: "Enquiry Resolution Rate", value: `${totalEnquiries ? Math.round((resolvedEnquiries / totalEnquiries) * 100) : 0}%`, sub: `${resolvedEnquiries}/${totalEnquiries} resolved`, clickable: true },
-    { key: "payment", icon: "💳", color: "#059669", label: "Payment Verification Rate", value: `${totalPayments ? Math.round((verifiedPayments / totalPayments) * 100) : 0}%`, sub: `${verifiedPayments}/${totalPayments} verified`, clickable: true },
-    { key: "loyalty", icon: "🎁", color: "#D97706", label: "Loyalty Requests Processed", value: `${totalLoyalty ? Math.round((approvedLoyalty / totalLoyalty) * 100) : 0}%`, sub: `${approvedLoyalty}/${totalLoyalty} approved`, clickable: true },
-    { key: null, icon: "🤖", color: "#7C3AED", label: "AI Response Accuracy", value: "96.4%", sub: "Illustrative", clickable: false }
+    { key: "enquiry", icon: "chat-message.png", label: "Enquiry Resolution Rate", value: `${totalEnquiries ? Math.round((resolvedEnquiries / totalEnquiries) * 100) : 0}%`, sub: `${resolvedEnquiries}/${totalEnquiries} resolved`, clickable: true },
+    { key: "payment", icon: "payment-card.png", label: "Payment Verification Rate", value: `${totalPayments ? Math.round((verifiedPayments / totalPayments) * 100) : 0}%`, sub: `${verifiedPayments}/${totalPayments} verified`, clickable: true },
+    { key: "loyalty", icon: "loyalty-reward-gift.png", label: "Loyalty Requests Processed", value: `${totalLoyalty ? Math.round((approvedLoyalty / totalLoyalty) * 100) : 0}%`, sub: `${approvedLoyalty}/${totalLoyalty} approved`, clickable: true },
+    { key: null, icon: "analytics-dashboard.png", label: "AI Response Accuracy", value: "96.4%", sub: "Illustrative", clickable: false }
   ];
 
   q("systemKpiHeroGrid").innerHTML = cards.map(c => `
     <div class="kpi-hero-card" ${c.clickable ? `onclick="openSystemKpiDetail('${c.key}')"` : `style="cursor:default;"`}>
       <div class="kpi-hero-top">
-        <div class="kpi-hero-icon" style="background:${c.color};">${c.icon}</div>
+        <div class="kpi-hero-icon"><img src="icon/${c.icon}" alt="" class="kpi-icon-img"></div>
         <div>
           <div class="kpi-hero-label">${c.label}</div>
           <div class="kpi-hero-value">${c.value}</div>
@@ -5148,15 +5115,15 @@ function renderSystemEnquiryDonut() {
 
 function renderSystemIntegrationSnapshot() {
   const rows = [
-    { icon: "💬", label: "WhatsApp Business API", value: "Connected" },
-    { icon: "💳", label: "Payment Gateway", value: "Connected" },
-    { icon: "📅", label: "Booking Calendar Sync", value: "Active" },
-    { icon: "🕐", label: "Last Sync", value: "Just now" }
+    { icon: "chat-message.png", label: "WhatsApp Business API", value: "Connected" },
+    { icon: "payment-card.png", label: "Payment Gateway", value: "Connected" },
+    { icon: "calendar-simple.png", label: "Booking Calendar Sync", value: "Active" },
+    { icon: "time.png", label: "Last Sync", value: "Just now" }
   ];
 
   q("systemIntegrationSnapshotList").innerHTML = rows.map(r => `
     <div class="snapshot-row">
-      <span class="snapshot-row-label">${r.icon} ${r.label}</span>
+      <span class="snapshot-row-label"><img src="icon/${r.icon}" alt="" class="snapshot-icon">${r.label}</span>
       <span class="snapshot-row-value">${r.value}</span>
     </div>
   `).join("");
@@ -5166,15 +5133,15 @@ function renderSystemHighlights() {
   const autoResolved = enquiries.filter(e => e.status === "resolved" && e.handledBy === "ai").length;
 
   const cards = [
-    { icon: "🟢", color: "#059669", label: "API Uptime", value: "99.9%", sub: "Illustrative", clickable: false },
-    { icon: "⚡", color: "#3B82F6", label: "Avg AI Response Time", value: "1.2s", sub: "Illustrative", clickable: false },
-    { icon: "✅", color: "#7C3AED", label: "Auto-Resolved Enquiries", value: autoResolved, sub: "All-time, no human needed", clickable: true, onclick: "openEnquiryHandledByDetail('ai')" },
-    { icon: "⚠️", color: "#D97706", label: "Error Rate", value: "0.3%", sub: "Illustrative", clickable: false }
+    { icon: "confirm-circle.png", label: "API Uptime", value: "99.9%", sub: "Illustrative", clickable: false },
+    { icon: "time.png", label: "Avg AI Response Time", value: "1.2s", sub: "Illustrative", clickable: false },
+    { icon: "confirm-circle.png", label: "Auto-Resolved Enquiries", value: autoResolved, sub: "All-time, no human needed", clickable: true, onclick: "openEnquiryHandledByDetail('ai')" },
+    { icon: "notification-bell.png", label: "Error Rate", value: "0.3%", sub: "Illustrative", clickable: false }
   ];
 
   q("systemHighlightGrid").innerHTML = cards.map(c => `
     <div class="ops-highlight-card" ${c.clickable ? `onclick="${c.onclick}"` : `style="cursor:default;"`}>
-      <div class="ops-highlight-icon" style="background:${c.color};">${c.icon}</div>
+      <div class="ops-highlight-icon"><img src="icon/${c.icon}" alt="" class="ops-icon-img"></div>
       <span class="ops-highlight-label">${c.label}</span>
       <span class="ops-highlight-value">${c.value}</span>
       <span class="ops-highlight-sub">${c.sub}</span>
@@ -5185,15 +5152,15 @@ function renderSystemHighlights() {
 function renderSystemQueueSnapshot() {
   const todayDate = getToday();
   const rows = [
-    { icon: "✂️", label: "Pending Grooming Today", value: bookings.filter(b => b.serviceType === "grooming" && b.date === todayDate && b.status === "pending").length, href: "dailyoverview.html" },
-    { icon: "💬", label: "Pending Enquiries", value: enquiries.filter(e => e.status === "pending").length, href: "enquiries.html" },
-    { icon: "🎁", label: "Pending Loyalty Redemptions", value: loyaltyRequests.filter(r => r.status === "pending").length, href: "loyalty.html" },
-    { icon: "💳", label: "Pending Payment Verification", value: paymentRecords.filter(p => p.status === "pending").length, href: "payment.html" }
+    { icon: "grooming-scissors.png", label: "Pending Grooming Today", value: bookings.filter(b => b.serviceType === "grooming" && b.date === todayDate && b.status === "pending").length, href: "dailyoverview.html" },
+    { icon: "chat-message.png", label: "Pending Enquiries", value: enquiries.filter(e => e.status === "pending").length, href: "enquiries.html" },
+    { icon: "loyalty-reward-gift.png", label: "Pending Loyalty Redemptions", value: loyaltyRequests.filter(r => r.status === "pending").length, href: "loyalty.html" },
+    { icon: "payment-card.png", label: "Pending Payment Verification", value: paymentRecords.filter(p => p.status === "pending").length, href: "payment.html" }
   ];
 
   q("systemQueueSnapshotList").innerHTML = rows.map(r => `
     <div class="snapshot-row clickable" onclick="location.href='${r.href}'">
-      <span class="snapshot-row-label">${r.icon} ${r.label}</span>
+      <span class="snapshot-row-label"><img src="icon/${r.icon}" alt="" class="snapshot-icon">${r.label}</span>
       <span class="snapshot-row-value">${r.value}</span>
     </div>
   `).join("");
@@ -5303,9 +5270,9 @@ const SETTINGS_DEFAULTS = {
 };
 
 const SERVICE_META = {
-  grooming: { icon: "✂️", label: "Grooming" },
-  boarding: { icon: "🏨", label: "Boarding / Hotel" },
-  daycare: { icon: "🌞", label: "Daycare" }
+  grooming: { icon: "grooming-scissors.png", label: "Grooming" },
+  boarding: { icon: "boarding.png", label: "Boarding / Hotel" },
+  daycare: { icon: "dog-play.png", label: "Daycare" }
 };
 
 function settingsStorageKey() {
@@ -5324,7 +5291,7 @@ function loadBusinessSettings() {
 
 function showFilename(input, targetId) {
   const el = q(targetId);
-  if (el && input.files.length) el.textContent = "📎 " + input.files[0].name;
+  if (el && input.files.length) el.innerHTML = `<img src="icon/upload.png" alt="" class="row-icon">${input.files[0].name}`;
 }
 
 function renderServicePolicyCards(account) {
@@ -5332,19 +5299,19 @@ function renderServicePolicyCards(account) {
   const settings = loadBusinessSettings();
 
   const textEl = q("selectedServicesText");
-  if (textEl) textEl.textContent = activeServices.map(type => `${SERVICE_META[type]?.icon || "🐾"} ${SERVICE_META[type]?.label || type}`).join(" · ");
+  if (textEl) textEl.innerHTML = activeServices.map(type => `<img src="icon/${SERVICE_META[type]?.icon || "paw-print.png"}" alt="" class="row-icon">${SERVICE_META[type]?.label || type}`).join(" · ");
 
   q("selectedServiceCards").innerHTML = activeServices.map(type => {
-    const meta = SERVICE_META[type] || { icon: "🐾", label: type };
+    const meta = SERVICE_META[type] || { icon: "paw-print.png", label: type };
     const savedName = settings.policies?.[type];
     return `
       <div class="service-config-card">
-        <h3>${meta.icon} ${meta.label}</h3>
+        <h3><img src="icon/${meta.icon}" alt="" class="card-icon">${meta.label}</h3>
         <p class="muted">Upload your ${meta.label.toLowerCase()} service policy document.</p>
         <label class="logo-upload-label" for="policy_${type}">
-          <span class="upload-icon">📄</span>
-          <p id="policyFileName_${type}">${savedName ? "📎 " + savedName : "Click to upload policy file<br>(PDF, TXT, DOCX — max 10 MB)"}</p>
-          <input type="file" id="policy_${type}" accept=".pdf,.txt,.docx" onchange="showFilename(this,'policyFileName_${type}')">
+          <img src="icon/upload.png" alt="" class="upload-icon">
+          <p id="policyFileName_${type}">${savedName ? `<img src="icon/upload.png" alt="" class="row-icon">${savedName}` : "Click to upload policy file<br>(PDF, TXT, DOCX — max 10 MB)"}</p>
+        <input type="file" id="policy_${type}" accept=".pdf,.txt,.docx" onchange="showFilename(this,'policyFileName_${type}')">
         </label>
       </div>
     `;
@@ -5359,7 +5326,7 @@ function populateSettingsForm(s, account) {
   q("cfg_state").value = s.state;
   q("cfg_zip").value = s.zip;
   q("cfg_description").value = s.description;
-  if (s.logoName) q("logoFileName").textContent = "📎 " + s.logoName;
+  if (s.logoName) q("logoFileName").innerHTML = '<img src="icon/upload.png" alt="" class="row-icon">' + s.logoName;
 
   ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"].forEach(day => { q("hour_" + day).value = s.hours[day] || ""; });
   q("cfg_closedDates").value = s.closedDates;

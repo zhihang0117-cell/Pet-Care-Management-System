@@ -17,23 +17,26 @@
   <aside class="dash-sidebar">
 
     <div class="dash-brand">
-      <div class="dash-brand-avatar">🐾</div>
+      <div class="dash-brand-avatar"><img src="icon/logo.png" alt="Pawfect AI" class="brand-logo-img"></div>
       <div class="dash-brand-text">
         <span class="dash-brand-name">Pawfect AI</span>
         <span class="dash-brand-sub">Staff portal</span>
       </div>
+      <button type="button" class="mobile-nav-toggle" id="mobileNavToggle" onclick="toggleMobileNav()" aria-label="Toggle navigation menu">
+        <img src="icon/list-view.png" alt="">
+      </button>
     </div>
 
     <nav class="dash-nav">
-      <a class="dash-nav-link" href="dailyoverview.html">🏠 &nbsp;&nbsp;Daily Overview</a>
-      <a class="dash-nav-link" href="booking.html">📅&nbsp;&nbsp;Booking Dashboard</a>
-      <a class="dash-nav-link" href="profile.html">🐾 Customer &amp; Pet Profile</a>
-      <a class="dash-nav-link" href="enquiries.html">💬&nbsp;&nbsp;Enquiries (WhatsApp)</a>
-      <a class="dash-nav-link" href="payment.html">💳&nbsp;&nbsp;Payment</a>
-      <a class="dash-nav-link active" href="loyalty.html">🎁&nbsp;&nbsp;Loyalty</a>
-      <a class="dash-nav-link" href="staff.html">👥&nbsp;&nbsp;Staff Management</a>
-      <a class="dash-nav-link" href="dashboard.html">📊&nbsp;&nbsp;Analytical Dashboard</a>
-      <a class="dash-nav-link" href="setting.html">⚙️&nbsp;&nbsp;Settings</a>
+      <a class="dash-nav-link" href="dailyoverview.html"><span class="nav-icon-wrap"><img src="icon/home.png" alt="" class="nav-icon"></span>Daily Overview</a>
+      <a class="dash-nav-link" href="booking.html"><span class="nav-icon-wrap"><img src="icon/calendar-simple.png" alt="" class="nav-icon"></span>Booking Dashboard</a>
+      <a class="dash-nav-link" href="profile.html"><span class="nav-icon-wrap"><img src="icon/paw-print.png" alt="" class="nav-icon"></span>Customer &amp; Pet Profile</a>
+      <a class="dash-nav-link" href="enquiries.html"><span class="nav-icon-wrap"><img src="icon/chat-message.png" alt="" class="nav-icon"></span>Enquiries (WhatsApp)</a>
+      <a class="dash-nav-link" href="payment.html"><span class="nav-icon-wrap"><img src="icon/payment-card.png" alt="" class="nav-icon"></span>Payment</a>
+      <a class="dash-nav-link active" href="loyalty.html"><span class="nav-icon-wrap"><img src="icon/loyalty-reward-gift.png" alt="" class="nav-icon"></span>Loyalty</a>
+      <a class="dash-nav-link" href="staff.html"><span class="nav-icon-wrap"><img src="icon/team.png" alt="" class="nav-icon"></span>Staff Management</a>
+      <a class="dash-nav-link" href="dashboard.html"><span class="nav-icon-wrap"><img src="icon/bar-chart.png" alt="" class="nav-icon"></span>Analytical Dashboard</a>
+      <a class="dash-nav-link" href="setting.html"><span class="nav-icon-wrap"><img src="icon/settings.png" alt="" class="nav-icon"></span>Settings</a>
     </nav>
 
     <div class="dash-sidebar-footer">
@@ -47,11 +50,11 @@
       </div>
 
       <div class="sidebar-switch-wrap">
-        <button type="button" class="btn btn-secondary sidebar-switch-btn" onclick="toggleSwitchAccountMenu()">🔁 Switch Account</button>
+        <button type="button" class="btn btn-secondary sidebar-switch-btn" onclick="toggleSwitchAccountMenu()"><span class="nav-icon-wrap switch-btn-icon-wrap"><img src="icon/switchacc.png" alt="" class="nav-icon"></span>Switch Account</button>
         <div class="sidebar-switch-menu" id="switchAccountMenu"></div>
       </div>
 
-      <a href="login.html" id="logoutBtn" class="btn btn-secondary" style="width:100%;justify-content:center;font-size:0.88rem;">Logout</a>
+      <a href="login.html" id="logoutBtn" class="btn btn-logout" style="width:100%;justify-content:center;font-size:0.88rem;">Logout</a>
     </div>
 
   </aside>
@@ -111,9 +114,9 @@
     <!-- Filter tabs -->
     <section class="bk-section bk-section-slim">
       <div class="bk-tab-group" id="loyaltyTabs">
-        <button class="tab-btn active" data-panel="pending">🕒 Pending List</button>
-        <button class="tab-btn" data-panel="members">🎖️ Member List</button>
-        <button class="tab-btn" data-panel="rules">⚙️ Point &amp; Redemption Rules</button>
+        <button class="tab-btn active" data-panel="pending"><img src="icon/time.png" alt="" class="tab-icon">Pending List</button>
+        <button class="tab-btn" data-panel="members"><img src="icon/loyalty-reward-gift.png" alt="" class="tab-icon">Member List</button>
+        <button class="tab-btn" data-panel="rules"><img src="icon/settings.png" alt="" class="tab-icon">Point &amp; Redemption Rules</button>
       </div>
     </section>
 
