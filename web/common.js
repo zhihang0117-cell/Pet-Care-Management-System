@@ -28,7 +28,25 @@ const rooms = [
 
 const today = getToday();
 
-let bookings = [
+function bookingsStorageKey() {
+  const account = getCurrentAccount();
+  return "pawfect_bookings_" + (account?.businessKey || "default");
+}
+
+function loadBookings(seedBookings) {
+  try {
+    const raw = localStorage.getItem(bookingsStorageKey());
+    return raw ? JSON.parse(raw) : seedBookings;
+  } catch (e) {
+    return seedBookings;
+  }
+}
+
+function persistBookings() {
+  localStorage.setItem(bookingsStorageKey(), JSON.stringify(bookings));
+}
+
+const SEED_BOOKINGS = [
   { id: "B001", customerName: "Alicia Lee",   petName: "Milo",   serviceType: "grooming", serviceId: "S002", staffId: "ST002", roomId: "",     date: today, time: "09:00", duration: 150,  status: "pending",   amount: 150, checkInDate: "", checkOutDate: "", specialNote: "Sensitive skin. Use mild shampoo." },
   { id: "B002", customerName: "Jason Lim",    petName: "Coco",   serviceType: "grooming", serviceId: "S001", staffId: "ST002", roomId: "",     date: today, time: "10:30", duration: 90,   status: "scheduled", amount: 80,  checkInDate: "", checkOutDate: "", specialNote: "" },
   { id: "B003", customerName: "Farah Hana",   petName: "Luna",   serviceType: "grooming", serviceId: "S002", staffId: "ST002", roomId: "",     date: today, time: "08:00", duration: 150,  status: "pending",   amount: 150, checkInDate: "", checkOutDate: "", specialNote: "" },
@@ -49,6 +67,8 @@ let bookings = [
   { id: "B016", customerName: "Grace Tan",    petName: "Mochi",  serviceType: "daycare", serviceId: "S005", staffId: "ST003", roomId: "R004", date: today, time: "13:00", duration: 240, status: "pending",   amount: 60,  checkInDate: "", checkOutDate: "", specialNote: "" },
   { id: "B017", customerName: "Faizal Idris", petName: "Coco",   serviceType: "daycare", serviceId: "S006", staffId: "ST003", roomId: "R003", date: today, time: "07:45", duration: 480, status: "no_show",   amount: 100, checkInDate: "", checkOutDate: "", specialNote: "" }
 ];
+
+let bookings = loadBookings(SEED_BOOKINGS);
 
 let enquiries = [
   { id: 'ENQ001', customerName: 'Priya Nathan',  phone: '+60 12-345 7001', channel: 'WhatsApp', message: 'Can I reschedule my grooming appointment to tomorrow?', relatedService: 'grooming', status: 'pending',  receivedAt: '08:12' },
@@ -237,6 +257,11 @@ function setupModalEvents() {
     saveBooking();
   });
 
+  document.getElementById("cancelBookingBtn").addEventListener("click", () => {
+    document.getElementById("bookingStatus").value = "cancelled";
+    saveBooking();
+  });
+
   document.getElementById("openPetProfileBtn").addEventListener("click", () => {
     const petName = document.getElementById("petName").value;
     alert(`Open pet profile: ${petName}`);
@@ -315,6 +340,7 @@ function setupListingEvents() {
 ========================= */
 
 function renderAll() {
+  persistBookings();
   renderMetricCards();
   renderKanban();
   renderCalendar();
@@ -391,7 +417,7 @@ function buildMetrics(filter, data) {
 
     return [
       { label: "Boarding Today", value: countToday(boarding) },
-      { label: "Current Boarder", value: boarding.filter(b => b.status !== "no_show").length },
+      { label: "Current Boarder", value: boarding.filter(b => b.status !== "no_show" && b.status !== "cancelled").length },
       { label: "Today Check-in", value: boarding.filter(b => b.checkInDate === getToday()).length },
       { label: "Today Check-out", value: boarding.filter(b => b.checkOutDate === getToday()).length }
     ];
@@ -399,7 +425,7 @@ function buildMetrics(filter, data) {
 
   if (filter === "daycare") {
     const daycare = data.filter(b => b.serviceType === "daycare");
-    const usedCapacity = daycare.filter(b => b.date === getToday() && b.status !== "no_show").length;
+    const usedCapacity = daycare.filter(b => b.date === getToday() && b.status !== "no_show" && b.status !== "cancelled").length;
     const totalCapacity = rooms
       .filter(r => r.type === "daycare")
       .reduce((sum, room) => sum + room.capacity, 0);
@@ -447,7 +473,8 @@ function renderKanban() {
     { key: "pending", label: "Today Pending Service" },
     { key: "scheduled", label: "Scheduled" },
     { key: "done", label: "Done" },
-    { key: "no_show", label: "No Show" }
+    { key: "no_show", label: "No Show" },
+    { key: "cancelled", label: "Cancelled" }
   ];
 
   const data = getKanbanBookings();
@@ -861,6 +888,7 @@ function renderListing() {
             <option value="scheduled" ${booking.status === "scheduled" ? "selected" : ""}>Scheduled</option>
             <option value="done" ${booking.status === "done" ? "selected" : ""}>Done</option>
             <option value="no_show" ${booking.status === "no_show" ? "selected" : ""}>No Show</option>
+            <option value="cancelled" ${booking.status === "cancelled" ? "selected" : ""}>Cancelled</option>
           </select>
         </td>
 
@@ -957,8 +985,10 @@ function saveBooking() {
   const newTime = document.getElementById("bookingTime").value;
   const newStaffId = document.getElementById("staffName").value;
   const newDuration = Number(document.getElementById("duration").value);
+  const newStatus = document.getElementById("bookingStatus").value;
+  const leavingActiveSchedule = newStatus === "cancelled" || newStatus === "no_show";
 
-  if (!canAddBookingToSlot(newDate, newTime, newStaffId, newDuration, bookingId)) {
+  if (!leavingActiveSchedule && !canAddBookingToSlot(newDate, newTime, newStaffId, newDuration, bookingId)) {
     alert("This booking cannot be saved. The selected timeslot already has 3 bookings or the selected staff is already assigned at this time.");
     return;
   }
@@ -1135,7 +1165,9 @@ function getSlotBookings(date, time, excludeBookingId = "") {
   return getFilteredBookings().filter(booking => {
     return booking.date === date &&
       booking.time === time &&
-      booking.id !== excludeBookingId;
+      booking.id !== excludeBookingId &&
+      booking.status !== "cancelled" &&
+      booking.status !== "no_show";
   });
 }
 
@@ -1149,7 +1181,8 @@ function isStaffAlreadyBooked(date, time, staffId, duration = 60, excludeBooking
   const newEnd = newStart + duration;
 
   return bookings.some(booking => {
-    if (booking.date !== date || booking.staffId !== staffId || booking.id === excludeBookingId) {
+    if (booking.date !== date || booking.staffId !== staffId || booking.id === excludeBookingId ||
+        booking.status === "cancelled" || booking.status === "no_show") {
       return false;
     }
     const existingStart = timeToMinutes(booking.time);
@@ -1265,7 +1298,8 @@ function formatStatus(status) {
     pending: "Pending Service",
     scheduled: "Scheduled",
     done: "Done",
-    no_show: "No Show"
+    no_show: "No Show",
+    cancelled: "Cancelled"
   };
 
   return map[status] || status;
@@ -1483,8 +1517,8 @@ function buildActionCards(filter) {
 
   if (filter === 'all' || filter === 'boarding') {
     const boardingBookings = bookings.filter(b => b.serviceType === 'boarding');
-    const checkInsDue = boardingBookings.filter(b => b.checkInDate === today && b.status !== 'done' && b.status !== 'no_show').length;
-    const checkOutsDue = boardingBookings.filter(b => b.checkOutDate === today).length;
+    const checkInsDue = boardingBookings.filter(b => b.checkInDate === today && b.status !== 'done' && b.status !== 'no_show' && b.status !== 'cancelled').length;
+    const checkOutsDue = boardingBookings.filter(b => b.checkOutDate === today && b.status !== 'no_show' && b.status !== 'cancelled').length;
 
     cards.push(
       { key: 'boardingCheckIn', icon: 'login.png', label: 'Boarding Check-In Due', value: checkInsDue, sub: 'Arrivals to confirm', tone: 'success' },
@@ -1529,7 +1563,7 @@ function renderServiceLoadChart() {
     { key: 'boarding', icon: 'boarding.png', label: 'Boarding', tone: 'purple' },
     { key: 'daycare',  icon: 'dog-play.png', label: 'Daycare',  tone: 'warning' }
   ];
-  const counts = types.map(t => bookings.filter(b => b.serviceType === t.key && b.date === today).length);
+  const counts = types.map(t => bookings.filter(b => b.serviceType === t.key && b.date === today && b.status !== "cancelled" && b.status !== "no_show").length);
   const max = Math.max(...counts, 1);
   const total = counts.reduce((a, b) => a + b, 0);
 
@@ -1651,7 +1685,8 @@ const STATUS_META = [
   { key: 'pending',   label: 'Pending Service', color: '#F59E0B' },
   { key: 'scheduled', label: 'Scheduled',       color: '#3B82F6' },
   { key: 'done',      label: 'Done',            color: '#10B981' },
-  { key: 'no_show',   label: 'No Show',         color: '#EF4444' }
+  { key: 'no_show',   label: 'No Show',         color: '#EF4444' },
+  { key: 'cancelled', label: 'Cancelled',       color: '#78716C' }
 ];
 
 function renderStatusDonut(filter) {
@@ -1699,8 +1734,8 @@ function renderRoomStatus(filter) {
 
   el.innerHTML = relevantRooms.map(room => {
     const roomBookings = bookings.filter(b => b.roomId === room.id);
-    const checkoutToday = roomBookings.some(b => b.checkOutDate === today);
-    const activeToday = roomBookings.some(b => b.date === today && b.status !== 'no_show' && b.status !== 'done');
+    const checkoutToday = roomBookings.some(b => b.checkOutDate === today && b.status !== 'no_show' && b.status !== 'cancelled');
+    const activeToday = roomBookings.some(b => b.date === today && b.status !== 'no_show' && b.status !== 'done' && b.status !== 'cancelled');
 
     let label = 'Vacant';
     let statusKey = 'done';
@@ -1747,7 +1782,7 @@ function renderWeeklySchedule(filter) {
   SCHEDULE_HOURS.forEach(hour => {
     bodyHtml += `<div class="schedule-time">${hour}</div>`;
     dates.forEach(date => {
-      const slotBookings = filterBookingsByService(filter).filter(b => b.date === date && slotForTime(b.time) === hour);
+      const slotBookings = filterBookingsByService(filter).filter(b => b.date === date && slotForTime(b.time) === hour && b.status !== 'cancelled' && b.status !== 'no_show');
       const isToday = date === today;
       if (slotBookings.length) {
         bodyHtml += `
@@ -1797,7 +1832,7 @@ function buildActionQueue(filter) {
 
   if (filter !== 'grooming') {
     filterBookingsByService(filter).forEach(b => {
-      if (b.checkInDate === today && b.status !== 'done' && b.status !== 'no_show') {
+      if (b.checkInDate === today && b.status !== 'done' && b.status !== 'no_show' && b.status !== 'cancelled') {
         rows.push({
           time: b.time, typeIcon: 'login.png', type: 'Check-In Due',
           detail: `${b.petName} (${b.customerName}) — ${findRoomName(b.roomId)}`,
@@ -1807,7 +1842,7 @@ function buildActionQueue(filter) {
           rowOnclick: `openQueueItemDetail('booking','${b.id}')`
         });
       }
-      if (b.checkOutDate === today) {
+      if (b.checkOutDate === today && b.status !== 'no_show' && b.status !== 'cancelled') {
         rows.push({
           time: b.time, typeIcon: 'logout.png', type: 'Check-Out Due',
           detail: `${b.petName} (${b.customerName}) — ${findRoomName(b.roomId)}`,
@@ -1913,7 +1948,8 @@ function bookingDetailRow(b) {
     pending:   { tag: 'pending',   tagLabel: 'Needs Action', actionLabel: 'Mark Done',       actionOnclick: `markBookingDone('${b.id}')`, sla: slaBadge('pendingService', b.time) },
     scheduled: { tag: 'scheduled', tagLabel: 'Scheduled',    actionLabel: 'Confirm Arrival',  actionOnclick: `confirmBooking('${b.id}')` },
     done:      { tag: 'done',      tagLabel: 'Done' },
-    no_show:   { tag: 'no_show',   tagLabel: 'No Show' }
+    no_show:   { tag: 'no_show',   tagLabel: 'No Show' },
+    cancelled: { tag: 'cancelled', tagLabel: 'Cancelled' }
   }[b.status];
 
   return renderDetailRow({
@@ -1966,10 +2002,10 @@ function openCardDetail(cardKey) {
     const items = loyaltyRequests.filter(r => (filter === 'all' || r.relatedService === filter) && r.status === 'pending');
     openDetailModal('Pending Loyalty Redemption', `${items.length} redemption request(s) awaiting approval. SLA: approve within 2 hours.`, items.map(loyaltyDetailRow).join(''), cta);
   } else if (cardKey === 'boardingCheckIn') {
-    const items = bookings.filter(b => b.serviceType === 'boarding' && b.checkInDate === today && b.status !== 'done' && b.status !== 'no_show');
+    const items = bookings.filter(b => b.serviceType === 'boarding' && b.checkInDate === today && b.status !== 'done' && b.status !== 'no_show' && b.status !== 'cancelled');
     openDetailModal('Boarding Check-In Due', `${items.length} arrival(s) to confirm.`, items.map(bookingDetailRow).join(''), cta);
   } else if (cardKey === 'boardingCheckOut') {
-    const items = bookings.filter(b => b.serviceType === 'boarding' && b.checkOutDate === today);
+    const items = bookings.filter(b => b.serviceType === 'boarding' && b.checkOutDate === today && b.status !== 'no_show' && b.status !== 'cancelled');
     openDetailModal('Boarding Check-Out Due', `${items.length} departure(s) to confirm.`, items.map(bookingDetailRow).join(''), cta);
   } else if (cardKey === 'daycareCheckIn') {
     const items = bookings.filter(b => b.serviceType === 'daycare' && b.date === today && (b.status === 'pending' || b.status === 'scheduled'));
@@ -1981,14 +2017,14 @@ function openCardDetail(cardKey) {
 }
 
 function openServiceLoadDetail(type) {
-  const items = bookings.filter(b => b.serviceType === type && b.date === today);
+  const items = bookings.filter(b => b.serviceType === type && b.date === today && b.status !== "cancelled" && b.status !== "no_show");
   const label = type.charAt(0).toUpperCase() + type.slice(1);
   openDetailModal(`Today's ${label} Bookings`, `${items.length} booking(s) today.`, items.map(bookingDetailRow).join(''), { label: 'Open Booking Dashboard', href: 'booking.html' });
 }
 
 function openServiceStatusDetail(statusKey) {
   const items = filterBookingsByService(currentFilter).filter(b => b.date === today && b.status === statusKey);
-  const labelMap = { pending: 'Pending Service', scheduled: 'Scheduled', done: 'Done', no_show: 'No Show' };
+  const labelMap = { pending: 'Pending Service', scheduled: 'Scheduled', done: 'Done', no_show: 'No Show', cancelled: 'Cancelled' };
   openDetailModal(`Today's Bookings — ${labelMap[statusKey]}`, `${items.length} booking(s).`, items.map(bookingDetailRow).join(''), { label: 'Open Booking Dashboard', href: 'booking.html' });
 }
 
@@ -2022,6 +2058,7 @@ function openQueueItemDetail(kind, id) {
 ========================= */
 
 function refreshCurrentDashboardView() {
+  persistBookings();
   if (document.getElementById('actionCards')) renderDailyOverview();
   else if (document.getElementById('kpiHeroGrid')) renderAnalyticsDashboard();
 }
@@ -4095,7 +4132,7 @@ function formatPeriodChip(period, range) {
 
 function isRoomOccupiedOnDate(roomId, date) {
   return bookings.some(b => {
-    if (b.roomId !== roomId || b.status === "no_show") return false;
+    if (b.roomId !== roomId || b.status === "no_show" || b.status === "cancelled") return false;
     if (b.checkInDate && b.checkOutDate) return date >= b.checkInDate && date <= b.checkOutDate;
     return b.date === date;
   });
@@ -4123,15 +4160,16 @@ function computeRepeatCustomerRate(periodBookings) {
 function computeDashboardMetrics(period) {
   const range = getPeriodRange(period, dashboardAnchorDate);
   dashboardRange = range;
-  const periodBookings = bookings.filter(b => b.date >= range.start && b.date <= range.end);
+  const allPeriodBookings = bookings.filter(b => b.date >= range.start && b.date <= range.end);
+  const periodBookings = allPeriodBookings.filter(b => b.status !== "cancelled" && b.status !== "no_show");
   const totalRevenue = periodBookings.reduce((sum, b) => sum + b.amount, 0);
   const totalBookings = periodBookings.length;
 
   const doneCount = periodBookings.filter(b => b.status === "done").length;
   const completionRate = totalBookings ? (doneCount / totalBookings) * 100 : 0;
 
-  const noShowCount = periodBookings.filter(b => b.status === "no_show").length;
-  const noShowRate = totalBookings ? (noShowCount / totalBookings) * 100 : 0;
+  const noShowCount = allPeriodBookings.filter(b => b.status === "no_show").length;
+  const noShowRate = allPeriodBookings.length ? (noShowCount / allPeriodBookings.length) * 100 : 0;
 
   const slaCompliance = computeSlaCompliance();
   const occupancyRate = computeOccupancyRate(range);
@@ -4253,7 +4291,7 @@ function computeTrendSeries(period, range) {
   const firstDate = firstBookingDateByCustomer();
 
   const series = buckets.map(bucket => {
-    const items = bookings.filter(bucket.matches);
+    const items = bookings.filter(b => bucket.matches(b) && b.status !== "cancelled" && b.status !== "no_show");
     const revenue = items.reduce((sum, b) => sum + b.amount, 0);
     const newSet = new Set(), returningSet = new Set();
     items.forEach(b => {
@@ -4788,7 +4826,7 @@ function renderStaffKpiHero(metrics, todayDate) {
 
 function renderStaffWorkloadTrend(metrics) {
   const buckets = buildTrendBuckets(metrics.period, metrics.range);
-  const values = buckets.map(b => bookings.filter(b.matches).length);
+  const values = buckets.map(b => bookings.filter(item => b.matches(item) && item.status !== "cancelled" && item.status !== "no_show").length);
   const labels = buckets.map(b => b.label);
 
   renderAreaTrendChart("staffWorkloadTrendChart", values, {

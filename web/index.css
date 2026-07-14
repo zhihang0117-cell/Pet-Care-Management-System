@@ -1914,7 +1914,7 @@ select {
    ========================================================================== */
 .bk-kanban-board {
     display: grid;
-    grid-template-columns: repeat(4, minmax(220px, 1fr));
+    grid-template-columns: repeat(5, minmax(220px, 1fr));
     gap: 16px;
     overflow-x: auto;
 }
@@ -2157,6 +2157,7 @@ select {
 .status-scheduled { background: #DBEAFE; color: #1E40AF; }
 .status-done      { background: #D1FAE5; color: #065F46; }
 .status-no_show   { background: #FEE2E2; color: #991B1B; }
+.status-cancelled { background: #E5E1DC; color: #57534E; }
 
 .status-platinum { background: #EDE9FE; color: #5B21B6; }
 .status-gold     { background: #FEF3C7; color: #92400E; }
@@ -2699,7 +2700,7 @@ select {
 
     .dash-sidebar-footer { padding-top: 12px; border-top: 1px solid rgba(255, 255, 255, 0.08); margin-top: 12px; }
     .dash-main { padding: 16px; }
-    .bk-kanban-board { grid-template-columns: repeat(4, 260px); }
+    .bk-kanban-board { grid-template-columns: repeat(5, 260px); }
     .bk-kpi-grid,
     .kpi-hero-grid,
     .overview-pair,
