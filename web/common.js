@@ -13,11 +13,29 @@ const services = [
   { id: "S006", type: "daycare", name: "Full-Day Daycare", price: 100, duration: 480 }
 ];
 
-const staff = [
+function staffStorageKey() {
+  const account = getCurrentAccount();
+  return "pawfect_staff_" + (account?.businessKey || "default");
+}
+function loadStaff(seedStaff) {
+  try {
+    const raw = localStorage.getItem(staffStorageKey());
+    return raw ? JSON.parse(raw) : seedStaff;
+  } catch (e) {
+    return seedStaff;
+  }
+}
+function persistStaff() {
+  localStorage.setItem(staffStorageKey(), JSON.stringify(staff));
+}
+
+const SEED_STAFF = [
   { id: "ST001", name: "Sarah Wong", role: "Manager",   email: "sarah.wong@happypaws.my", phone: "+60 12-345 6801", offDays: ["Sunday"] },
   { id: "ST002", name: "Adam Tan",   role: "Groomer",   email: "adam.tan@happypaws.my",   phone: "+60 12-345 6802", offDays: ["Monday"] },
   { id: "ST003", name: "Mei Ling",   role: "Caretaker", email: "mei.ling@happypaws.my",   phone: "+60 12-345 6803", offDays: ["Tuesday", "Sunday"] }
 ];
+
+let staff = loadStaff(SEED_STAFF);
 
 const rooms = [
   { id: "R001", name: "Room A", type: "boarding", capacity: 5 },
@@ -70,7 +88,23 @@ const SEED_BOOKINGS = [
 
 let bookings = loadBookings(SEED_BOOKINGS);
 
-let enquiries = [
+function enquiriesStorageKey() {
+  const account = getCurrentAccount();
+  return "pawfect_enquiries_" + (account?.businessKey || "default");
+}
+function loadEnquiries(seedEnquiries) {
+  try {
+    const raw = localStorage.getItem(enquiriesStorageKey());
+    return raw ? JSON.parse(raw) : seedEnquiries;
+  } catch (e) {
+    return seedEnquiries;
+  }
+}
+function persistEnquiries() {
+  localStorage.setItem(enquiriesStorageKey(), JSON.stringify(enquiries));
+}
+
+const SEED_ENQUIRIES = [
   { id: 'ENQ001', customerName: 'Priya Nathan',  phone: '+60 12-345 7001', channel: 'WhatsApp', message: 'Can I reschedule my grooming appointment to tomorrow?', relatedService: 'grooming', status: 'pending',  receivedAt: '08:12' },
   { id: 'ENQ002', customerName: 'Ben Ooi',       phone: '+60 12-345 7002', channel: 'WhatsApp', message: "Is my dog's boarding room ready for early check-in?",    relatedService: 'boarding', status: 'pending',  receivedAt: '08:40' },
   { id: 'ENQ003', customerName: 'Lim Hui Yi',    phone: '+60 12-345 7003', channel: 'WhatsApp', message: 'What time is daycare pickup cut-off?',                   relatedService: 'daycare',  status: 'pending',  receivedAt: '09:05' },
@@ -79,17 +113,55 @@ let enquiries = [
   { id: 'ENQ006', customerName: 'Wong Mei',      phone: '+60 12-345 6705', channel: 'WhatsApp', message: 'What are your operating hours today?',                  relatedService: 'grooming', status: 'resolved', receivedAt: '07:15', handledBy: 'ai' }
 ];
 
-let loyaltyRequests = [
+let enquiries = loadEnquiries(SEED_ENQUIRIES);
+
+function loyaltyRequestsStorageKey() {
+  const account = getCurrentAccount();
+  return "pawfect_loyalty_requests_" + (account?.businessKey || "default");
+}
+function loadLoyaltyRequests(seedRequests) {
+  try {
+    const raw = localStorage.getItem(loyaltyRequestsStorageKey());
+    return raw ? JSON.parse(raw) : seedRequests;
+  } catch (e) {
+    return seedRequests;
+  }
+}
+function persistLoyaltyRequests() {
+  localStorage.setItem(loyaltyRequestsStorageKey(), JSON.stringify(loyaltyRequests));
+}
+
+const SEED_LOYALTY_REQUESTS = [
   { id: 'LOY001', customerName: 'Alicia Lee',   type: 'RM20 Voucher Redemption', points: 400,  relatedService: 'grooming', status: 'pending',  requestedAt: '08:15' },
   { id: 'LOY002', customerName: 'Siti Zainab',  type: 'Free Boarding Night',     points: 1200, relatedService: 'boarding', status: 'pending',  requestedAt: '08:55' },
   { id: 'LOY003', customerName: 'Grace Tan',    type: 'Free Daycare Session',    points: 600,  relatedService: 'daycare',  status: 'pending',  requestedAt: '10:02' },
   { id: 'LOY004', customerName: 'David Chong',  type: 'RM10 Voucher Redemption', points: 200,  relatedService: 'boarding', status: 'approved', requestedAt: '07:30' }
 ];
 
-let leaveRequests = [
+let loyaltyRequests = loadLoyaltyRequests(SEED_LOYALTY_REQUESTS);
+
+function leaveRequestsStorageKey() {
+  const account = getCurrentAccount();
+  return "pawfect_leave_requests_" + (account?.businessKey || "default");
+}
+function loadLeaveRequests(seedRequests) {
+  try {
+    const raw = localStorage.getItem(leaveRequestsStorageKey());
+    return raw ? JSON.parse(raw) : seedRequests;
+  } catch (e) {
+    return seedRequests;
+  }
+}
+function persistLeaveRequests() {
+  localStorage.setItem(leaveRequestsStorageKey(), JSON.stringify(leaveRequests));
+}
+
+const SEED_LEAVE_REQUESTS = [
   { id: 'LV001', staffId: 'ST002', staffName: 'Adam Tan', startDate: addDays(today, 2), endDate: addDays(today, 3), reason: 'Personal errand',      status: 'approved', appliedAt: '09:00' },
   { id: 'LV002', staffId: 'ST003', staffName: 'Mei Ling', startDate: addDays(today, 5), endDate: addDays(today, 5), reason: 'Medical appointment',   status: 'pending',  appliedAt: '10:15' }
 ];
+
+let leaveRequests = loadLeaveRequests(SEED_LEAVE_REQUESTS);
 
 /* =========================
    STATE
@@ -1162,7 +1234,7 @@ function findRoom(roomId) {
 }
 
 function getSlotBookings(date, time, excludeBookingId = "") {
-  return getFilteredBookings().filter(booking => {
+  return bookings.filter(booking => {
     return booking.date === date &&
       booking.time === time &&
       booking.id !== excludeBookingId &&
@@ -2059,6 +2131,8 @@ function openQueueItemDetail(kind, id) {
 
 function refreshCurrentDashboardView() {
   persistBookings();
+  persistEnquiries();
+  persistLoyaltyRequests();
   if (document.getElementById('actionCards')) renderDailyOverview();
   else if (document.getElementById('kpiHeroGrid')) renderAnalyticsDashboard();
 }
@@ -2202,8 +2276,40 @@ function buildCrmBookings(customerList, petList) {
   });
 }
 
-let customers = buildCrmCustomers();
-let pets = buildCrmPets(customers);
+function customersStorageKey() {
+  const account = getCurrentAccount();
+  return "pawfect_customers_" + (account?.businessKey || "default");
+}
+function loadCustomers(seedCustomers) {
+  try {
+    const raw = localStorage.getItem(customersStorageKey());
+    return raw ? JSON.parse(raw) : seedCustomers;
+  } catch (e) {
+    return seedCustomers;
+  }
+}
+function persistCustomers() {
+  localStorage.setItem(customersStorageKey(), JSON.stringify(customers));
+}
+
+function petsStorageKey() {
+  const account = getCurrentAccount();
+  return "pawfect_pets_" + (account?.businessKey || "default");
+}
+function loadPets(seedPets) {
+  try {
+    const raw = localStorage.getItem(petsStorageKey());
+    return raw ? JSON.parse(raw) : seedPets;
+  } catch (e) {
+    return seedPets;
+  }
+}
+function persistPets() {
+  localStorage.setItem(petsStorageKey(), JSON.stringify(pets));
+}
+
+let customers = loadCustomers(buildCrmCustomers());
+let pets = loadPets(buildCrmPets(customers));
 let crmBookings = buildCrmBookings(customers, pets);
 
 const profileTypeFilter = document.getElementById("profileTypeFilter");
@@ -2509,6 +2615,7 @@ function openCustomerForm(customerId = null) {
       customers.push(updatedCustomer);
     }
 
+    persistCustomers();
     updateKPI();
     renderLists();
     closeDetailPage();
@@ -2636,6 +2743,7 @@ function openPetForm(petId = null) {
       pets.push(updatedPet);
     }
 
+    persistPets();
     updateKPI();
     renderLists();
     closeDetailPage();
@@ -2662,6 +2770,8 @@ function removeCustomer(customerId) {
   const customerIdx = customers.findIndex(c => c.customer_id === customerId);
   if (customerIdx !== -1) customers.splice(customerIdx, 1);
 
+  persistCustomers();
+  persistPets();
   updateKPI();
   renderLists();
   closeDetailPage();
@@ -2673,6 +2783,7 @@ function removePet(petId) {
   const idx = pets.findIndex(p => p.pet_id === petId);
   if (idx !== -1) pets.splice(idx, 1);
 
+  persistPets();
   updateKPI();
   renderLists();
   closeDetailPage();
@@ -2737,10 +2848,28 @@ function formatDate(dateString) {
    balances/tiers are deterministic mock values, not tracked transactionally.
    ========================================================================== */
 
-let loyaltyMemberRequests = [
+function loyaltyMemberRequestsStorageKey() {
+  const account = getCurrentAccount();
+  return "pawfect_loyalty_member_requests_" + (account?.businessKey || "default");
+}
+function loadLoyaltyMemberRequests(seedRequests) {
+  try {
+    const raw = localStorage.getItem(loyaltyMemberRequestsStorageKey());
+    return raw ? JSON.parse(raw) : seedRequests;
+  } catch (e) {
+    return seedRequests;
+  }
+}
+function persistLoyaltyMemberRequests() {
+  localStorage.setItem(loyaltyMemberRequestsStorageKey(), JSON.stringify(loyaltyMemberRequests));
+}
+
+const SEED_LOYALTY_MEMBER_REQUESTS = [
   { id: 'LOYREG001', customerName: 'Nabila Hassan', phone: '+60 12-345 9901', requestedAt: '09:10', status: 'pending' },
   { id: 'LOYREG002', customerName: 'Kelvin Ooi',     phone: '+60 12-345 9902', requestedAt: '10:35', status: 'pending' }
 ];
+
+let loyaltyMemberRequests = loadLoyaltyMemberRequests(SEED_LOYALTY_MEMBER_REQUESTS);
 
 const LOYALTY_TIERS = [
   { min: 1200, name: 'Platinum' },
@@ -2903,6 +3032,7 @@ function renderLoyaltyMemberTable(searchValue) {
 function approveLoyaltyRedemption(id) {
   const request = loyaltyRequests.find(r => r.id === id);
   if (request) request.status = "approved";
+  persistLoyaltyRequests();
   updateLoyaltyKPI();
   renderLoyaltyLists();
   closeDetailPage();
@@ -2911,6 +3041,7 @@ function approveLoyaltyRedemption(id) {
 function approveLoyaltyRegistration(id) {
   const request = loyaltyMemberRequests.find(r => r.id === id);
   if (request) request.status = "approved";
+  persistLoyaltyMemberRequests();
   updateLoyaltyKPI();
   renderLoyaltyLists();
   closeDetailPage();
@@ -3260,7 +3391,23 @@ function buildPaymentRecords() {
   });
 }
 
-let paymentRecords = buildPaymentRecords();
+function paymentRecordsStorageKey() {
+  const account = getCurrentAccount();
+  return "pawfect_payment_records_" + (account?.businessKey || "default");
+}
+function loadPaymentRecords(seedRecords) {
+  try {
+    const raw = localStorage.getItem(paymentRecordsStorageKey());
+    return raw ? JSON.parse(raw) : seedRecords;
+  } catch (e) {
+    return seedRecords;
+  }
+}
+function persistPaymentRecords() {
+  localStorage.setItem(paymentRecordsStorageKey(), JSON.stringify(paymentRecords));
+}
+
+let paymentRecords = loadPaymentRecords(buildPaymentRecords());
 
 const paymentSearchInput = document.getElementById("paymentSearchInput");
 const paymentPendingBody = document.getElementById("paymentPendingBody");
@@ -3377,6 +3524,7 @@ function renderPaymentHistoryTable(searchValue) {
 function verifyPayment(paymentId) {
   const record = paymentRecords.find(p => p.payment_id === paymentId);
   if (record) record.status = "verified";
+  persistPaymentRecords();
   updatePaymentKPI();
   renderPaymentLists();
   closeDetailPage();
@@ -3651,6 +3799,7 @@ function resolveEnquiryAndRefresh(id) {
     e.status = "resolved";
     e.handledBy = "human";
   }
+  persistEnquiries();
   updateEnquiryKPI();
   renderEnquiryLists();
   closeDetailPage();
@@ -3871,6 +4020,7 @@ function openStaffForm(staffId = null) {
       staff.push(updated);
     }
 
+    persistStaff();
     updateStaffKPI();
     renderStaffListTable();
     renderDutyCalendar();
@@ -3883,6 +4033,7 @@ function removeStaffMember(staffId) {
   const index = staff.findIndex(s => s.id === staffId);
   if (index >= 0) staff.splice(index, 1);
 
+  persistStaff();
   updateStaffKPI();
   renderStaffListTable();
   renderDutyCalendar();
@@ -3915,6 +4066,7 @@ function approveLeaveRequest(id) {
   const lv = leaveRequests.find(r => r.id === id);
   if (lv) lv.status = "approved";
 
+  persistLeaveRequests();
   updateStaffKPI();
   renderPendingLeaveTable();
   renderLeaveHistoryTable();
@@ -3998,6 +4150,7 @@ function openApplyLeaveForm() {
       appliedAt: new Date().toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" })
     });
 
+    persistLeaveRequests();
     updateStaffKPI();
     renderPendingLeaveTable();
     renderLeaveHistoryTable();
