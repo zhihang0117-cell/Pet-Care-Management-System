@@ -110,28 +110,46 @@ function landingPageFor(acc) {
     return (acc.role || '').toLowerCase() === 'manager' ? 'dashboard.html' : 'dailyoverview.html';
 }
 
-function loginPawfectAccount() {
+// Real login: Supabase Auth directly (no backend round-trip needed for this
+// part — see backend/README.md "Auth & registration flow"), then one call to
+// the backend's GET /api/accounts/me to learn this login's role/company.
+// The resulting object is stored under the SAME 'pawfect_current_account' key
+// the rest of the app (auth.js, common.js) already reads — so nothing else
+// needs to change to start showing real data.
+async function loginPawfectAccount() {
     const emailEl = q('login_email'), passEl = q('login_password');
     if (!emailEl || !passEl) return;
     const email = emailEl.value.trim().toLowerCase();
     const password = passEl.value;
     if (!email || !password) { deny('Please enter email and password.'); return; }
-    const acc = findAccount(email);
-    if (!acc || acc.password !== password) { deny('Incorrect email or password. Access denied.'); return; }
+
     deny('');
-    if (EXISTING_ACCOUNTS[acc.email]) {
-        saveAccountState(acc, completedSetupFor(acc));
-        localStorage.setItem('pawfect_existing_completed_account', 'true');
-        localStorage.setItem('pawfect_first_login', 'shown');
-        location.href = landingPageFor(acc); return;
+    const { data, error } = await supabaseClient.auth.signInWithPassword({ email, password });
+    if (error || !data.session) {
+        deny('Incorrect email or password. Access denied.');
+        return;
     }
-    localStorage.removeItem('pawfect_existing_completed_account');
-    if (acc.blankData && !acc.setupCompleted) {
-        saveAccountState(acc, { businessName: acc.businessName, services: acc.services || ['grooming', 'boarding', 'daycare'], setupCompleted: false, newUser: true, accountEmail: acc.email, businessKey: acc.businessKey });
-        localStorage.setItem('pawfect_first_login', 'true');
-        location.href = landingPageFor(acc); return;
+
+    let me;
+    try {
+        me = await api.get('/accounts/me');
+    } catch (err) {
+        deny(err.message || 'Logged in, but could not load your account. Is the backend running?');
+        await supabaseClient.auth.signOut();
+        return;
     }
+
+    const acc = {
+        email,
+        role: me.role === 'manager' ? 'Manager' : 'Staff',
+        businessKey: String(me.company_id),
+        businessName: me.company?.company_name || '',
+        blankData: false,
+        setupCompleted: true,
+        services: ['grooming', 'boarding', 'daycare'],
+    };
     saveAccountState(acc, completedSetupFor(acc));
+    localStorage.setItem('pawfect_existing_completed_account', 'true');
     localStorage.setItem('pawfect_first_login', 'shown');
     location.href = landingPageFor(acc);
 }

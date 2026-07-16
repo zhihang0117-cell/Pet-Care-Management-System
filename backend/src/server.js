@@ -1,0 +1,63 @@
+import "dotenv/config";
+import express from "express";
+import cors from "cors";
+
+import { resolveCompany } from "./middleware/auth.js";
+import { requireAuthUser } from "./middleware/authUser.js";
+
+import { authRouter } from "./routes/auth.js";
+import { accountsRouter } from "./routes/accounts.js";
+import { customersRouter } from "./routes/customers.js";
+import { petsRouter } from "./routes/pets.js";
+import { staffRouter } from "./routes/staff.js";
+import { couponsRouter } from "./routes/coupons.js";
+import { chatMessagesRouter } from "./routes/chatMessages.js";
+import { leaveRequestsRouter } from "./routes/leaveRequests.js";
+import { memberInfoRouter } from "./routes/memberInfo.js";
+import { redemptionsRouter } from "./routes/redemptions.js";
+import { bookingsRouter } from "./routes/bookings.js";
+import { paymentsRouter } from "./routes/payments.js";
+import { dashboardRouter } from "./routes/dashboard.js";
+import { llmRouter } from "./routes/llm.js";
+
+const app = express();
+
+const allowedOrigins = (process.env.CORS_ORIGINS || "").split(",").map((s) => s.trim()).filter(Boolean);
+app.use(cors({ origin: allowedOrigins.length ? allowedOrigins : true }));
+app.use(express.json());
+
+app.get("/health", (req, res) => res.json({ ok: true }));
+
+// --- Public: no session yet (this IS how a session/company gets created) ---
+app.use("/api/auth", authRouter);
+
+// --- Everything below is a real logged-in human (manager or staff). ---
+// requireAuthUser verifies the Supabase JWT and resolves company_id/role
+// from accounts — see middleware/authUser.js and DEVELOPER_GUIDE.md §3.
+app.use("/api/accounts", requireAuthUser, accountsRouter);
+app.use("/api/customers", requireAuthUser, customersRouter);
+app.use("/api/pets", requireAuthUser, petsRouter);
+app.use("/api/staff", requireAuthUser, staffRouter);
+app.use("/api/coupons", requireAuthUser, couponsRouter);
+app.use("/api/chat-messages", requireAuthUser, chatMessagesRouter);
+app.use("/api/leave-requests", requireAuthUser, leaveRequestsRouter);
+app.use("/api/member-info", requireAuthUser, memberInfoRouter);
+app.use("/api/redemptions", requireAuthUser, redemptionsRouter);
+app.use("/api/bookings", requireAuthUser, bookingsRouter);
+app.use("/api/payments", requireAuthUser, paymentsRouter);
+app.use("/api/dashboard", requireAuthUser, dashboardRouter);
+
+// --- LLM/agent access: separate trust model (its own API key, not a user
+// session), so it keeps the header-based resolveCompany instead. ---
+app.use("/api/llm", resolveCompany, llmRouter);
+
+// Central error handler.
+app.use((err, req, res, _next) => {
+  console.error(err);
+  res.status(err.status || 500).json({ error: err.message || "Internal server error" });
+});
+
+const port = process.env.PORT || 4000;
+app.listen(port, () => {
+  console.log(`Pawfect backend listening on http://localhost:${port}`);
+});
