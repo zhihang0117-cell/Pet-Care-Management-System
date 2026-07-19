@@ -2,10 +2,16 @@ import { Router } from "express";
 import { supabase } from "../supabaseClient.js";
 import { asyncHandler } from "../middleware/auth.js";
 import { getPaymentDetail, quoteVoucher, verifyPayment } from "../lib/paymentService.js";
+import { findNamesForPayments } from "../lib/bookingService.js";
 
 export const paymentsRouter = Router();
 
 // GET /api/payments?status=Pending&payment_method=Cash
+// Each row is enriched with customer_name/pet_name via a handful of bulk
+// queries (see findNamesForPayments) — payment has no direct customer_id
+// (see backend/README.md "Known gaps to come back to"), and doing that join
+// per-row would mean 3+ queries PER payment on a history list that can run
+// into the hundreds of rows.
 paymentsRouter.get(
   "/",
   asyncHandler(async (req, res) => {
@@ -19,7 +25,10 @@ paymentsRouter.get(
 
     const { data, error } = await query;
     if (error) return res.status(400).json({ error: error.message });
-    res.json(data);
+
+    const names = await findNamesForPayments(req.companyId, data.map((p) => p.payment_id));
+    const enriched = data.map((p) => ({ ...p, ...(names.get(p.payment_id) || { petName: null, customerName: null }) }));
+    res.json(enriched);
   })
 );
 

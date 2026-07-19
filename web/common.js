@@ -1,6 +1,59 @@
 function q(id) { return document.getElementById(id); }
 
 /* =========================
+   REUSABLE DATE-RANGE FILTER (Daily/Weekly/Monthly + Prev/Today/Next)
+   Same pattern as the Analytical Dashboard's period toggle, reused on
+   dailyoverview.html/booking.html/payment.html/loyalty.html/enquiries.html.
+   Defaults to "Daily" (today), unlike the dashboard's own default of
+   "Weekly" — these pages are meant to open scoped to today's numbers.
+   Relies on getPeriodRange()/formatPeriodChip() defined in the Analytical
+   Dashboard section below (plain functions, no dashboard-specific state).
+========================= */
+
+function createDateRangeFilter(prefix, onChange) {
+  const state = { period: "daily", anchorDate: getToday() };
+
+  function currentRange() {
+    return getPeriodRange(state.period, state.anchorDate);
+  }
+
+  function render() {
+    const range = currentRange();
+    const chip = document.getElementById(`${prefix}RangeChip`);
+    if (chip) chip.innerHTML = formatPeriodChip(state.period, range);
+    onChange(range, state.period);
+  }
+
+  function shift(step) {
+    if (state.period === "daily") state.anchorDate = addDays(state.anchorDate, step);
+    else if (state.period === "monthly") state.anchorDate = addMonths(state.anchorDate, step);
+    else state.anchorDate = addDays(state.anchorDate, step * 7);
+    render();
+  }
+
+  function init() {
+    document.querySelectorAll(`#${prefix}PeriodToggle .tab-btn`).forEach(btn => {
+      btn.addEventListener("click", () => {
+        document.querySelectorAll(`#${prefix}PeriodToggle .tab-btn`).forEach(b => b.classList.remove("active"));
+        btn.classList.add("active");
+        state.period = btn.dataset.period;
+        state.anchorDate = getToday();
+        render();
+      });
+    });
+    document.getElementById(`${prefix}PrevBtn`)?.addEventListener("click", () => shift(-1));
+    document.getElementById(`${prefix}NextBtn`)?.addEventListener("click", () => shift(1));
+    document.getElementById(`${prefix}TodayBtn`)?.addEventListener("click", () => {
+      state.anchorDate = getToday();
+      render();
+    });
+    render();
+  }
+
+  return { init, getRange: currentRange, getPeriod: () => state.period };
+}
+
+/* =========================
    MOCK DATA
 ========================= */
 
@@ -26,6 +79,7 @@ function loadStaff(seedStaff) {
   }
 }
 function persistStaff() {
+  if (bookingsAreReal) return;
   localStorage.setItem(staffStorageKey(), JSON.stringify(staff));
 }
 
@@ -60,7 +114,14 @@ function loadBookings(seedBookings) {
   }
 }
 
+// Set true once loadRealBookingData() overwrites `bookings` with real
+// Supabase rows, so persistBookings() never writes real-shaped booking
+// objects into the mock localStorage key (which other not-yet-converted
+// pages like dashboard.html/profile.html/staff.html still read from).
+let bookingsAreReal = false;
+
 function persistBookings() {
+  if (bookingsAreReal) return;
   localStorage.setItem(bookingsStorageKey(), JSON.stringify(bookings));
 }
 
@@ -87,6 +148,226 @@ const SEED_BOOKINGS = [
 ];
 
 let bookings = loadBookings(SEED_BOOKINGS);
+
+/* =========================
+   REAL BOOKING DATA (booking.html only)
+   Overwrites the mock `bookings`/`staff` globals above with real Supabase
+   data — but ONLY when booking.html's own init path calls
+   loadRealBookingData(). Every other page (dailyoverview.html, profile.html,
+   dashboard.html, staff.html) still reads the mock arrays untouched, since
+   they haven't been converted yet and this is a fresh page load each time
+   (static multi-page app, no shared runtime state between pages).
+
+   Real bookings live in 3 separate tables (grooming_booking/daycare_booking/
+   boarding_booking) with different columns and no shared services/rooms
+   catalog. They're merged here into the same unified booking shape the
+   existing Kanban/Calendar/Listing render code already expects, so that
+   code doesn't need to change — only the mapping in and the mutations
+   (which now call the real API instead of mutating an in-memory array)
+   are new.
+========================= */
+
+// Named bookingPets/bookingCustomers (not pets/customers) to avoid colliding
+// with profile.html's own mock `pets`/`customers` globals declared later in
+// this file — both are top-level `let` in the same shared script.
+let bookingPets = [];
+let bookingCustomers = [];
+const GROOMING_DEFAULT_DURATION = 90; // grooming_booking has no duration column
+
+function normalizeStatus(raw) {
+  // Real booking_status casing is inconsistent across tables (grooming is
+  // lowercase, daycare/boarding are Title Case, and "no show" has a space
+  // instead of an underscore) — fold all of that down to this app's
+  // existing pending/scheduled/done/no_show/cancelled convention.
+  return String(raw || "").trim().toLowerCase().replace(/\s+/g, "_");
+}
+
+// Denormalize back to whatever casing convention that specific real table
+// already uses, on write — rather than inventing a 4th convention.
+const STATUS_WRITE_LOWERCASE = { pending: "pending", scheduled: "scheduled", done: "done", no_show: "no show", cancelled: "cancelled" };
+const STATUS_WRITE_TITLECASE = { pending: "Pending", scheduled: "Scheduled", done: "Done", no_show: "No Show", cancelled: "Cancelled" };
+function denormalizeStatus(bookingType, status) {
+  return bookingType === "grooming" ? STATUS_WRITE_LOWERCASE[status] : STATUS_WRITE_TITLECASE[status];
+}
+
+function nightsBetweenDates(checkIn, checkOut) {
+  const ms = new Date(checkOut) - new Date(checkIn);
+  return Math.max(1, Math.round(ms / (1000 * 60 * 60 * 24)));
+}
+
+function minutesBetweenTimes(start, end) {
+  const toMin = t => { const [h, m] = String(t || "0:0").split(":").map(Number); return h * 60 + m; };
+  return Math.max(1, toMin(end) - toMin(start));
+}
+
+function findRealStaff(staffId) {
+  return staff.find(s => Number(s.staff_id) === Number(staffId));
+}
+
+function findPet(petId) {
+  return bookingPets.find(p => Number(p.pet_id) === Number(petId));
+}
+
+function mapGroomingBooking(row) {
+  const pet = findPet(row.pet_id);
+  return {
+    id: `grooming-${row.grooming_booking_id}`,
+    realId: row.grooming_booking_id,
+    bookingType: "grooming",
+    customerName: pet?.customerName || "—",
+    petName: pet?.pet_name || "—",
+    petId: row.pet_id,
+    serviceType: "grooming",
+    serviceLabel: row.service_name || "-",
+    price: Number(row.price) || 0,
+    addOn: row.add_on && row.add_on !== "-" ? row.add_on : "",
+    addOnPrice: Number(row.add_on_price) || 0,
+    staffId: row.staff_id,
+    roomLabel: "",
+    date: row.booking_date,
+    time: (row.booking_time || "").slice(0, 5),
+    duration: GROOMING_DEFAULT_DURATION,
+    status: normalizeStatus(row.booking_status),
+    amount: (Number(row.price) || 0) + (Number(row.add_on_price) || 0),
+    checkInDate: "",
+    checkOutDate: "",
+    specialNote: row.notes && row.notes !== "-" ? row.notes : "",
+    paymentId: row.payment_id,
+    createdDate: row.created_date || "",
+  };
+}
+
+function mapDaycareBooking(row) {
+  const pet = findPet(row.pet_id);
+  const checkInTime = (row.check_in_time || "").slice(0, 5);
+  const checkOutTime = (row.check_out_time || "").slice(0, 5);
+  return {
+    id: `daycare-${row.daycare_booking_id}`,
+    realId: row.daycare_booking_id,
+    bookingType: "daycare",
+    customerName: pet?.customerName || "—",
+    petName: pet?.pet_name || "—",
+    petId: row.pet_id,
+    serviceType: "daycare",
+    serviceLabel: row.package_type || "-",
+    price: Number(row.price) || 0,
+    addOn: "",
+    addOnPrice: 0,
+    staffId: row.staff_id,
+    roomLabel: "",
+    date: row.booking_date,
+    time: checkInTime,
+    checkInTime,
+    checkOutTime,
+    duration: minutesBetweenTimes(checkInTime, checkOutTime),
+    status: normalizeStatus(row.booking_status),
+    amount: Number(row.price) || 0,
+    checkInDate: "",
+    checkOutDate: "",
+    specialNote: row.special_instruction && row.special_instruction !== "-" ? row.special_instruction : "",
+    paymentId: row.payment_id,
+    createdDate: row.created_date || "",
+  };
+}
+
+function mapBoardingBooking(row) {
+  const pet = findPet(row.pet_id);
+  return {
+    id: `boarding-${row.boarding_booking_id}`,
+    realId: row.boarding_booking_id,
+    bookingType: "boarding",
+    customerName: pet?.customerName || "—",
+    petName: pet?.pet_name || "—",
+    petId: row.pet_id,
+    serviceType: "boarding",
+    serviceLabel: row.room_type || "-",
+    price: Number(row.price_per_night) || 0,
+    addOn: "",
+    addOnPrice: 0,
+    staffId: row.staff_id,
+    roomLabel: row.room_type || "",
+    date: row.check_in_date,
+    time: (row.check_in_time || "").slice(0, 5),
+    checkInTime: (row.check_in_time || "").slice(0, 5),
+    checkOutTime: (row.check_out_time || "").slice(0, 5),
+    duration: 1440,
+    status: normalizeStatus(row.booking_status),
+    amount: Number(row.total_price) || 0,
+    checkInDate: row.check_in_date,
+    checkOutDate: row.check_out_date,
+    feedingInstruction: row.feeding_instruction && row.feeding_instruction !== "-" ? row.feeding_instruction : "",
+    medicalInstruction: row.medical_instruction && row.medical_instruction !== "-" ? row.medical_instruction : "",
+    specialNote: row.notes && row.notes !== "-" ? row.notes : "",
+    paymentId: row.payment_id,
+    createdDate: row.created_date || "",
+  };
+}
+
+async function loadRealBookingData() {
+  const [petsRes, customersRes, staffRes, grooming, daycare, boarding] = await Promise.all([
+    api.listPets({ limit: 1000 }),
+    api.listCustomers({ limit: 1000 }),
+    api.listStaff({ limit: 1000 }),
+    api.listBookings("grooming", { limit: 1000 }),
+    api.listBookings("daycare", { limit: 1000 }),
+    api.listBookings("boarding", { limit: 1000 }),
+  ]);
+
+  bookingCustomers = customersRes;
+  const customerById = new Map(bookingCustomers.map(c => [c.customer_id, c]));
+  bookingPets = petsRes.map(p => ({ ...p, customerName: customerById.get(p.customer_id)?.full_name || "—" }));
+  staff = staffRes;
+
+  bookings = [
+    ...grooming.map(mapGroomingBooking),
+    ...daycare.map(mapDaycareBooking),
+    ...boarding.map(mapBoardingBooking),
+  ];
+  bookingsAreReal = true;
+}
+
+async function updateBookingStatus(booking, newStatus) {
+  try {
+    await api.updateBooking(booking.bookingType, booking.realId, {
+      booking_status: denormalizeStatus(booking.bookingType, newStatus),
+    });
+  } catch (err) {
+    alert(err.message);
+    return false;
+  }
+  booking.status = newStatus;
+  return true;
+}
+
+async function moveBooking(booking, newDate, newTime) {
+  const payload = {};
+  if (booking.bookingType === "grooming") {
+    payload.booking_date = newDate;
+    if (newTime) payload.booking_time = `${newTime}:00`;
+  } else if (booking.bookingType === "daycare") {
+    payload.booking_date = newDate;
+  } else if (booking.bookingType === "boarding") {
+    const nights = nightsBetweenDates(booking.checkInDate, booking.checkOutDate);
+    payload.check_in_date = newDate;
+    payload.check_out_date = addDays(newDate, nights);
+  }
+
+  try {
+    await api.updateBooking(booking.bookingType, booking.realId, payload);
+  } catch (err) {
+    alert(err.message);
+    return false;
+  }
+
+  booking.date = newDate;
+  if (newTime) booking.time = newTime;
+  if (booking.bookingType === "boarding") {
+    const nights = nightsBetweenDates(booking.checkInDate, booking.checkOutDate);
+    booking.checkInDate = newDate;
+    booking.checkOutDate = addDays(newDate, nights);
+  }
+  return true;
+}
 
 function enquiriesStorageKey() {
   const account = getCurrentAccount();
@@ -153,6 +434,7 @@ function loadLeaveRequests(seedRequests) {
   }
 }
 function persistLeaveRequests() {
+  if (leaveDataIsReal) return;
   localStorage.setItem(leaveRequestsStorageKey(), JSON.stringify(leaveRequests));
 }
 
@@ -186,54 +468,71 @@ const CALENDAR_HOURS = [
    INIT
 ========================= */
 
-document.addEventListener("DOMContentLoaded", () => {
-  promoteScheduledBookingsForToday();
+document.addEventListener("DOMContentLoaded", async () => {
+  try {
+    if (document.getElementById("liveDateTime")) {
+      initLiveClock();
+    }
 
-  if (document.getElementById("liveDateTime")) {
-    initLiveClock();
-  }
+    if (document.getElementById("kanbanBoard")) {
+      await loadRealBookingData();
+      promoteScheduledBookingsForToday();
 
-  if (document.getElementById("kanbanBoard")) {
-    setupTabs();
-    setupModalEvents();
-    setupCalendarEvents();
-    setupListingEvents();
-    populateDropdowns();
-    renderAll();
+      setupTabs();
+      setupModalEvents();
+      setupCalendarEvents();
+      setupListingEvents();
+      setupPetSearch();
+      populateStaffDropdown();
+      createDateRangeFilter("bookingMetrics", (range, period) => {
+        bookingMetricsRange = range;
+        bookingMetricsPeriod = period;
+        renderMetricCards();
+      }).init();
+      renderAll();
 
-    setTimeout(() => scrollCalendarToToday(), 100);
-  }
+      setTimeout(() => scrollCalendarToToday(), 100);
+    } else if (document.getElementById("actionCards")) {
+      await loadRealBookingData();
+      promoteScheduledBookingsForToday();
+    } else {
+      promoteScheduledBookingsForToday();
+    }
 
-  if (document.getElementById("actionCards")) {
-    setupDailyOverview();
-  }
+    if (document.getElementById("actionCards")) {
+      setupDailyOverview();
+    }
 
-  if (document.getElementById("profileTypeFilter")) {
-    initCRM();
-  }
+    if (document.getElementById("profileTypeFilter")) {
+      await initCRM();
+    }
 
-  if (document.getElementById("kpiHeroGrid")) {
-    initAnalyticsDashboard();
-  }
+    if (document.getElementById("kpiHeroGrid")) {
+      await initAnalyticsDashboard();
+    }
 
-  if (document.getElementById("settingsTabs")) {
-    initSettings();
-  }
+    if (document.getElementById("settingsTabs")) {
+      initSettings();
+    }
 
-  if (document.getElementById("loyaltyPendingBody")) {
-    initLoyaltyPage();
-  }
+    if (document.getElementById("loyaltyPendingBody")) {
+      await initLoyaltyPage();
+    }
 
-  if (document.getElementById("paymentPendingBody")) {
-    initPaymentPage();
-  }
+    if (document.getElementById("paymentPendingBody")) {
+      await initPaymentPage();
+    }
 
-  if (document.getElementById("staffListBody")) {
-    initStaffPage();
-  }
+    if (document.getElementById("staffListBody")) {
+      await initStaffPage();
+    }
 
-  if (document.getElementById("enquiryPendingBody")) {
-    initEnquiriesPage();
+    if (document.getElementById("enquiryPendingBody")) {
+      await initEnquiriesPage();
+    }
+  } catch (err) {
+    console.error("Page init failed:", err);
+    alert(`Something failed to load: ${err.message}`);
   }
 });
 
@@ -292,8 +591,8 @@ function setupTabs() {
   const kanbanStaffFilter = document.getElementById("kanbanStaffFilter");
   staff.forEach(member => {
     const option = document.createElement("option");
-    option.value = member.id;
-    option.textContent = member.name;
+    option.value = member.staff_id;
+    option.textContent = member.staff_name;
     kanbanStaffFilter.appendChild(option);
   });
   kanbanStaffFilter.addEventListener("change", () => {
@@ -310,13 +609,12 @@ function setupModalEvents() {
   document.getElementById("closeModalBtn").addEventListener("click", closeModal);
 
   document.getElementById("serviceType").addEventListener("change", () => {
-    populateServiceDropdown();
     toggleServiceSpecificFields();
-    autoCalculateAmount();
+    recalcAmount();
   });
 
-  document.getElementById("requiredService").addEventListener("change", () => {
-    syncServiceData();
+  ["groomingPrice", "groomingAddOnPrice", "daycarePrice", "boardingPricePerNight", "checkInDate", "checkOutDate"].forEach(id => {
+    document.getElementById(id).addEventListener("input", recalcAmount);
   });
 
   document.getElementById("bookingForm").addEventListener("submit", event => {
@@ -363,21 +661,18 @@ function setupCalendarSlotEvents() {
       event.preventDefault();
     });
 
-    cell.addEventListener("drop", event => {
+    cell.addEventListener("drop", async event => {
       event.preventDefault();
       const booking = bookings.find(item => item.id === draggedBookingId);
+      draggedBookingId = null;
       if (!booking) return;
       const newDate = cell.dataset.date;
       const newTime = cell.dataset.time || booking.time;
       if (!canAddBookingToSlot(newDate, newTime, booking.staffId, booking.duration, booking.id)) {
         alert("This slot is not available. Maximum 3 bookings are allowed per timeslot, and staff cannot be duplicated.");
-        draggedBookingId = null;
         return;
       }
-      booking.date = newDate;
-      booking.time = newTime;
-      renderAll();
-      draggedBookingId = null;
+      if (await moveBooking(booking, newDate, newTime)) renderAll();
     });
   });
 }
@@ -407,12 +702,62 @@ function setupListingEvents() {
   });
 }
 
+function setupPetSearch() {
+  const input = document.getElementById("petSearchInput");
+  const results = document.getElementById("petSearchResults");
+
+  input.addEventListener("input", () => {
+    const query = input.value.toLowerCase().trim();
+    if (!query) {
+      results.classList.add("hidden");
+      results.innerHTML = "";
+      return;
+    }
+
+    const matches = bookingPets.filter(p =>
+      (p.pet_name || "").toLowerCase().includes(query) || (p.customerName || "").toLowerCase().includes(query)
+    ).slice(0, 8);
+
+    if (!matches.length) {
+      results.innerHTML = `<div style="padding:10px;color:var(--text-muted);font-size:0.85rem;">No matching pet found.</div>`;
+      results.classList.remove("hidden");
+      return;
+    }
+
+    results.innerHTML = matches.map(p => `
+      <div class="pet-search-result" data-pet-id="${p.pet_id}" style="padding:10px;cursor:pointer;border-bottom:1px solid var(--accent-sand);">
+        <strong>${p.pet_name}</strong> (${p.pet_type || "-"}) — <span style="color:var(--text-muted);">${p.customerName || "-"}</span>
+      </div>
+    `).join("");
+    results.classList.remove("hidden");
+
+    results.querySelectorAll(".pet-search-result").forEach(row => {
+      row.addEventListener("click", () => selectPet(row.dataset.petId));
+    });
+  });
+
+  document.addEventListener("click", event => {
+    if (event.target !== input && !results.contains(event.target)) {
+      results.classList.add("hidden");
+    }
+  });
+}
+
+function selectPet(petId) {
+  const pet = findPet(petId);
+  if (!pet) return;
+  document.getElementById("selectedPetId").value = pet.pet_id;
+  document.getElementById("customerName").value = pet.customerName || "";
+  document.getElementById("petName").value = pet.pet_name;
+  document.getElementById("petSearchInput").value = `${pet.pet_name} (${pet.customerName || "-"})`;
+  document.getElementById("petSearchResults").classList.add("hidden");
+}
+
 /* =========================
    RENDER MAIN
 ========================= */
 
 function renderAll() {
-  persistBookings();
   renderMetricCards();
   renderKanban();
   renderCalendar();
@@ -444,7 +789,7 @@ function getFilteredBookings() {
 function getKanbanBookings() {
   return getFilteredBookings().filter(booking => {
     if (kanbanDateMode === "today" && booking.date !== getToday()) return false;
-    if (currentStaffFilter !== "all" && booking.staffId !== currentStaffFilter) return false;
+    if (currentStaffFilter !== "all" && Number(booking.staffId) !== Number(currentStaffFilter)) return false;
     return true;
   });
 }
@@ -453,11 +798,21 @@ function getKanbanBookings() {
    METRIC CARDS
 ========================= */
 
+// Set by the date-range filter controller (see setupBookingDateFilter);
+// defaults to today so the cards match the page's default "Daily" view.
+let bookingMetricsRange = { start: getToday(), end: getToday() };
+let bookingMetricsPeriod = "daily";
+
+function periodWord(period) {
+  return period === "monthly" ? "This Month" : period === "weekly" ? "This Week" : "Today";
+}
+
 function renderMetricCards() {
   const wrapper = document.getElementById("metricCards");
-  const data = getFilteredBookings();
+  const range = bookingMetricsRange;
+  const data = getFilteredBookings().filter(b => b.date >= range.start && b.date <= range.end);
 
-  const metrics = buildMetrics(currentServiceFilter, data);
+  const metrics = buildMetrics(currentServiceFilter, data, range, bookingMetricsPeriod);
 
   wrapper.innerHTML = metrics.map(metric => `
     <div class="metric-card">
@@ -467,7 +822,9 @@ function renderMetricCards() {
   `).join("");
 }
 
-function buildMetrics(filter, data) {
+function buildMetrics(filter, data, range, period) {
+  const word = periodWord(period);
+
   if (filter === "grooming") {
     const grooming = data.filter(b => b.serviceType === "grooming");
     const doneRate = percentage(
@@ -476,10 +833,10 @@ function buildMetrics(filter, data) {
     );
 
     return [
-      { label: "Booking Today", value: countToday(grooming) },
+      { label: `Booking ${word}`, value: grooming.length },
       { label: "Done Rate", value: doneRate },
       { label: "Pending Booking", value: countStatus(grooming, "pending") },
-      { label: "Staff Utilization", value: "76%" },
+      { label: "Staff Utilization", value: staffUtilizationToday() },
       { label: "No-show", value: countStatus(grooming, "no_show") }
     ];
   }
@@ -488,25 +845,22 @@ function buildMetrics(filter, data) {
     const boarding = data.filter(b => b.serviceType === "boarding");
 
     return [
-      { label: "Boarding Today", value: countToday(boarding) },
+      { label: `Boarding ${word}`, value: boarding.length },
       { label: "Current Boarder", value: boarding.filter(b => b.status !== "no_show" && b.status !== "cancelled").length },
-      { label: "Today Check-in", value: boarding.filter(b => b.checkInDate === getToday()).length },
-      { label: "Today Check-out", value: boarding.filter(b => b.checkOutDate === getToday()).length }
+      { label: `Check-in ${word}`, value: boarding.filter(b => b.checkInDate >= range.start && b.checkInDate <= range.end).length },
+      { label: `Check-out ${word}`, value: boarding.filter(b => b.checkOutDate >= range.start && b.checkOutDate <= range.end).length }
     ];
   }
 
   if (filter === "daycare") {
     const daycare = data.filter(b => b.serviceType === "daycare");
-    const usedCapacity = daycare.filter(b => b.date === getToday() && b.status !== "no_show" && b.status !== "cancelled").length;
-    const totalCapacity = rooms
-      .filter(r => r.type === "daycare")
-      .reduce((sum, room) => sum + room.capacity, 0);
+    const attending = daycare.filter(b => b.status !== "no_show" && b.status !== "cancelled").length;
 
     return [
-      { label: "Daycare Today", value: countToday(daycare) },
+      { label: `Daycare ${word}`, value: daycare.length },
       { label: "Pending Pick-up", value: daycare.filter(b => b.status === "done").length },
       { label: "No-show", value: countStatus(daycare, "no_show") },
-      { label: "Capacity", value: `${usedCapacity}/${totalCapacity}` }
+      { label: `Attending ${word}`, value: attending }
     ];
   }
 
@@ -515,14 +869,25 @@ function buildMetrics(filter, data) {
     grooming.filter(b => b.status === "done").length,
     grooming.length
   );
+  const boardingCheckIn = data.filter(b => b.serviceType === "boarding" && b.checkInDate >= range.start && b.checkInDate <= range.end).length;
+  const boardingCheckOut = data.filter(b => b.serviceType === "boarding" && b.checkOutDate >= range.start && b.checkOutDate <= range.end).length;
 
   return [
     { label: "Pending Services", value: countStatus(data, "pending") },
     { label: "Grooming Done Rate", value: groomingDoneRate },
-    { label: "Boarding Check-in / Check-out", value: `${todayCheckIn()}/${todayCheckOut()}` },
-    { label: "Daycare Attendance", value: countToday(data.filter(b => b.serviceType === "daycare")) },
+    { label: "Boarding Check-in / Check-out", value: `${boardingCheckIn}/${boardingCheckOut}` },
+    { label: `Daycare Attendance ${word}`, value: data.filter(b => b.serviceType === "daycare").length },
     { label: "No Show", value: countStatus(data, "no_show") }
   ];
+}
+
+function staffUtilizationToday() {
+  if (!staff.length) return "0%";
+  const todayDate = getToday();
+  const staffWithBookingToday = new Set(
+    bookings.filter(b => b.date === todayDate && b.status !== "cancelled" && b.status !== "no_show").map(b => Number(b.staffId))
+  );
+  return percentage(staffWithBookingToday.size, staff.length);
 }
 
 /* =========================
@@ -566,8 +931,7 @@ function renderKanban() {
 }
 
 function renderBookingCard(booking) {
-  const service = findService(booking.serviceId);
-  const staffMember = findStaff(booking.staffId);
+  const staffMember = findRealStaff(booking.staffId);
 
   return `
     <div class="booking-card" draggable="true" data-booking-id="${booking.id}">
@@ -575,10 +939,10 @@ function renderBookingCard(booking) {
         ${renderStatusTag(booking.status)}
       </div>
 
-      <strong>${booking.petName} — ${service?.name || "-"}</strong>
+      <strong>${booking.petName} — ${booking.serviceLabel}</strong>
       <small>${booking.customerName}</small><br>
       <small>${booking.date} | ${booking.time}</small><br>
-      <small>Staff: ${staffMember?.name || "-"}</small><br>
+      <small>Staff: ${staffMember?.staff_name || "-"}</small><br>
       <small>RM ${booking.amount}</small>
     </div>
   `;
@@ -596,18 +960,16 @@ function setupKanbanDragAndDrop() {
       event.preventDefault();
     });
 
-    column.addEventListener("drop", event => {
+    column.addEventListener("drop", async event => {
       event.preventDefault();
 
       const newStatus = event.currentTarget.dataset.status;
       const booking = bookings.find(b => b.id === draggedBookingId);
-
-      if (booking) {
-        booking.status = newStatus;
-        renderAll();
-      }
-
       draggedBookingId = null;
+
+      if (booking && booking.status !== newStatus) {
+        if (await updateBookingStatus(booking, newStatus)) renderAll();
+      }
     });
   });
 }
@@ -766,12 +1128,10 @@ function renderMonthlyCalendar() {
 }
 
 function renderCalendarBooking(booking) {
-  const service = findService(booking.serviceId);
-
   return `
     <div class="calendar-booking" draggable="true" data-booking-id="${booking.id}">
       <strong>${booking.petName}</strong><br>
-      ${service?.name || "-"}<br>
+      ${booking.serviceLabel}<br>
       ${renderStatusTag(booking.status)}
     </div>
   `;
@@ -847,40 +1207,54 @@ function updateCalendarRangeByMode() {
 }
 
 
-function openNewBooking() {
-  const date = getToday();
-  const defaultService = services.find(s => s.type === "grooming") || services[0];
-  const time = findFirstAvailableTime(date, defaultService.duration) || "09:00";
+function defaultDurationFor(type) {
+  if (type === "boarding") return 1440;
+  if (type === "grooming") return GROOMING_DEFAULT_DURATION;
+  return 60;
+}
 
-  const newId = `B${String(++_bookingIdCounter).padStart(3, "0")}`;
-
-  _newBookingDraft = {
-    id: newId,
+function buildNewBookingDraft(date, time, staffId) {
+  const type = currentServiceFilter !== "all" ? currentServiceFilter : "grooming";
+  return {
+    id: "new",
+    realId: null,
+    bookingType: type,
+    petId: null,
     customerName: "",
     petName: "",
-    serviceType: defaultService.type,
-    serviceId: defaultService.id,
-    staffId: staff[0]?.id || "",
-    roomId: "",
+    serviceType: type,
+    serviceLabel: "",
+    price: 0,
+    addOn: "",
+    addOnPrice: 0,
+    staffId: staffId ?? (staff[0]?.staff_id || ""),
+    roomLabel: "",
     date,
     time,
-    duration: defaultService.duration,
+    checkInTime: time,
+    checkOutTime: "",
+    duration: defaultDurationFor(type),
     status: "scheduled",
-    amount: defaultService.price,
-    checkInDate: "",
-    checkOutDate: "",
-    specialNote: ""
+    amount: 0,
+    checkInDate: type === "boarding" ? date : "",
+    checkOutDate: type === "boarding" ? addDays(date, 1) : "",
+    feedingInstruction: "",
+    medicalInstruction: "",
+    specialNote: "",
+    paymentId: null,
   };
+}
 
+function openNewBooking() {
+  const date = getToday();
+  const time = findFirstAvailableTime(date) || "09:00";
+  _newBookingDraft = buildNewBookingDraft(date, time);
   openBookingDetails(_newBookingDraft);
 }
 
 function createBookingFromSlot(date, time) {
-  const defaultService = services.find(service => {
-    if (currentServiceFilter === "all") return service.type === "grooming";
-    return service.type === currentServiceFilter;
-  });
-  const duration = defaultService?.duration || 60;
+  const type = currentServiceFilter !== "all" ? currentServiceFilter : "grooming";
+  const duration = defaultDurationFor(type);
 
   const availableStaff = getAvailableStaffForSlot(date, time, duration);
 
@@ -889,26 +1263,7 @@ function createBookingFromSlot(date, time) {
     return;
   }
 
-  const newId = `B${String(++_bookingIdCounter).padStart(3, "0")}`;
-
-  _newBookingDraft = {
-    id: newId,
-    customerName: "",
-    petName: "",
-    serviceType: defaultService?.type || "grooming",
-    serviceId: defaultService?.id || "S001",
-    staffId: availableStaff[0].id,
-    roomId: "",
-    date,
-    time,
-    duration,
-    status: "scheduled",
-    amount: defaultService?.price || 0,
-    checkInDate: "",
-    checkOutDate: "",
-    specialNote: ""
-  };
-
+  _newBookingDraft = buildNewBookingDraft(date, time, availableStaff[0].staff_id);
   openBookingDetails(_newBookingDraft);
 }
 
@@ -920,14 +1275,13 @@ function renderListing() {
   const tbody = document.getElementById("listingTableBody");
 
   const filteredData = getFilteredBookings().filter(booking => {
-    const service = findService(booking.serviceId);
-    const staffMember = findStaff(booking.staffId);
+    const staffMember = findRealStaff(booking.staffId);
 
     const searchableText = `
       ${booking.customerName}
       ${booking.petName}
-      ${service?.name || ""}
-      ${staffMember?.name || ""}
+      ${booking.serviceLabel || ""}
+      ${staffMember?.staff_name || ""}
     `.toLowerCase();
 
     return searchableText.includes(listingSearchKeyword);
@@ -936,19 +1290,20 @@ function renderListing() {
   filteredData.sort((a, b) => a.date.localeCompare(b.date) || a.time.localeCompare(b.time));
 
   tbody.innerHTML = filteredData.map(booking => {
-    const service = findService(booking.serviceId);
-    const staffMember = findStaff(booking.staffId);
-    const room = findRoom(booking.roomId);
+    const staffMember = findRealStaff(booking.staffId);
+    const durationLabel = booking.bookingType === "boarding"
+      ? `${nightsBetweenDates(booking.checkInDate, booking.checkOutDate)} night(s)`
+      : `${booking.duration} mins`;
 
     return `
       <tr>
         <td>${booking.date}</td>
         <td>${booking.customerName}</td>
         <td>${booking.petName}</td>
-        <td>${service?.name || "-"}</td>
-        <td>${staffMember?.name || "-"}</td>
+        <td>${booking.serviceLabel || "-"}</td>
+        <td>${staffMember?.staff_name || "-"}</td>
         <td>${booking.time}</td>
-        <td>${booking.duration} mins</td>
+        <td>${durationLabel}</td>
 
         <td>
           <select
@@ -965,7 +1320,7 @@ function renderListing() {
         </td>
 
         <td>RM ${booking.amount}</td>
-        <td>${room?.name || "-"}</td>
+        <td>${booking.roomLabel || "-"}</td>
 
         <td>
           <button
@@ -980,17 +1335,21 @@ function renderListing() {
   }).join("");
 }
 
-function updateListingStatus(event) {
+async function updateListingStatus(event) {
   event.stopPropagation();
 
   const bookingId = event.target.dataset.bookingId;
   const newStatus = event.target.value;
 
   const booking = bookings.find(item => item.id === bookingId);
-
   if (!booking) return;
 
-  booking.status = newStatus;
+  const previousStatus = booking.status;
+  const ok = await updateBookingStatus(booking, newStatus);
+  if (!ok) {
+    event.target.value = previousStatus;
+    return;
+  }
 
   renderMetricCards();
   renderKanban();
@@ -1009,25 +1368,43 @@ function openBookingDetails(bookingIdOrObj) {
   if (!booking) return;
 
   document.getElementById("bookingId").value = booking.id;
-  document.getElementById("customerName").value = booking.customerName;
-  document.getElementById("petName").value = booking.petName;
+  document.getElementById("selectedPetId").value = booking.petId || "";
+  document.getElementById("petSearchInput").value = "";
+  document.getElementById("petSearchResults").classList.add("hidden");
+  document.getElementById("customerName").value = booking.customerName || "";
+  document.getElementById("petName").value = booking.petName || "";
   document.getElementById("serviceType").value = booking.serviceType;
 
-  populateServiceDropdown();
   populateStaffDropdown();
-  populateRoomDropdown();
-
-  document.getElementById("requiredService").value = booking.serviceId;
   document.getElementById("staffName").value = booking.staffId;
-  document.getElementById("roomName").value = booking.roomId || "";
-  document.getElementById("bookingDate").value = booking.date;
-  document.getElementById("bookingTime").value = booking.time;
-  document.getElementById("duration").value = booking.duration;
   document.getElementById("bookingStatus").value = booking.status;
   document.getElementById("amount").value = booking.amount;
-  document.getElementById("checkInDate").value = booking.checkInDate || "";
-  document.getElementById("checkOutDate").value = booking.checkOutDate || "";
   document.getElementById("specialNote").value = booking.specialNote || "";
+
+  document.getElementById("bookingDate").value = booking.date || "";
+  document.getElementById("bookingTime").value = booking.bookingType === "grooming" ? (booking.time || "") : "";
+
+  const isGrooming = booking.bookingType === "grooming";
+  document.getElementById("groomingServiceName").value = isGrooming ? (booking.serviceLabel || "") : "";
+  document.getElementById("groomingPrice").value = isGrooming ? booking.price : "";
+  document.getElementById("groomingAddOn").value = isGrooming ? (booking.addOn || "") : "";
+  document.getElementById("groomingAddOnPrice").value = isGrooming ? (booking.addOnPrice || 0) : "";
+
+  const isDaycare = booking.bookingType === "daycare";
+  document.getElementById("daycareCheckInTime").value = isDaycare ? (booking.checkInTime || "") : "";
+  document.getElementById("daycareCheckOutTime").value = isDaycare ? (booking.checkOutTime || "") : "";
+  document.getElementById("daycarePackageType").value = isDaycare ? (booking.serviceLabel || "") : "";
+  document.getElementById("daycarePrice").value = isDaycare ? booking.price : "";
+
+  const isBoarding = booking.bookingType === "boarding";
+  document.getElementById("checkInDate").value = isBoarding ? (booking.checkInDate || "") : "";
+  document.getElementById("checkInTime").value = isBoarding ? (booking.checkInTime || "") : "";
+  document.getElementById("checkOutDate").value = isBoarding ? (booking.checkOutDate || "") : "";
+  document.getElementById("checkOutTime").value = isBoarding ? (booking.checkOutTime || "") : "";
+  document.getElementById("boardingRoomType").value = isBoarding ? (booking.roomLabel || "") : "";
+  document.getElementById("boardingPricePerNight").value = isBoarding ? booking.price : "";
+  document.getElementById("boardingFeeding").value = isBoarding ? (booking.feedingInstruction || "") : "";
+  document.getElementById("boardingMedical").value = isBoarding ? (booking.medicalInstruction || "") : "";
 
   toggleServiceSpecificFields();
 
@@ -1039,122 +1416,172 @@ function closeModal() {
   document.getElementById("bookingModal").style.display = "none";
 }
 
-function saveBooking() {
-  const bookingId = document.getElementById("bookingId").value;
-  let booking = bookings.find(item => item.id === bookingId);
+function recalcAmount() {
+  const type = document.getElementById("serviceType").value;
+  let amount = 0;
 
-  if (!booking) {
-    if (_newBookingDraft && _newBookingDraft.id === bookingId) {
-      booking = _newBookingDraft;
-      bookings.push(booking);
-      _newBookingDraft = null;
-    } else {
-      return;
-    }
+  if (type === "grooming") {
+    const price = Number(document.getElementById("groomingPrice").value) || 0;
+    const addOnPrice = Number(document.getElementById("groomingAddOnPrice").value) || 0;
+    amount = price + addOnPrice;
+  } else if (type === "daycare") {
+    amount = Number(document.getElementById("daycarePrice").value) || 0;
+  } else if (type === "boarding") {
+    const pricePerNight = Number(document.getElementById("boardingPricePerNight").value) || 0;
+    const checkInDate = document.getElementById("checkInDate").value;
+    const checkOutDate = document.getElementById("checkOutDate").value;
+    const nights = checkInDate && checkOutDate ? nightsBetweenDates(checkInDate, checkOutDate) : 1;
+    amount = pricePerNight * nights;
   }
 
-  const newDate = document.getElementById("bookingDate").value;
-  const newTime = document.getElementById("bookingTime").value;
-  const newStaffId = document.getElementById("staffName").value;
-  const newDuration = Number(document.getElementById("duration").value);
-  const newStatus = document.getElementById("bookingStatus").value;
-  const leavingActiveSchedule = newStatus === "cancelled" || newStatus === "no_show";
+  document.getElementById("amount").value = amount;
+}
 
-  if (!leavingActiveSchedule && !canAddBookingToSlot(newDate, newTime, newStaffId, newDuration, bookingId)) {
+async function saveBooking() {
+  const bookingId = document.getElementById("bookingId").value;
+  const isNew = bookingId === "new";
+  const booking = isNew ? _newBookingDraft : bookings.find(item => item.id === bookingId);
+  if (!booking) return;
+
+  const petId = document.getElementById("selectedPetId").value;
+  if (!petId) {
+    alert("Please search and select a pet before saving.");
+    return;
+  }
+  const pet = findPet(petId);
+
+  const type = document.getElementById("serviceType").value;
+  if (!isNew && type !== booking.bookingType) {
+    alert("Changing service type on an existing booking isn't supported — cancel this booking and create a new one for the new service type.");
+    return;
+  }
+
+  const staffId = Number(document.getElementById("staffName").value);
+  const status = document.getElementById("bookingStatus").value;
+  const notes = document.getElementById("specialNote").value;
+
+  let payload = {
+    pet_id: Number(petId),
+    staff_id: staffId,
+    booking_status: denormalizeStatus(type, status),
+  };
+
+  let date, time, duration, amount, serviceLabel, price;
+  let addOn = "", addOnPrice = 0, roomLabel = "";
+  let checkInDate = "", checkOutDate = "", checkInTime = "", checkOutTime = "";
+  let feedingInstruction = "", medicalInstruction = "";
+
+  if (type === "grooming") {
+    date = document.getElementById("bookingDate").value;
+    time = document.getElementById("bookingTime").value;
+    serviceLabel = document.getElementById("groomingServiceName").value;
+    price = Number(document.getElementById("groomingPrice").value) || 0;
+    addOn = document.getElementById("groomingAddOn").value;
+    addOnPrice = Number(document.getElementById("groomingAddOnPrice").value) || 0;
+    duration = GROOMING_DEFAULT_DURATION;
+    amount = price + addOnPrice;
+    payload = { ...payload, service_name: serviceLabel, booking_date: date, booking_time: time ? `${time}:00` : null, price, add_on: addOn || "-", add_on_price: addOnPrice, notes: notes || "-" };
+  } else if (type === "daycare") {
+    date = document.getElementById("bookingDate").value;
+    checkInTime = document.getElementById("daycareCheckInTime").value;
+    checkOutTime = document.getElementById("daycareCheckOutTime").value;
+    time = checkInTime;
+    serviceLabel = document.getElementById("daycarePackageType").value;
+    price = Number(document.getElementById("daycarePrice").value) || 0;
+    duration = minutesBetweenTimes(checkInTime, checkOutTime);
+    amount = price;
+    payload = { ...payload, booking_date: date, check_in_time: checkInTime ? `${checkInTime}:00` : null, check_out_time: checkOutTime ? `${checkOutTime}:00` : null, package_type: serviceLabel, price, special_instruction: notes || "-" };
+  } else {
+    checkInDate = document.getElementById("checkInDate").value;
+    checkInTime = document.getElementById("checkInTime").value;
+    checkOutDate = document.getElementById("checkOutDate").value;
+    checkOutTime = document.getElementById("checkOutTime").value;
+    date = checkInDate;
+    time = checkInTime;
+    roomLabel = document.getElementById("boardingRoomType").value;
+    price = Number(document.getElementById("boardingPricePerNight").value) || 0;
+    const nights = nightsBetweenDates(checkInDate, checkOutDate);
+    duration = 1440;
+    amount = price * nights;
+    feedingInstruction = document.getElementById("boardingFeeding").value;
+    medicalInstruction = document.getElementById("boardingMedical").value;
+    payload = { ...payload, check_in_date: checkInDate, check_in_time: checkInTime ? `${checkInTime}:00` : null, check_out_date: checkOutDate, check_out_time: checkOutTime ? `${checkOutTime}:00` : null, room_type: roomLabel, price_per_night: price, feeding_instruction: feedingInstruction || "-", medical_instruction: medicalInstruction || "-", notes: notes || "-" };
+  }
+
+  const leavingActiveSchedule = status === "cancelled" || status === "no_show";
+  const excludeId = isNew ? "" : bookingId;
+  if (!leavingActiveSchedule && !canAddBookingToSlot(date, time, staffId, duration, excludeId)) {
     alert("This booking cannot be saved. The selected timeslot already has 3 bookings or the selected staff is already assigned at this time.");
     return;
   }
 
-  booking.customerName = document.getElementById("customerName").value;
-  booking.petName = document.getElementById("petName").value;
-  booking.serviceType = document.getElementById("serviceType").value;
-  booking.serviceId = document.getElementById("requiredService").value;
-  booking.staffId = newStaffId;
-  booking.roomId = document.getElementById("roomName").value;
-  booking.date = newDate;
-  booking.time = newTime;
-  booking.duration = newDuration;
-  booking.status = document.getElementById("bookingStatus").value;
-  booking.amount = Number(document.getElementById("amount").value);
-  booking.checkInDate = document.getElementById("checkInDate").value;
-  booking.checkOutDate = document.getElementById("checkOutDate").value;
-  booking.specialNote = document.getElementById("specialNote").value;
+  try {
+    if (isNew) {
+      const result = await api.createBooking(type, payload);
+      const idColumn = { grooming: "grooming_booking_id", daycare: "daycare_booking_id", boarding: "boarding_booking_id" }[type];
+      booking.realId = result.booking[idColumn];
+      booking.id = `${type}-${booking.realId}`;
+      booking.paymentId = result.booking.payment_id;
+      bookings.push(booking);
+    } else {
+      await api.updateBooking(type, booking.realId, payload);
+    }
+  } catch (err) {
+    alert(err.message);
+    return;
+  }
 
+  booking.bookingType = type;
+  booking.serviceType = type;
+  booking.petId = Number(petId);
+  booking.customerName = pet?.customerName || booking.customerName;
+  booking.petName = pet?.pet_name || booking.petName;
+  booking.staffId = staffId;
+  booking.status = status;
+  booking.date = date;
+  booking.time = time;
+  booking.duration = duration;
+  booking.amount = amount;
+  booking.serviceLabel = serviceLabel;
+  booking.price = price;
+  booking.addOn = addOn;
+  booking.addOnPrice = addOnPrice;
+  booking.roomLabel = roomLabel;
+  booking.checkInDate = checkInDate;
+  booking.checkOutDate = checkOutDate;
+  booking.checkInTime = checkInTime;
+  booking.checkOutTime = checkOutTime;
+  booking.feedingInstruction = feedingInstruction;
+  booking.medicalInstruction = medicalInstruction;
+  booking.specialNote = notes;
+
+  _newBookingDraft = null;
   closeModal();
   renderAll();
 }
 
-function populateDropdowns() {
-  populateServiceDropdown();
-  populateStaffDropdown();
-  populateRoomDropdown();
-}
-
-function populateServiceDropdown() {
-  const selectedType = document.getElementById("serviceType").value;
-  const serviceSelect = document.getElementById("requiredService");
-
-  serviceSelect.innerHTML = services
-    .filter(service => service.type === selectedType)
-    .map(service => `
-      <option value="${service.id}">
-        ${service.name} — RM ${service.price}
-      </option>
-    `).join("");
-}
-
 function populateStaffDropdown() {
   const staffSelect = document.getElementById("staffName");
-
   staffSelect.innerHTML = staff.map(member => `
-    <option value="${member.id}">
-      ${member.name}
-    </option>
+    <option value="${member.staff_id}">${member.staff_name}</option>
   `).join("");
-}
-
-function populateRoomDropdown() {
-  const selectedType = document.getElementById("serviceType").value;
-  const roomSelect = document.getElementById("roomName");
-
-  roomSelect.innerHTML = `
-    <option value="">No Room</option>
-    ${rooms
-      .filter(room => room.type === selectedType)
-      .map(room => `
-        <option value="${room.id}">
-          ${room.name} — Capacity ${room.capacity}
-        </option>
-      `).join("")}
-  `;
 }
 
 function toggleServiceSpecificFields() {
   const selectedType = document.getElementById("serviceType").value;
 
-  document.querySelectorAll(".room-field").forEach(field => {
-    field.classList.toggle("hidden", !["boarding", "daycare"].includes(selectedType));
+  document.querySelectorAll(".date-field").forEach(field => {
+    field.classList.toggle("hidden", !["grooming", "daycare"].includes(selectedType));
   });
-
-  document.querySelectorAll(".boarding-field").forEach(field => {
+  document.querySelectorAll(".grooming-only").forEach(field => {
+    field.classList.toggle("hidden", selectedType !== "grooming");
+  });
+  document.querySelectorAll(".daycare-only").forEach(field => {
+    field.classList.toggle("hidden", selectedType !== "daycare");
+  });
+  document.querySelectorAll(".boarding-only").forEach(field => {
     field.classList.toggle("hidden", selectedType !== "boarding");
   });
-
-  populateRoomDropdown();
-}
-
-function syncServiceData() {
-  const serviceId = document.getElementById("requiredService").value;
-  const service = findService(serviceId);
-
-  if (!service) return;
-
-  document.getElementById("duration").value = service.duration;
-  document.getElementById("amount").value = service.price;
-}
-
-function autoCalculateAmount() {
-  syncServiceData();
 }
 
 function moveCalendar(direction) {
@@ -1253,8 +1680,8 @@ function isStaffAlreadyBooked(date, time, staffId, duration = 60, excludeBooking
   const newEnd = newStart + duration;
 
   return bookings.some(booking => {
-    if (booking.date !== date || booking.staffId !== staffId || booking.id === excludeBookingId ||
-        booking.status === "cancelled" || booking.status === "no_show") {
+    if (booking.date !== date || Number(booking.staffId) !== Number(staffId) || booking.id === excludeBookingId ||
+        booking.status === "cancelled" || booking.status === "no_show" || !booking.time) {
       return false;
     }
     const existingStart = timeToMinutes(booking.time);
@@ -1265,7 +1692,7 @@ function isStaffAlreadyBooked(date, time, staffId, duration = 60, excludeBooking
 
 function getAvailableStaffForSlot(date, time, duration = 60, excludeBookingId = "") {
   return staff.filter(member => {
-    return !isStaffAlreadyBooked(date, time, member.id, duration, excludeBookingId);
+    return !isStaffAlreadyBooked(date, time, member.staff_id, duration, excludeBookingId);
   });
 }
 
@@ -1312,20 +1739,8 @@ function findFirstAvailableTime(date, duration = 60) {
   });
 }
 
-function countToday(data) {
-  return data.filter(booking => booking.date === getToday()).length;
-}
-
 function countStatus(data, status) {
   return data.filter(booking => booking.status === status).length;
-}
-
-function todayCheckIn() {
-  return bookings.filter(b => b.serviceType === "boarding" && b.checkInDate === getToday()).length;
-}
-
-function todayCheckOut() {
-  return bookings.filter(b => b.serviceType === "boarding" && b.checkOutDate === getToday()).length;
 }
 
 function percentage(value, total) {
@@ -1429,10 +1844,20 @@ function getDateRange(startDate, endDate) {
    ========================================================================== */
 
 let currentFilter = 'all';
-let weekAnchor = getStartOfWeek(today);
+// Unified date-range filter (Daily/Weekly/Monthly + Prev/Today/Next), same
+// pattern as the Analytical Dashboard. The Weekly Booking Schedule is always
+// a fixed 7-day grid, so it shows the calendar week containing the range's
+// start date regardless of which period is selected.
+let dailyOverviewRange = { start: today, end: today };
+let dailyOverviewPeriod = 'daily';
 
 function findServiceName(id) { return findService(id)?.name || '-'; }
 function findRoomName(id) { return findRoom(id)?.name || '-'; }
+// Dual-shape helpers: real bookings (booking.html/dailyoverview.html) carry
+// serviceLabel/roomLabel directly; mock bookings (dashboard.html/staff.html,
+// not yet converted) only have serviceId/roomId and need the catalog lookup.
+function bookingServiceLabel(b) { return b.serviceLabel != null ? b.serviceLabel : findServiceName(b.serviceId); }
+function bookingRoomLabel(b) { return b.roomLabel || (b.roomId ? findRoomName(b.roomId) : ''); }
 function filterBookingsByService(filter) {
   return bookings.filter(b => filter === 'all' || b.serviceType === filter);
 }
@@ -1544,10 +1969,16 @@ const CARD_CTA = {
   daycarePendingPickup: { label: 'Open Booking Dashboard',  href: 'booking.html' }
 };
 
-function buildActionCards(filter) {
-  const todayBookings = filterBookingsByService(filter).filter(b => b.date === today);
-  const pendingConfirmation = todayBookings.filter(b => b.status === 'scheduled').length;
+function buildActionCards(filter, range = dailyOverviewRange, period = dailyOverviewPeriod) {
+  const inRange = d => d >= range.start && d <= range.end;
+  const word = periodWord(period);
 
+  const rangeBookings = filterBookingsByService(filter).filter(b => inRange(b.date));
+  const pendingConfirmation = rangeBookings.filter(b => b.status === 'scheduled').length;
+
+  // The mock enquiries/loyaltyRequests arrays used below have no date field
+  // at all (see common.js's dailyoverview section header) — they stay
+  // unfiltered by the date range, same as before this feature.
   const relevantEnquiries = enquiries.filter(e => filter === 'all' || e.relatedService === filter);
   const pendingEnquiries = relevantEnquiries.filter(e => e.status === 'pending');
   const enquirySlaBreaches = slaBreachCount('enquiry', pendingEnquiries, 'receivedAt');
@@ -1559,7 +1990,7 @@ function buildActionCards(filter) {
   const cards = [];
 
   if (filter === 'all' || filter === 'grooming') {
-    const groomingPending = bookings.filter(b => b.serviceType === 'grooming' && b.date === today && b.status === 'pending');
+    const groomingPending = bookings.filter(b => b.serviceType === 'grooming' && inRange(b.date) && b.status === 'pending');
     const groomingSlaBreaches = slaBreachCount('pendingService', groomingPending, 'time');
     cards.push({
       key: 'pendingGrooming',
@@ -1573,7 +2004,7 @@ function buildActionCards(filter) {
     {
       key: 'pendingConfirmation',
       icon: 'confirm-circle.png', label: 'Pending Booking Confirmation', value: pendingConfirmation,
-      sub: 'Scheduled today, awaiting confirmation', tone: 'info'
+      sub: `Scheduled ${word.toLowerCase()}, awaiting confirmation`, tone: 'info'
     },
     {
       key: 'pendingEnquiries',
@@ -1589,17 +2020,17 @@ function buildActionCards(filter) {
 
   if (filter === 'all' || filter === 'boarding') {
     const boardingBookings = bookings.filter(b => b.serviceType === 'boarding');
-    const checkInsDue = boardingBookings.filter(b => b.checkInDate === today && b.status !== 'done' && b.status !== 'no_show' && b.status !== 'cancelled').length;
-    const checkOutsDue = boardingBookings.filter(b => b.checkOutDate === today && b.status !== 'no_show' && b.status !== 'cancelled').length;
+    const checkInsDue = boardingBookings.filter(b => inRange(b.checkInDate) && b.status !== 'done' && b.status !== 'no_show' && b.status !== 'cancelled').length;
+    const checkOutsDue = boardingBookings.filter(b => inRange(b.checkOutDate) && b.status !== 'no_show' && b.status !== 'cancelled').length;
 
     cards.push(
-      { key: 'boardingCheckIn', icon: 'login.png', label: 'Boarding Check-In Due', value: checkInsDue, sub: 'Arrivals to confirm', tone: 'success' },
-      { key: 'boardingCheckOut', icon: 'logout.png', label: 'Boarding Check-Out Due', value: checkOutsDue, sub: 'Departures to confirm', tone: 'warning' }
+      { key: 'boardingCheckIn', icon: 'login.png', label: 'Boarding Check-In Due', value: checkInsDue, sub: `Arrivals to confirm (${word.toLowerCase()})`, tone: 'success' },
+      { key: 'boardingCheckOut', icon: 'logout.png', label: 'Boarding Check-Out Due', value: checkOutsDue, sub: `Departures to confirm (${word.toLowerCase()})`, tone: 'warning' }
     );
   }
 
   if (filter === 'all' || filter === 'daycare') {
-    const daycareBookings = bookings.filter(b => b.serviceType === 'daycare' && b.date === today);
+    const daycareBookings = bookings.filter(b => b.serviceType === 'daycare' && inRange(b.date));
     const checkInsDue = daycareBookings.filter(b => b.status === 'pending' || b.status === 'scheduled').length;
     const pendingPickup = daycareBookings.filter(b => b.status === 'done').length;
 
@@ -1629,17 +2060,17 @@ function renderActionCard(card) {
    SERVICE LOAD CHART
 ========================= */
 
-function renderServiceLoadChart() {
+function renderServiceLoadChart(range = dailyOverviewRange, period = dailyOverviewPeriod) {
   const types = [
     { key: 'grooming', icon: 'grooming-scissors.png', label: 'Grooming', tone: 'info' },
     { key: 'boarding', icon: 'boarding.png', label: 'Boarding', tone: 'purple' },
     { key: 'daycare',  icon: 'dog-play.png', label: 'Daycare',  tone: 'warning' }
   ];
-  const counts = types.map(t => bookings.filter(b => b.serviceType === t.key && b.date === today && b.status !== "cancelled" && b.status !== "no_show").length);
+  const counts = types.map(t => bookings.filter(b => b.serviceType === t.key && b.date >= range.start && b.date <= range.end && b.status !== "cancelled" && b.status !== "no_show").length);
   const max = Math.max(...counts, 1);
   const total = counts.reduce((a, b) => a + b, 0);
 
-  q('serviceLoadTotal').textContent = `${total} booking${total === 1 ? '' : 's'} today`;
+  q('serviceLoadTotal').textContent = `${total} booking${total === 1 ? '' : 's'} ${periodWord(period).toLowerCase()}`;
 
   q('serviceLoadChart').innerHTML = types.map((t, i) => `
     <div class="bar-label-item" onclick="openServiceLoadDetail('${t.key}')">
@@ -1761,9 +2192,9 @@ const STATUS_META = [
   { key: 'cancelled', label: 'Cancelled',       color: '#78716C' }
 ];
 
-function renderStatusDonut(filter) {
-  const todayBookings = filterBookingsByService(filter).filter(b => b.date === today);
-  const counts = STATUS_META.map(s => todayBookings.filter(b => b.status === s.key).length);
+function renderStatusDonut(filter, range = dailyOverviewRange) {
+  const rangeBookings = filterBookingsByService(filter).filter(b => b.date >= range.start && b.date <= range.end);
+  const counts = STATUS_META.map(s => rangeBookings.filter(b => b.status === s.key).length);
   const total = counts.reduce((a, b) => a + b, 0);
 
   const scopeLabel = filter === 'all' ? 'All bookings' : `${filter.charAt(0).toUpperCase() + filter.slice(1)} bookings`;
@@ -1792,31 +2223,52 @@ function renderStatusDonut(filter) {
    ROOM & PLAY AREA STATUS
 ========================= */
 
-function renderRoomStatus(filter) {
+// Your real Supabase schema has no rooms/capacity catalog — only
+// boarding_booking.room_type, a free-text label per booking. So instead of
+// a fixed room list, this derives "rooms in use" from whatever room_type
+// labels currently appear in real boarding bookings.
+function getActiveRoomLabels() {
+  const labels = new Set();
+  bookings.forEach(b => { if (b.bookingType === 'boarding' && b.roomLabel) labels.add(b.roomLabel); });
+  return [...labels].sort();
+}
+
+function renderRoomStatus(filter, range = dailyOverviewRange, period = dailyOverviewPeriod) {
   const el = q('roomStatusList');
 
-  if (filter === 'grooming') {
-    el.innerHTML = `<p class="queue-empty">Grooming does not use rooms.</p>`;
+  if (filter === 'grooming' || filter === 'daycare') {
+    const label = filter.charAt(0).toUpperCase() + filter.slice(1);
+    el.innerHTML = `<p class="queue-empty">${label} does not use dedicated rooms.</p>`;
     q('roomStatusCount').textContent = '0 rooms';
     return;
   }
 
-  const relevantRooms = rooms.filter(r => filter === 'all' || r.type === filter);
-  q('roomStatusCount').textContent = `${relevantRooms.length} room${relevantRooms.length === 1 ? '' : 's'}`;
+  const roomLabels = getActiveRoomLabels();
+  q('roomStatusCount').textContent = `${roomLabels.length} room${roomLabels.length === 1 ? '' : 's'}`;
 
-  el.innerHTML = relevantRooms.map(room => {
-    const roomBookings = bookings.filter(b => b.roomId === room.id);
-    const checkoutToday = roomBookings.some(b => b.checkOutDate === today && b.status !== 'no_show' && b.status !== 'cancelled');
-    const activeToday = roomBookings.some(b => b.date === today && b.status !== 'no_show' && b.status !== 'done' && b.status !== 'cancelled');
+  if (!roomLabels.length) {
+    el.innerHTML = `<p class="queue-empty">No boarding rooms currently in use.</p>`;
+    return;
+  }
+
+  const word = periodWord(period);
+
+  el.innerHTML = roomLabels.map(roomLabel => {
+    const roomBookings = bookings.filter(b => b.bookingType === 'boarding' && b.roomLabel === roomLabel);
+    const checkoutInRange = roomBookings.some(b => b.checkOutDate >= range.start && b.checkOutDate <= range.end && b.status !== 'no_show' && b.status !== 'cancelled');
+    const activeInRange = roomBookings.some(b =>
+      b.checkInDate && b.checkOutDate && b.checkInDate <= range.end && b.checkOutDate >= range.start &&
+      b.status !== 'no_show' && b.status !== 'cancelled'
+    );
 
     let label = 'Vacant';
     let statusKey = 'done';
-    if (checkoutToday) { label = 'Needs Cleaning · Checkout Today'; statusKey = 'no_show'; }
-    else if (activeToday) { label = 'Occupied Today'; statusKey = 'scheduled'; }
+    if (checkoutInRange) { label = `Needs Cleaning · Checkout ${word}`; statusKey = 'no_show'; }
+    else if (activeInRange) { label = `Occupied ${word}`; statusKey = 'scheduled'; }
 
     return `
-      <div class="room-status-row" onclick="openRoomDetail('${room.id}')">
-        <span>${room.name}</span>
+      <div class="room-status-row" onclick="openRoomDetail('${roomLabel}')">
+        <span>${roomLabel}</span>
         <span class="status-tag status-${statusKey}">${label}</span>
       </div>
     `;
@@ -1839,10 +2291,14 @@ function formatShortDate(dateStr) {
   return new Date(dateStr + 'T00:00:00').toLocaleDateString('en-MY', { day: '2-digit', month: 'short' });
 }
 
-function renderWeeklySchedule(filter) {
-  const dates = getDateRange(weekAnchor, addDays(weekAnchor, 6));
+function renderWeeklySchedule(filter, range = dailyOverviewRange) {
+  // Always a fixed 7-day grid — shows the calendar week containing the
+  // filter's range start, so it stays in sync with the master date filter
+  // (Daily/Monthly periods land on the week containing that day/month-start).
+  const weekStart = getStartOfWeek(range.start);
+  const dates = getDateRange(weekStart, addDays(weekStart, 6));
 
-  q('scheduleWeekLabel').textContent = `${formatShortDate(weekAnchor)} – ${formatShortDate(addDays(weekAnchor, 6))}`;
+  q('scheduleWeekLabel').textContent = `${formatShortDate(weekStart)} – ${formatShortDate(addDays(weekStart, 6))}`;
 
   q('scheduleHead').innerHTML = dates.map(date => {
     const d = new Date(date + 'T00:00:00');
@@ -1876,15 +2332,15 @@ function renderWeeklySchedule(filter) {
    ACTION QUEUE
 ========================= */
 
-function buildActionQueue(filter) {
+function buildActionQueue(filter, range = { start: today, end: today }) {
   const rows = [];
-  const todaysBookings = filterBookingsByService(filter).filter(b => b.date === today);
+  const rangeBookings = filterBookingsByService(filter).filter(b => b.date >= range.start && b.date <= range.end);
 
-  todaysBookings.forEach(b => {
+  rangeBookings.forEach(b => {
     if (b.status === 'pending') {
       rows.push({
-        time: b.time, typeIcon: 'list-view.png', type: 'Service Due',
-        detail: `${b.petName} (${b.customerName}) — ${findServiceName(b.serviceId)}`,
+        date: b.date, time: b.time, typeIcon: 'list-view.png', type: 'Service Due',
+        detail: `${b.petName} (${b.customerName}) — ${bookingServiceLabel(b)}`,
         statusKey: 'pending', statusLabel: 'Needs Action',
         sla: slaBadge('pendingService', b.time),
         actionLabel: 'Mark Done', actionOnclick: `markBookingDone('${b.id}')`,
@@ -1892,8 +2348,8 @@ function buildActionQueue(filter) {
       });
     } else if (b.status === 'scheduled') {
       rows.push({
-        time: b.time, typeIcon: 'confirm-circle.png', type: 'Booking Confirmation',
-        detail: `${b.petName} (${b.customerName}) — ${findServiceName(b.serviceId)}`,
+        date: b.date, time: b.time, typeIcon: 'confirm-circle.png', type: 'Booking Confirmation',
+        detail: `${b.petName} (${b.customerName}) — ${bookingServiceLabel(b)}`,
         statusKey: 'scheduled', statusLabel: 'Awaiting Confirmation',
         sla: '',
         actionLabel: 'Confirm Arrival', actionOnclick: `confirmBooking('${b.id}')`,
@@ -1904,20 +2360,20 @@ function buildActionQueue(filter) {
 
   if (filter !== 'grooming') {
     filterBookingsByService(filter).forEach(b => {
-      if (b.checkInDate === today && b.status !== 'done' && b.status !== 'no_show' && b.status !== 'cancelled') {
+      if (b.checkInDate >= range.start && b.checkInDate <= range.end && b.status !== 'done' && b.status !== 'no_show' && b.status !== 'cancelled') {
         rows.push({
-          time: b.time, typeIcon: 'login.png', type: 'Check-In Due',
-          detail: `${b.petName} (${b.customerName}) — ${findRoomName(b.roomId)}`,
+          date: b.checkInDate, time: b.time, typeIcon: 'login.png', type: 'Check-In Due',
+          detail: `${b.petName} (${b.customerName}) — ${bookingRoomLabel(b)}`,
           statusKey: 'scheduled', statusLabel: 'Awaiting Check-In',
           sla: '',
           actionLabel: null, actionOnclick: null,
           rowOnclick: `openQueueItemDetail('booking','${b.id}')`
         });
       }
-      if (b.checkOutDate === today && b.status !== 'no_show' && b.status !== 'cancelled') {
+      if (b.checkOutDate >= range.start && b.checkOutDate <= range.end && b.status !== 'no_show' && b.status !== 'cancelled') {
         rows.push({
-          time: b.time, typeIcon: 'logout.png', type: 'Check-Out Due',
-          detail: `${b.petName} (${b.customerName}) — ${findRoomName(b.roomId)}`,
+          date: b.checkOutDate, time: b.time, typeIcon: 'logout.png', type: 'Check-Out Due',
+          detail: `${b.petName} (${b.customerName}) — ${bookingRoomLabel(b)}`,
           statusKey: 'scheduled', statusLabel: 'Awaiting Check-Out',
           sla: '',
           actionLabel: null, actionOnclick: null,
@@ -1927,11 +2383,14 @@ function buildActionQueue(filter) {
     });
   }
 
+  // enquiries/loyaltyRequests are the mock arrays (no date field — see the
+  // dailyoverview section header), so they stay unfiltered by range, same
+  // as before this feature. Sorted alongside range rows using today's date.
   enquiries
     .filter(e => (filter === 'all' || e.relatedService === filter) && e.status === 'pending')
     .forEach(e => {
       rows.push({
-        time: e.receivedAt, typeIcon: 'chat-message.png', type: 'Enquiry',
+        date: today, time: e.receivedAt, typeIcon: 'chat-message.png', type: 'Enquiry',
         detail: `${e.customerName} · ${e.channel} — "${e.message}"`,
         statusKey: 'pending', statusLabel: 'Needs Reply',
         sla: slaBadge('enquiry', e.receivedAt),
@@ -1944,7 +2403,7 @@ function buildActionQueue(filter) {
     .filter(r => (filter === 'all' || r.relatedService === filter) && r.status === 'pending')
     .forEach(r => {
       rows.push({
-        time: r.requestedAt, typeIcon: 'loyalty-reward-gift.png', type: 'Loyalty Redemption',
+        date: today, time: r.requestedAt, typeIcon: 'loyalty-reward-gift.png', type: 'Loyalty Redemption',
         detail: `${r.customerName} — ${r.type} (${r.points} pts)`,
         statusKey: 'pending', statusLabel: 'Needs Approval',
         sla: slaBadge('loyalty', r.requestedAt),
@@ -1953,11 +2412,11 @@ function buildActionQueue(filter) {
       });
     });
 
-  return rows.sort((a, b) => a.time.localeCompare(b.time));
+  return rows.sort((a, b) => a.date === b.date ? a.time.localeCompare(b.time) : a.date.localeCompare(b.date));
 }
 
-function renderActionQueue(filter) {
-  const rows = buildActionQueue(filter);
+function renderActionQueue(filter, range = dailyOverviewRange, period = dailyOverviewPeriod) {
+  const rows = buildActionQueue(filter, range);
   q('queueCount').textContent = `${rows.length} item${rows.length === 1 ? '' : 's'}`;
 
   const tbody = q('actionQueueBody');
@@ -1967,9 +2426,13 @@ function renderActionQueue(filter) {
     return;
   }
 
+  // Daily view is a single day, so just the time is unambiguous; Weekly/
+  // Monthly span multiple days, so the date is shown alongside it.
+  const showDate = period !== 'daily';
+
   tbody.innerHTML = rows.map(row => `
     <tr onclick="${row.rowOnclick}">
-      <td>${row.time}</td>
+      <td>${showDate ? `${formatShortDate(row.date)} ` : ''}${row.time}</td>
       <td><span class="queue-type-cell"><img src="icon/${row.typeIcon}" alt="" class="row-icon">${row.type}</span></td>
       <td>${row.detail}</td>
       <td><span class="status-tag status-${row.statusKey}">${row.statusLabel}</span></td>
@@ -2024,9 +2487,10 @@ function bookingDetailRow(b) {
     cancelled: { tag: 'cancelled', tagLabel: 'Cancelled' }
   }[b.status];
 
+  const roomLabel = bookingRoomLabel(b);
   return renderDetailRow({
     title: `${b.petName} (${b.customerName})`,
-    sub: `${findServiceName(b.serviceId)} · ${b.date} ${b.time}${b.roomId ? ' · ' + findRoomName(b.roomId) : ''}`,
+    sub: `${bookingServiceLabel(b)} · ${b.date} ${b.time}${roomLabel ? ' · ' + roomLabel : ''}`,
     ...statusMeta
   });
 }
@@ -2058,15 +2522,18 @@ function loyaltyDetailRow(r) {
 
 function openCardDetail(cardKey) {
   const filter = currentFilter;
-  const todayBookings = filterBookingsByService(filter).filter(b => b.date === today);
+  const range = dailyOverviewRange;
+  const inRange = d => d >= range.start && d <= range.end;
+  const word = periodWord(dailyOverviewPeriod).toLowerCase();
+  const rangeBookings = filterBookingsByService(filter).filter(b => inRange(b.date));
   const cta = CARD_CTA[cardKey];
 
   if (cardKey === 'pendingGrooming') {
-    const items = bookings.filter(b => b.serviceType === 'grooming' && b.date === today && b.status === 'pending');
-    openDetailModal('Pending Grooming', `${items.length} booking(s) need grooming service today. SLA: start within 15 minutes.`, items.map(bookingDetailRow).join(''), cta);
+    const items = bookings.filter(b => b.serviceType === 'grooming' && inRange(b.date) && b.status === 'pending');
+    openDetailModal('Pending Grooming', `${items.length} booking(s) need grooming service ${word}. SLA: start within 15 minutes.`, items.map(bookingDetailRow).join(''), cta);
   } else if (cardKey === 'pendingConfirmation') {
-    const items = todayBookings.filter(b => b.status === 'scheduled');
-    openDetailModal('Pending Booking Confirmation', `${items.length} booking(s) scheduled today, awaiting confirmation.`, items.map(bookingDetailRow).join(''), cta);
+    const items = rangeBookings.filter(b => b.status === 'scheduled');
+    openDetailModal('Pending Booking Confirmation', `${items.length} booking(s) scheduled ${word}, awaiting confirmation.`, items.map(bookingDetailRow).join(''), cta);
   } else if (cardKey === 'pendingEnquiries') {
     const items = enquiries.filter(e => (filter === 'all' || e.relatedService === filter) && e.status === 'pending');
     openDetailModal('Pending Enquiries', `${items.length} enquiries awaiting a reply. SLA: reply within 3 hours.`, items.map(enquiryDetailRow).join(''), cta);
@@ -2074,36 +2541,37 @@ function openCardDetail(cardKey) {
     const items = loyaltyRequests.filter(r => (filter === 'all' || r.relatedService === filter) && r.status === 'pending');
     openDetailModal('Pending Loyalty Redemption', `${items.length} redemption request(s) awaiting approval. SLA: approve within 2 hours.`, items.map(loyaltyDetailRow).join(''), cta);
   } else if (cardKey === 'boardingCheckIn') {
-    const items = bookings.filter(b => b.serviceType === 'boarding' && b.checkInDate === today && b.status !== 'done' && b.status !== 'no_show' && b.status !== 'cancelled');
+    const items = bookings.filter(b => b.serviceType === 'boarding' && inRange(b.checkInDate) && b.status !== 'done' && b.status !== 'no_show' && b.status !== 'cancelled');
     openDetailModal('Boarding Check-In Due', `${items.length} arrival(s) to confirm.`, items.map(bookingDetailRow).join(''), cta);
   } else if (cardKey === 'boardingCheckOut') {
-    const items = bookings.filter(b => b.serviceType === 'boarding' && b.checkOutDate === today && b.status !== 'no_show' && b.status !== 'cancelled');
+    const items = bookings.filter(b => b.serviceType === 'boarding' && inRange(b.checkOutDate) && b.status !== 'no_show' && b.status !== 'cancelled');
     openDetailModal('Boarding Check-Out Due', `${items.length} departure(s) to confirm.`, items.map(bookingDetailRow).join(''), cta);
   } else if (cardKey === 'daycareCheckIn') {
-    const items = bookings.filter(b => b.serviceType === 'daycare' && b.date === today && (b.status === 'pending' || b.status === 'scheduled'));
+    const items = bookings.filter(b => b.serviceType === 'daycare' && inRange(b.date) && (b.status === 'pending' || b.status === 'scheduled'));
     openDetailModal('Daycare Check-In Due', `${items.length} drop-off(s) to confirm.`, items.map(bookingDetailRow).join(''), cta);
   } else if (cardKey === 'daycarePendingPickup') {
-    const items = bookings.filter(b => b.serviceType === 'daycare' && b.date === today && b.status === 'done');
+    const items = bookings.filter(b => b.serviceType === 'daycare' && inRange(b.date) && b.status === 'done');
     openDetailModal('Daycare Pending Pick-Up', `${items.length} pet(s) waiting for pickup.`, items.map(bookingDetailRow).join(''), cta);
   }
 }
 
 function openServiceLoadDetail(type) {
-  const items = bookings.filter(b => b.serviceType === type && b.date === today && b.status !== "cancelled" && b.status !== "no_show");
+  const range = dailyOverviewRange;
+  const items = bookings.filter(b => b.serviceType === type && b.date >= range.start && b.date <= range.end && b.status !== "cancelled" && b.status !== "no_show");
   const label = type.charAt(0).toUpperCase() + type.slice(1);
-  openDetailModal(`Today's ${label} Bookings`, `${items.length} booking(s) today.`, items.map(bookingDetailRow).join(''), { label: 'Open Booking Dashboard', href: 'booking.html' });
+  openDetailModal(`${label} Bookings`, `${items.length} booking(s) ${periodWord(dailyOverviewPeriod).toLowerCase()}.`, items.map(bookingDetailRow).join(''), { label: 'Open Booking Dashboard', href: 'booking.html' });
 }
 
 function openServiceStatusDetail(statusKey) {
-  const items = filterBookingsByService(currentFilter).filter(b => b.date === today && b.status === statusKey);
+  const range = dailyOverviewRange;
+  const items = filterBookingsByService(currentFilter).filter(b => b.date >= range.start && b.date <= range.end && b.status === statusKey);
   const labelMap = { pending: 'Pending Service', scheduled: 'Scheduled', done: 'Done', no_show: 'No Show', cancelled: 'Cancelled' };
-  openDetailModal(`Today's Bookings — ${labelMap[statusKey]}`, `${items.length} booking(s).`, items.map(bookingDetailRow).join(''), { label: 'Open Booking Dashboard', href: 'booking.html' });
+  openDetailModal(`Bookings — ${labelMap[statusKey]}`, `${items.length} booking(s) ${periodWord(dailyOverviewPeriod).toLowerCase()}.`, items.map(bookingDetailRow).join(''), { label: 'Open Booking Dashboard', href: 'booking.html' });
 }
 
-function openRoomDetail(roomId) {
-  const room = findRoom(roomId);
-  const items = bookings.filter(b => b.roomId === roomId).sort((a, b) => a.date.localeCompare(b.date));
-  openDetailModal(`${room.name} — Bookings`, `${items.length} booking(s) using this room.`, items.map(bookingDetailRow).join(''), { label: 'Open Booking Dashboard', href: 'booking.html' });
+function openRoomDetail(roomLabel) {
+  const items = bookings.filter(b => b.bookingType === 'boarding' && b.roomLabel === roomLabel).sort((a, b) => a.date.localeCompare(b.date));
+  openDetailModal(`${roomLabel} — Bookings`, `${items.length} booking(s) using this room.`, items.map(bookingDetailRow).join(''), { label: 'Open Booking Dashboard', href: 'booking.html' });
 }
 
 function openDayDetail(date) {
@@ -2115,7 +2583,7 @@ function openDayDetail(date) {
 function openQueueItemDetail(kind, id) {
   if (kind === 'booking') {
     const b = bookings.find(x => x.id === id);
-    if (b) openDetailModal('Booking Detail', `${b.petName} — ${findServiceName(b.serviceId)}`, bookingDetailRow(b), { label: 'Open Booking Dashboard', href: 'booking.html' });
+    if (b) openDetailModal('Booking Detail', `${b.petName} — ${bookingServiceLabel(b)}`, bookingDetailRow(b), { label: 'Open Booking Dashboard', href: 'booking.html' });
   } else if (kind === 'enquiry') {
     const e = enquiries.find(x => x.id === id);
     if (e) openDetailModal('Enquiry Detail', `${e.customerName} via ${e.channel}`, enquiryDetailRow(e), { label: 'Open Enquiries', href: 'enquiries.html' });
@@ -2137,16 +2605,28 @@ function refreshCurrentDashboardView() {
   else if (document.getElementById('kpiHeroGrid')) renderAnalyticsDashboard();
 }
 
-function markBookingDone(id) {
+async function markBookingDone(id) {
   const booking = bookings.find(b => b.id === id);
-  if (booking) booking.status = 'done';
+  if (booking) {
+    if (bookingsAreReal) {
+      if (!(await updateBookingStatus(booking, 'done'))) return;
+    } else {
+      booking.status = 'done';
+    }
+  }
   closeDetailModal();
   refreshCurrentDashboardView();
 }
 
-function confirmBooking(id) {
+async function confirmBooking(id) {
   const booking = bookings.find(b => b.id === id);
-  if (booking) booking.status = 'pending';
+  if (booking) {
+    if (bookingsAreReal) {
+      if (!(await updateBookingStatus(booking, 'pending'))) return;
+    } else {
+      booking.status = 'pending';
+    }
+  }
   closeDetailModal();
   refreshCurrentDashboardView();
 }
@@ -2170,12 +2650,14 @@ function approveLoyalty(id) {
 ========================= */
 
 function renderDailyOverview() {
-  q('actionCards').innerHTML = buildActionCards(currentFilter).map(renderActionCard).join('');
-  renderServiceLoadChart();
-  renderRoomStatus(currentFilter);
-  renderWeeklySchedule(currentFilter);
-  renderStatusDonut(currentFilter);
-  renderActionQueue(currentFilter);
+  const range = dailyOverviewRange;
+  const period = dailyOverviewPeriod;
+  q('actionCards').innerHTML = buildActionCards(currentFilter, range, period).map(renderActionCard).join('');
+  renderServiceLoadChart(range, period);
+  renderRoomStatus(currentFilter, range, period);
+  renderWeeklySchedule(currentFilter, range);
+  renderStatusDonut(currentFilter, range);
+  renderActionQueue(currentFilter, range, period);
 }
 
 function setupDailyOverview() {
@@ -2188,15 +2670,15 @@ function setupDailyOverview() {
     });
   });
 
-  q('calPrevBtn').addEventListener('click', () => { weekAnchor = addDays(weekAnchor, -7); renderWeeklySchedule(currentFilter); });
-  q('calNextBtn').addEventListener('click', () => { weekAnchor = addDays(weekAnchor, 7); renderWeeklySchedule(currentFilter); });
-  q('calTodayBtn').addEventListener('click', () => { weekAnchor = getStartOfWeek(today); renderWeeklySchedule(currentFilter); });
+  createDateRangeFilter('dailyOverview', (range, period) => {
+    dailyOverviewRange = range;
+    dailyOverviewPeriod = period;
+    renderDailyOverview();
+  }).init();
 
   q('detailModal').addEventListener('click', event => {
     if (event.target.id === 'detailModal') closeDetailModal();
   });
-
-  renderDailyOverview();
 }
 
 /* ==========================================================================
@@ -2288,7 +2770,14 @@ function loadCustomers(seedCustomers) {
     return seedCustomers;
   }
 }
+// Set true once loadRealCrmData() overwrites `customers`/`pets` with real
+// Supabase rows, so persistCustomers()/persistPets() never write real-shaped
+// records into the mock localStorage key (still read by dashboard.html's
+// System panel and loyalty.html's member list, neither converted yet).
+let crmDataIsReal = false;
+
 function persistCustomers() {
+  if (crmDataIsReal) return;
   localStorage.setItem(customersStorageKey(), JSON.stringify(customers));
 }
 
@@ -2305,12 +2794,68 @@ function loadPets(seedPets) {
   }
 }
 function persistPets() {
+  if (crmDataIsReal) return;
   localStorage.setItem(petsStorageKey(), JSON.stringify(pets));
 }
 
 let customers = loadCustomers(buildCrmCustomers());
 let pets = loadPets(buildCrmPets(customers));
 let crmBookings = buildCrmBookings(customers, pets);
+
+/* =========================
+   REAL CRM DATA (profile.html only)
+   Overwrites the mock `customers`/`pets` globals above — same pattern as
+   loadRealBookingData(): only runs from profile.html's own init path, every
+   other still-mock page (dashboard.html's System panel, loyalty.html's
+   member list) keeps reading pristine mock data on its own page load.
+
+   Your real `pet` table stores date_of_birth/vaccination_expired_date as
+   DD/MM/YYYY text (not a real Postgres `date` column, unlike the booking
+   tables) — parseDDMMYYYY/formatDDMMYYYY convert to/from the ISO format
+   <input type="date"> requires.
+========================= */
+
+let loyaltyMemberByCustomerId = new Map();
+
+function parseDDMMYYYY(str) {
+  const parts = String(str || "").split("/");
+  if (parts.length !== 3) return "";
+  const [d, m, y] = parts;
+  return `${y}-${m.padStart(2, "0")}-${d.padStart(2, "0")}`;
+}
+
+function formatDDMMYYYY(iso) {
+  const parts = String(iso || "").split("-");
+  if (parts.length !== 3) return "";
+  const [y, m, d] = parts;
+  return `${d}/${m}/${y}`;
+}
+
+async function loadRealCrmData() {
+  const [customersRes, petsRes, membersRes] = await Promise.all([
+    api.listCustomers({ limit: 1000 }),
+    api.listPets({ limit: 1000 }),
+    api.listMembers({ limit: 1000 }),
+  ]);
+  // Also load real bookings — needed for "Last Booking Made"/"Total
+  // Bookings" per customer and the "New Customers" heuristic below.
+  await loadRealBookingData();
+
+  loyaltyMemberByCustomerId = new Map(membersRes.map(m => [m.customer_id, m]));
+  customers = customersRes;
+  pets = petsRes;
+  crmDataIsReal = true;
+}
+
+function petIdsForCustomer(customerId) {
+  return new Set(pets.filter(p => p.customer_id === customerId).map(p => p.pet_id));
+}
+
+function firstBookingCreatedDate(customerId) {
+  const petIds = petIdsForCustomer(customerId);
+  const dates = bookings.filter(b => petIds.has(b.petId) && b.createdDate).map(b => b.createdDate);
+  return dates.length ? dates.sort()[0] : null;
+}
 
 const profileTypeFilter = document.getElementById("profileTypeFilter");
 const searchInput = document.getElementById("searchInput");
@@ -2328,7 +2873,9 @@ const detailPage = document.getElementById("detailPage");
 const detailTitle = document.getElementById("detailTitle");
 const detailForm = document.getElementById("detailForm");
 
-function initCRM() {
+async function initCRM() {
+  await loadRealCrmData();
+
   updateKPI();
   renderLists();
 
@@ -2340,14 +2887,19 @@ function updateKPI() {
   document.getElementById("totalCustomers").textContent = customers.length;
   document.getElementById("totalPets").textContent = pets.length;
 
+  // "New" = first booking created within the last 30 days — your real
+  // `customer` table has no created_at column to measure this from
+  // directly, but every booking row does (created_date).
+  const thirtyDaysAgo = addDays(today, -30);
   document.getElementById("newCustomers").textContent =
     customers.filter(c => {
-      const loyaltyNum = parseInt(c.loyalty_id?.replace("LOY-", "") || "0");
-      return loyaltyNum > customers.length - 2;
+      const firstDate = firstBookingCreatedDate(c.customer_id);
+      return firstDate && firstDate >= thirtyDaysAgo;
     }).length;
 
   document.getElementById("attentionNeeded").textContent =
-    pets.filter(pet => pet.special_care_note && pet.special_care_note.trim() !== "").length;
+    pets.filter(pet => pet.vaccination_status === "Not Vaccinated" ||
+      (pet.health_notes && pet.health_notes.trim() !== "" && pet.health_notes.trim() !== "-")).length;
 }
 
 function renderLists() {
@@ -2374,9 +2926,8 @@ function filterCustomers(searchValue) {
 
     return (
       customer.full_name.toLowerCase().includes(searchValue) ||
-      customer.phone.toLowerCase().includes(searchValue) ||
-      (customer.loyalty_id || "").toLowerCase().includes(searchValue) ||
-      customer.customer_id.toLowerCase().includes(searchValue) ||
+      (customer.phone_number || "").toLowerCase().includes(searchValue) ||
+      String(customer.customer_id).toLowerCase().includes(searchValue) ||
       linkedPetText.includes(searchValue)
     );
   });
@@ -2388,13 +2939,13 @@ function filterPets(searchValue) {
 
     return (
       pet.pet_name.toLowerCase().includes(searchValue) ||
-      pet.pet_id.toLowerCase().includes(searchValue) ||
-      pet.customer_id.toLowerCase().includes(searchValue) ||
-      pet.species.toLowerCase().includes(searchValue) ||
-      pet.breed.toLowerCase().includes(searchValue) ||
-      pet.special_care_note.toLowerCase().includes(searchValue) ||
-      owner.full_name.toLowerCase().includes(searchValue) ||
-      owner.phone.toLowerCase().includes(searchValue)
+      String(pet.pet_id).toLowerCase().includes(searchValue) ||
+      String(pet.customer_id).toLowerCase().includes(searchValue) ||
+      (pet.pet_type || "").toLowerCase().includes(searchValue) ||
+      (pet.breed || "").toLowerCase().includes(searchValue) ||
+      (pet.health_notes || "").toLowerCase().includes(searchValue) ||
+      (owner?.full_name || "").toLowerCase().includes(searchValue) ||
+      (owner?.phone_number || "").toLowerCase().includes(searchValue)
     );
   });
 }
@@ -2415,25 +2966,27 @@ function renderCustomerTable(data) {
   data.forEach(customer => {
     const linkedPets = getPetsByCustomerId(customer.customer_id);
     const lastBooking = getLastBookingByCustomerId(customer.customer_id);
+    const member = loyaltyMemberByCustomerId.get(customer.customer_id);
+    const loyaltyLabel = member ? `${member.tier} · ${member.points_balance} pts` : "Not a loyalty member";
 
     const row = document.createElement("tr");
 
     row.innerHTML = `
       <td>
-        <span class="profile-name">${customer.photo_icon || "👤"} ${customer.full_name}</span>
-        <span class="profile-sub">${customer.loyalty_id || "—"}</span>
+        <span class="profile-name">👤 ${customer.full_name}</span>
+        <span class="profile-sub">${loyaltyLabel}</span>
       </td>
 
       <td>
         <span class="key-chip">PK: ${customer.customer_id}</span>
       </td>
 
-      <td>${customer.phone}</td>
+      <td>${customer.phone_number || "—"}</td>
 
       <td>
         ${
           lastBooking
-            ? `<span class="key-chip">${formatDate(lastBooking.booking_date)}</span>`
+            ? `<span class="key-chip">${formatDate(lastBooking.date)}</span>`
             : `<span class="profile-sub">No booking yet</span>`
         }
       </td>
@@ -2474,13 +3027,14 @@ function renderPetTable(data) {
 
   data.forEach(pet => {
     const owner = getCustomerById(pet.customer_id);
+    const vaccinated = pet.vaccination_status === "Vaccinated";
 
     const row = document.createElement("tr");
 
     row.innerHTML = `
       <td>
-        <span class="profile-name">${getPetIcon(pet.species)} ${pet.pet_name}</span>
-        <span class="profile-sub">${pet.species} · ${pet.breed} · ${pet.weight}</span>
+        <span class="profile-name">${getPetIcon(pet.pet_type)} ${pet.pet_name}</span>
+        <span class="profile-sub">${pet.pet_type} · ${pet.breed} · ${pet.height_cm}cm (${pet.size})</span>
       </td>
 
       <td>
@@ -2492,18 +3046,18 @@ function renderPetTable(data) {
       </td>
 
       <td>
-        ${owner.full_name}
-        <span class="profile-sub">${owner.phone}</span>
+        ${owner?.full_name || "—"}
+        <span class="profile-sub">${owner?.phone_number || "—"}</span>
       </td>
 
       <td>
-        <span class="badge blue">${pet.service_preference}</span>
+        <span class="badge ${vaccinated ? "green" : "red"}">${pet.vaccination_status}${pet.vaccination_expired_date ? " · exp " + pet.vaccination_expired_date : ""}</span>
       </td>
 
       <td>
         ${
-          pet.special_care_note
-            ? `<span class="key-chip">${pet.special_care_note}</span>`
+          pet.health_notes && pet.health_notes !== "-"
+            ? `<span class="key-chip">${pet.health_notes}</span>`
             : `<span class="profile-sub">No special care note</span>`
         }
       </td>
@@ -2521,17 +3075,10 @@ function openCustomerForm(customerId = null) {
   const isEdit = Boolean(customerId);
   const customer = isEdit
     ? getCustomerById(customerId)
-    : {
-        customer_id: generateCustomerId(),
-        loyalty_id: generateLoyaltyId(),
-        full_name: "",
-        phone: "",
-        address: "",
-        photo_icon: "👤",
-        notes: ""
-      };
+    : { customer_id: null, full_name: "", phone_number: "", address: "" };
 
   const linkedPets = isEdit ? getPetsByCustomerId(customer.customer_id) : [];
+  const member = isEdit ? loyaltyMemberByCustomerId.get(customer.customer_id) : null;
 
   detailPage.style.display = "flex";
   detailTitle.textContent = isEdit
@@ -2541,17 +3088,12 @@ function openCustomerForm(customerId = null) {
   detailForm.innerHTML = `
     <div class="form-group">
       <label>Customer ID</label>
-      <input name="customer_id" value="${customer.customer_id}" readonly />
+      <input name="customer_id" value="${isEdit ? customer.customer_id : "Assigned on save"}" readonly />
     </div>
 
     <div class="form-group">
-      <label>Loyalty ID</label>
-      <input name="loyalty_id" value="${customer.loyalty_id || ""}" readonly />
-    </div>
-
-    <div class="form-group">
-      <label>Photo / Icon</label>
-      <input name="photo_icon" value="${customer.photo_icon}" />
+      <label>Loyalty Status</label>
+      <input value="${member ? `${member.tier} · ${member.points_balance} pts` : "Not a loyalty member"}" readonly />
     </div>
 
     <div class="form-group">
@@ -2561,17 +3103,12 @@ function openCustomerForm(customerId = null) {
 
     <div class="form-group">
       <label>Mobile Number</label>
-      <input name="phone" value="${customer.phone}" placeholder="+60..." required />
-    </div>
-
-    <div class="form-group">
-      <label>Address</label>
-      <input name="address" value="${customer.address}" placeholder="Enter address" />
+      <input name="phone_number" value="${customer.phone_number || ""}" placeholder="+60..." required />
     </div>
 
     <div class="form-group full">
-      <label>Notes</label>
-      <textarea name="notes" placeholder="Customer reminder, preference, or communication note">${customer.notes}</textarea>
+      <label>Address</label>
+      <input name="address" value="${customer.address || ""}" placeholder="Enter address" />
     </div>
 
     ${isEdit ? `
@@ -2583,9 +3120,9 @@ function openCustomerForm(customerId = null) {
           : linkedPets.map(pet => `
               <div class="crm-pet-card">
                 <div class="crm-pet-info">
-                  <span class="profile-name">${getPetIcon(pet.species)} ${pet.pet_name}</span>
-                  <span class="profile-sub">${pet.species} · ${pet.breed} · ${pet.weight} · ${pet.colour}</span>
-                  <span class="profile-sub">Service: ${pet.service_preference}${pet.special_care_note ? ` &nbsp;|&nbsp; Care: ${pet.special_care_note}` : ""}</span>
+                  <span class="profile-name">${getPetIcon(pet.pet_type)} ${pet.pet_name}</span>
+                  <span class="profile-sub">${pet.pet_type} · ${pet.breed} · ${pet.height_cm}cm (${pet.size})</span>
+                  <span class="profile-sub">Vaccination: ${pet.vaccination_status}${pet.health_notes && pet.health_notes !== "-" ? ` &nbsp;|&nbsp; Care: ${pet.health_notes}` : ""}</span>
                 </div>
                 <button type="button" class="action-btn" onclick="openPetForm('${pet.pet_id}')"><img src="icon/view.png" alt="" class="btn-icon">View</button>
               </div>
@@ -2602,20 +3139,30 @@ function openCustomerForm(customerId = null) {
     </div>
   `;
 
-  detailForm.onsubmit = function(event) {
+  detailForm.onsubmit = async function(event) {
     event.preventDefault();
 
     const formData = new FormData(detailForm);
-    const updatedCustomer = Object.fromEntries(formData.entries());
+    const payload = {
+      full_name: formData.get("full_name"),
+      phone_number: formData.get("phone_number"),
+      address: formData.get("address"),
+    };
 
-    if (isEdit) {
-      const index = customers.findIndex(item => item.customer_id === customerId);
-      customers[index] = updatedCustomer;
-    } else {
-      customers.push(updatedCustomer);
+    try {
+      if (isEdit) {
+        const updated = await api.updateCustomer(customer.customer_id, payload);
+        const index = customers.findIndex(item => item.customer_id === customer.customer_id);
+        customers[index] = updated;
+      } else {
+        const created = await api.createCustomer(payload);
+        customers.push(created);
+      }
+    } catch (err) {
+      alert(err.message);
+      return;
     }
 
-    persistCustomers();
     updateKPI();
     renderLists();
     closeDetailPage();
@@ -2627,18 +3174,19 @@ function openPetForm(petId = null) {
   const pet = isEdit
     ? getPetById(petId)
     : {
-        pet_id: generatePetId(),
+        pet_id: null,
         customer_id: customers[0]?.customer_id || "",
         pet_name: "",
-        species: "Cat",
+        pet_type: "Cat",
         gender: "Male",
-        birthdate: "",
+        date_of_birth: "",
         breed: "",
-        weight: "",
-        colour: "",
-        service_preference: "Grooming",
-        special_care_note: "",
-        additional_note: ""
+        height_cm: "",
+        size: "M",
+        vaccination_status: "Not Vaccinated",
+        vaccination_expired_date: "",
+        health_notes: "",
+        service_notes: ""
       };
 
   detailPage.style.display = "flex";
@@ -2651,7 +3199,7 @@ function openPetForm(petId = null) {
       <label>Owner</label>
       <select name="customer_id" required>
         ${customers.map(customer => `
-          <option value="${customer.customer_id}" ${customer.customer_id === pet.customer_id ? "selected" : ""}>
+          <option value="${customer.customer_id}" ${String(customer.customer_id) === String(pet.customer_id) ? "selected" : ""}>
             ${customer.full_name} · ${customer.customer_id}
           </option>
         `).join("")}
@@ -2660,7 +3208,7 @@ function openPetForm(petId = null) {
 
     <div class="form-group">
       <label>Pet ID</label>
-      <input name="pet_id" value="${pet.pet_id}" readonly />
+      <input value="${isEdit ? pet.pet_id : "Assigned on save"}" readonly />
     </div>
 
     <div class="form-group">
@@ -2670,9 +3218,9 @@ function openPetForm(petId = null) {
 
     <div class="form-group">
       <label>Type</label>
-      <select name="species">
-        <option value="Cat" ${pet.species === "Cat" ? "selected" : ""}>Cat</option>
-        <option value="Dog" ${pet.species === "Dog" ? "selected" : ""}>Dog</option>
+      <select name="pet_type">
+        <option value="Cat" ${pet.pet_type === "Cat" ? "selected" : ""}>Cat</option>
+        <option value="Dog" ${pet.pet_type === "Dog" ? "selected" : ""}>Dog</option>
       </select>
     </div>
 
@@ -2685,8 +3233,8 @@ function openPetForm(petId = null) {
     </div>
 
     <div class="form-group">
-      <label>Birthdate</label>
-      <input type="date" name="birthdate" value="${pet.birthdate}" />
+      <label>Date of Birth</label>
+      <input type="date" name="date_of_birth" value="${parseDDMMYYYY(pet.date_of_birth)}" />
     </div>
 
     <div class="form-group">
@@ -2695,32 +3243,40 @@ function openPetForm(petId = null) {
     </div>
 
     <div class="form-group">
-      <label>Weight</label>
-      <input name="weight" value="${pet.weight}" placeholder="e.g. 5.2kg" />
+      <label>Height (cm)</label>
+      <input type="number" name="height_cm" min="0" value="${pet.height_cm}" placeholder="e.g. 40" />
     </div>
 
     <div class="form-group">
-      <label>Colour</label>
-      <input name="colour" value="${pet.colour}" placeholder="Enter colour" />
-    </div>
-
-    <div class="form-group">
-      <label>Service Preference</label>
-      <select name="service_preference">
-        <option value="Grooming" ${pet.service_preference === "Grooming" ? "selected" : ""}>Grooming</option>
-        <option value="Boarding" ${pet.service_preference === "Boarding" ? "selected" : ""}>Boarding</option>
-        <option value="Daycare" ${pet.service_preference === "Daycare" ? "selected" : ""}>Daycare</option>
+      <label>Size</label>
+      <select name="size">
+        <option value="S" ${pet.size === "S" ? "selected" : ""}>Small</option>
+        <option value="M" ${pet.size === "M" ? "selected" : ""}>Medium</option>
+        <option value="L" ${pet.size === "L" ? "selected" : ""}>Large</option>
       </select>
+    </div>
+
+    <div class="form-group">
+      <label>Vaccination Status</label>
+      <select name="vaccination_status">
+        <option value="Vaccinated" ${pet.vaccination_status === "Vaccinated" ? "selected" : ""}>Vaccinated</option>
+        <option value="Not Vaccinated" ${pet.vaccination_status === "Not Vaccinated" ? "selected" : ""}>Not Vaccinated</option>
+      </select>
+    </div>
+
+    <div class="form-group">
+      <label>Vaccination Expiry</label>
+      <input type="date" name="vaccination_expired_date" value="${parseDDMMYYYY(pet.vaccination_expired_date)}" />
     </div>
 
     <div class="form-group full">
       <label>Special Care Note</label>
-      <input name="special_care_note" value="${pet.special_care_note}" placeholder="e.g. Mild anxiety during grooming" />
+      <input name="health_notes" value="${pet.health_notes && pet.health_notes !== "-" ? pet.health_notes : ""}" placeholder="e.g. Mild anxiety during grooming" />
     </div>
 
     <div class="form-group full">
-      <label>Additional Note</label>
-      <textarea name="additional_note" placeholder="Feeding instruction, room preference, grooming reminders">${pet.additional_note}</textarea>
+      <label>Service Note</label>
+      <textarea name="service_notes" placeholder="Feeding instruction, room preference, grooming reminders">${pet.service_notes && pet.service_notes !== "-" ? pet.service_notes : ""}</textarea>
     </div>
 
     <div class="form-actions">
@@ -2730,20 +3286,39 @@ function openPetForm(petId = null) {
     </div>
   `;
 
-  detailForm.onsubmit = function(event) {
+  detailForm.onsubmit = async function(event) {
     event.preventDefault();
 
     const formData = new FormData(detailForm);
-    const updatedPet = Object.fromEntries(formData.entries());
+    const payload = {
+      customer_id: Number(formData.get("customer_id")),
+      pet_name: formData.get("pet_name"),
+      pet_type: formData.get("pet_type"),
+      gender: formData.get("gender"),
+      date_of_birth: formatDDMMYYYY(formData.get("date_of_birth")),
+      breed: formData.get("breed"),
+      height_cm: Number(formData.get("height_cm")) || 0,
+      size: formData.get("size"),
+      vaccination_status: formData.get("vaccination_status"),
+      vaccination_expired_date: formatDDMMYYYY(formData.get("vaccination_expired_date")),
+      health_notes: formData.get("health_notes") || "-",
+      service_notes: formData.get("service_notes") || "-",
+    };
 
-    if (isEdit) {
-      const index = pets.findIndex(item => item.pet_id === petId);
-      pets[index] = updatedPet;
-    } else {
-      pets.push(updatedPet);
+    try {
+      if (isEdit) {
+        const updated = await api.updatePet(pet.pet_id, payload);
+        const index = pets.findIndex(item => item.pet_id === pet.pet_id);
+        pets[index] = updated;
+      } else {
+        const created = await api.createPet(payload);
+        pets.push(created);
+      }
+    } catch (err) {
+      alert(err.message);
+      return;
     }
 
-    persistPets();
     updateKPI();
     renderLists();
     closeDetailPage();
@@ -2755,53 +3330,77 @@ function closeDetailPage() {
   detailForm.innerHTML = "";
 }
 
-function removeCustomer(customerId) {
+async function removeCustomer(customerId) {
   if (!confirm(`Remove customer ${customerId} and all their linked pets? This cannot be undone.`)) return;
 
   const linkedPetIds = pets
-    .filter(p => p.customer_id === customerId)
+    .filter(p => String(p.customer_id) === String(customerId))
     .map(p => p.pet_id);
+
+  try {
+    for (const petId of linkedPetIds) {
+      await api.deletePet(petId);
+    }
+    await api.deleteCustomer(customerId);
+  } catch (err) {
+    // Most likely a foreign-key constraint (existing bookings/payments still
+    // reference this customer's pet) — that's the database correctly
+    // refusing to orphan records, not a bug to work around.
+    alert(err.message);
+    return;
+  }
 
   linkedPetIds.forEach(petId => {
     const idx = pets.findIndex(p => p.pet_id === petId);
     if (idx !== -1) pets.splice(idx, 1);
   });
 
-  const customerIdx = customers.findIndex(c => c.customer_id === customerId);
+  const customerIdx = customers.findIndex(c => String(c.customer_id) === String(customerId));
   if (customerIdx !== -1) customers.splice(customerIdx, 1);
 
-  persistCustomers();
-  persistPets();
   updateKPI();
   renderLists();
   closeDetailPage();
 }
 
-function removePet(petId) {
+async function removePet(petId) {
   if (!confirm(`Remove pet ${petId}? This cannot be undone.`)) return;
 
-  const idx = pets.findIndex(p => p.pet_id === petId);
+  try {
+    await api.deletePet(petId);
+  } catch (err) {
+    alert(err.message);
+    return;
+  }
+
+  const idx = pets.findIndex(p => String(p.pet_id) === String(petId));
   if (idx !== -1) pets.splice(idx, 1);
 
-  persistPets();
   updateKPI();
   renderLists();
   closeDetailPage();
 }
 
 function getCustomerById(customerId) {
-  return customers.find(customer => customer.customer_id === customerId);
+  // String() comparison: mock customer_id is "CUST-0001" (string), real is
+  // an integer — this matches either, since onclick handlers always pass
+  // the id back as a string literal regardless of its original type.
+  return customers.find(customer => String(customer.customer_id) === String(customerId));
 }
 
 function getPetById(petId) {
-  return pets.find(pet => pet.pet_id === petId);
+  return pets.find(pet => String(pet.pet_id) === String(petId));
 }
 
 function getPetsByCustomerId(customerId) {
-  return pets.filter(pet => pet.customer_id === customerId);
+  return pets.filter(pet => String(pet.customer_id) === String(customerId));
 }
 
 function getBookingsByCustomerId(customerId) {
+  if (crmDataIsReal) {
+    const petIds = petIdsForCustomer(customerId);
+    return bookings.filter(b => petIds.has(b.petId));
+  }
   return crmBookings.filter(booking => booking.customer_id === customerId);
 }
 
@@ -2812,21 +3411,10 @@ function getLastBookingByCustomerId(customerId) {
     return null;
   }
 
+  const dateField = crmDataIsReal ? "date" : "booking_date";
   return customerBookings.sort((a, b) => {
-    return new Date(b.booking_date) - new Date(a.booking_date);
+    return new Date(b[dateField]) - new Date(a[dateField]);
   })[0];
-}
-
-function generateCustomerId() {
-  return `CUST-${String(customers.length + 1).padStart(4, "0")}`;
-}
-
-function generateLoyaltyId() {
-  return `LOY-${String(customers.length + 1).padStart(4, "0")}`;
-}
-
-function generatePetId() {
-  return `PET-${String(pets.length + 1).padStart(4, "0")}`;
 }
 
 function getPetIcon(species) {
@@ -2887,7 +3475,62 @@ function getMemberPoints(customerId) {
   return (n * 137 + 220) % 1800 + 50;
 }
 
+// Real loyalty data (loyalty.html only) — same pattern as loadRealBookingData()
+// etc: `loyaltyDataIsReal` lets buildLoyaltyMembers()/countApprovedRedemptions()
+// stay dual-shape-safe, since dashboard.html still calls both against the
+// mock arrays (not converted yet) on its own page load.
+let loyaltyDataIsReal = false;
+let realMembers = [];
+let realCoupons = [];
+let realRedemptions = [];
+
+async function loadRealLoyaltyData() {
+  const [membersRes, customersRes, couponsRes, redemptionsRes, paymentsRes] = await Promise.all([
+    api.listMembers({ limit: 1000 }),
+    api.listCustomers({ limit: 1000 }),
+    api.listCoupons(),
+    api.listRedemptions({ limit: 500 }),
+    api.listPayments({ limit: 2000 }),
+  ]);
+  await loadRealBookingData(); // for the member-detail modal's "Linked Bookings"
+
+  const customerById = new Map(customersRes.map(c => [c.customer_id, c]));
+  realMembers = membersRes.map(m => ({
+    ...m,
+    customerName: customerById.get(m.customer_id)?.full_name || "—",
+    phone: customerById.get(m.customer_id)?.phone_number || "—",
+  }));
+
+  realCoupons = couponsRes;
+  const couponById = new Map(realCoupons.map(c => [c.coupon_id, c]));
+  const memberByLoyaltyId = new Map(realMembers.map(m => [m.loyalty_id, m]));
+  // redemption has no timestamp of its own — it's linked from the payment
+  // that created it (payment.redemption_id), so we borrow that payment's
+  // date to let the KPI date-filter scope redemption events by period.
+  const paymentByRedemptionId = new Map(paymentsRes.filter(p => p.redemption_id).map(p => [p.redemption_id, p]));
+  realRedemptions = redemptionsRes.map(r => ({
+    ...r,
+    memberName: memberByLoyaltyId.get(r.loyalty_id)?.customerName || "—",
+    couponName: r.coupon_id ? (couponById.get(r.coupon_id)?.reward_name || "—") : null,
+    date: paymentByRedemptionId.get(r.redemption_id)?.date || null,
+  }));
+
+  loyaltyDataIsReal = true;
+}
+
 function buildLoyaltyMembers() {
+  if (loyaltyDataIsReal) {
+    return realMembers.map(m => ({
+      member_id: m.loyalty_id,
+      customer_id: m.customer_id,
+      full_name: m.customerName,
+      phone: m.phone,
+      photo_icon: "👤",
+      points: m.points_balance,
+      tier: m.tier,
+    }));
+  }
+
   const fromCrm = customers.map(c => ({
     member_id: c.loyalty_id,
     full_name: c.full_name,
@@ -2910,6 +3553,10 @@ function buildLoyaltyMembers() {
 }
 
 function countApprovedRedemptions(fullName) {
+  if (loyaltyDataIsReal) {
+    const member = realMembers.find(m => m.customerName === fullName);
+    return member?.redemption_made || 0;
+  }
   return loyaltyRequests.filter(r => r.customerName === fullName && r.status === 'approved').length;
 }
 
@@ -2919,7 +3566,14 @@ const loyaltyMemberBody = document.getElementById("loyaltyMemberBody");
 const loyaltyPendingRecordCount = document.getElementById("loyaltyPendingRecordCount");
 const loyaltyMemberRecordCount = document.getElementById("loyaltyMemberRecordCount");
 
-function initLoyaltyPage() {
+// Total Members / Gold Count are current-state snapshots (no signup date in
+// the schema to scope them by), so only the redemption-event cards below
+// react to the date filter.
+let loyaltyMetricsRange = { start: getToday(), end: getToday() };
+
+async function initLoyaltyPage() {
+  await loadRealLoyaltyData();
+
   document.querySelectorAll("#loyaltyTabs .tab-btn").forEach(btn => {
     btn.addEventListener("click", () => {
       document.querySelectorAll("#loyaltyTabs .tab-btn").forEach(b => b.classList.remove("active"));
@@ -2932,6 +3586,11 @@ function initLoyaltyPage() {
 
   loyaltySearchInput.addEventListener("input", renderLoyaltyLists);
 
+  createDateRangeFilter("loyaltyMetrics", (range) => {
+    loyaltyMetricsRange = range;
+    updateLoyaltyKPI();
+  }).init();
+
   updateLoyaltyKPI();
   renderLoyaltyLists();
   renderLoyaltyRulesPanel();
@@ -2939,61 +3598,47 @@ function initLoyaltyPage() {
 
 function updateLoyaltyKPI() {
   const members = buildLoyaltyMembers();
-  const pendingCount =
-    loyaltyRequests.filter(r => r.status === "pending").length +
-    loyaltyMemberRequests.filter(r => r.status === "pending").length;
-  const pointsRedeemed = loyaltyRequests
-    .filter(r => r.status === "approved")
-    .reduce((sum, r) => sum + r.points, 0);
+
+  // Your real `redemption` ledger has no pending/approval workflow — rows
+  // are only ever written by verify_payment() as a completed transaction.
+  // "Total Redemptions" replaces the mock's "Pending Approvals" with a real,
+  // non-fabricated count instead, scoped to the selected date range via the
+  // linked payment's date (see loadRealLoyaltyData).
+  const rangedRedemptions = realRedemptions.filter(r => r.date && r.date >= loyaltyMetricsRange.start && r.date <= loyaltyMetricsRange.end);
+  const totalRedemptionEvents = rangedRedemptions.filter(r => r.loyalty_spend > 0).length;
+  const pointsRedeemed = rangedRedemptions.reduce((sum, r) => sum + (Number(r.loyalty_spend) || 0), 0);
 
   document.getElementById("loyaltyTotalMembers").textContent = members.length;
-  document.getElementById("loyaltyPendingCount").textContent = pendingCount;
+  document.getElementById("loyaltyPendingCount").textContent = totalRedemptionEvents;
   document.getElementById("loyaltyGoldCount").textContent = members.filter(m => m.tier === "Gold" || m.tier === "Platinum").length;
-  document.getElementById("loyaltyPointsRedeemed").textContent = pointsRedeemed;
+  document.getElementById("loyaltyPointsRedeemed").textContent = pointsRedeemed.toLocaleString();
 }
 
 function renderLoyaltyLists() {
   const searchValue = loyaltySearchInput.value.toLowerCase().trim();
-  renderLoyaltyPendingTable(searchValue);
+  renderLoyaltyHistoryTable(searchValue);
   renderLoyaltyMemberTable(searchValue);
 }
 
-function renderLoyaltyPendingTable(searchValue) {
-  const redemptions = loyaltyRequests
-    .filter(r => r.status === "pending")
-    .map(r => ({
-      id: r.id, member: r.customerName, type: r.type, detail: `${r.points} pts`,
-      requestedAt: r.requestedAt, kind: "redemption"
-    }));
+function renderLoyaltyHistoryTable(searchValue) {
+  const filtered = realRedemptions
+    .filter(r => r.memberName.toLowerCase().includes(searchValue) || (r.couponName || "").toLowerCase().includes(searchValue))
+    .sort((a, b) => b.redemption_id - a.redemption_id);
 
-  const registrations = loyaltyMemberRequests
-    .filter(r => r.status === "pending")
-    .map(r => ({
-      id: r.id, member: r.customerName, type: "New Member Registration", detail: r.phone,
-      requestedAt: r.requestedAt, kind: "registration"
-    }));
+  loyaltyPendingRecordCount.textContent = `${filtered.length} records`;
 
-  const combined = [...redemptions, ...registrations]
-    .filter(item => item.member.toLowerCase().includes(searchValue) || item.type.toLowerCase().includes(searchValue))
-    .sort((a, b) => a.requestedAt.localeCompare(b.requestedAt));
-
-  loyaltyPendingRecordCount.textContent = `${combined.length} pending`;
-
-  if (combined.length === 0) {
-    loyaltyPendingBody.innerHTML = `<tr><td colspan="6" class="empty-row">No pending approvals.</td></tr>`;
+  if (filtered.length === 0) {
+    loyaltyPendingBody.innerHTML = `<tr><td colspan="5" class="empty-row">No redemption history found.</td></tr>`;
     return;
   }
 
-  loyaltyPendingBody.innerHTML = combined.map(item => `
+  loyaltyPendingBody.innerHTML = filtered.map(r => `
     <tr>
-      <td><span class="key-chip">${item.id}</span></td>
-      <td><span class="profile-name">${item.member}</span></td>
-      <td>${item.type}</td>
-      <td>${item.detail}</td>
-      <td>${item.requestedAt}</td>
-      <td>
-        <button class="action-btn" onclick="openLoyaltyPendingDetail('${item.id}','${item.kind}')"><img src="icon/view.png" alt="" class="btn-icon">View</button>
-      </td>
+      <td><span class="key-chip">RDM-${String(r.redemption_id).padStart(4, "0")}</span></td>
+      <td><span class="profile-name">${r.memberName}</span></td>
+      <td>${r.loyalty_earn > 0 ? `+${r.loyalty_earn} pts earned` : "—"}</td>
+      <td>${r.loyalty_spend > 0 ? `−${r.loyalty_spend} pts spent` : "—"}</td>
+      <td>${r.couponName || "—"}</td>
     </tr>
   `).join("");
 }
@@ -3002,7 +3647,7 @@ function renderLoyaltyMemberTable(searchValue) {
   const members = buildLoyaltyMembers().filter(m =>
     m.full_name.toLowerCase().includes(searchValue) ||
     m.phone.toLowerCase().includes(searchValue) ||
-    (m.member_id || "").toLowerCase().includes(searchValue)
+    String(m.member_id || "").toLowerCase().includes(searchValue)
   );
 
   loyaltyMemberRecordCount.textContent = `${members.length} members`;
@@ -3029,84 +3674,9 @@ function renderLoyaltyMemberTable(searchValue) {
     `).join("");
 }
 
-function approveLoyaltyRedemption(id) {
-  const request = loyaltyRequests.find(r => r.id === id);
-  if (request) request.status = "approved";
-  persistLoyaltyRequests();
-  updateLoyaltyKPI();
-  renderLoyaltyLists();
-  closeDetailPage();
-}
-
-function approveLoyaltyRegistration(id) {
-  const request = loyaltyMemberRequests.find(r => r.id === id);
-  if (request) request.status = "approved";
-  persistLoyaltyMemberRequests();
-  updateLoyaltyKPI();
-  renderLoyaltyLists();
-  closeDetailPage();
-}
-
-function openLoyaltyPendingDetail(id, kind) {
-  const isReg = kind === "registration";
-  const item = isReg ? loyaltyMemberRequests.find(r => r.id === id) : loyaltyRequests.find(r => r.id === id);
-  if (!item) return;
-
-  detailPage.style.display = "flex";
-  detailTitle.textContent = isReg ? `New Member Registration · ${item.id}` : `Loyalty Redemption · ${item.id}`;
-
-  detailForm.innerHTML = `
-    <div class="form-group">
-      <label>Request ID</label>
-      <input value="${item.id}" readonly />
-    </div>
-
-    <div class="form-group">
-      <label>Member</label>
-      <input value="${item.customerName}" readonly />
-    </div>
-
-    ${isReg ? `
-    <div class="form-group">
-      <label>Phone</label>
-      <input value="${item.phone}" readonly />
-    </div>
-    ` : `
-    <div class="form-group">
-      <label>Redemption Type</label>
-      <input value="${item.type}" readonly />
-    </div>
-
-    <div class="form-group">
-      <label>Points</label>
-      <input value="${item.points} pts" readonly />
-    </div>
-
-    <div class="form-group">
-      <label>Related Service</label>
-      <input value="${item.relatedService}" readonly />
-    </div>
-    `}
-
-    <div class="form-group">
-      <label>Requested At</label>
-      <input value="${item.requestedAt}" readonly />
-    </div>
-
-    <div class="form-group">
-      <label>Status</label>
-      <input value="${item.status}" readonly />
-    </div>
-
-    <div class="form-actions">
-      <button type="button" class="cancel-btn" onclick="closeDetailPage()"><img src="icon/close-circle.png" alt="" class="btn-icon">Close</button>
-      ${item.status === "pending" ? `<button type="button" class="save-btn" onclick="${isReg ? `approveLoyaltyRegistration('${item.id}')` : `approveLoyaltyRedemption('${item.id}')`}"><img src="icon/confirm-circle.png" alt="" class="btn-icon solid-btn-icon">Approve</button>` : ""}
-    </div>
-  `;
-}
 
 function openLoyaltyMemberDetail(memberId) {
-  const member = buildLoyaltyMembers().find(m => m.member_id === memberId);
+  const member = buildLoyaltyMembers().find(m => String(m.member_id) === String(memberId));
   if (!member) return;
 
   const memberBookings = bookings
@@ -3208,100 +3778,99 @@ function persistLoyaltyRules(rules) {
 }
 
 function renderLoyaltyRulesPanel() {
-  const rules = loadLoyaltyRules();
-
-  const earnRateInput = document.getElementById("loyaltyEarnRateInput");
-  if (earnRateInput) earnRateInput.value = rules.earnRate;
-
-  document.getElementById("loyaltyRulesBody").innerHTML = rules.redemptionRules.map(r => `
+  document.getElementById("loyaltyRulesBody").innerHTML = realCoupons.map(r => `
     <tr>
-      <td>${r.points.toLocaleString()} pts</td>
-      <td>${r.reward}</td>
-      <td>${r.type === "discount" ? `Discount (RM ${r.value})` : "Free Service"}</td>
+      <td>${Number(r.points_required).toLocaleString()} pts</td>
+      <td>${r.reward_name}</td>
+      <td>${r.reward_type === "Free service" ? "Free Service" : `Discount (RM ${r["discount_value (RM)"]})`}</td>
       <td>
-        <button class="edit-btn" onclick="openRuleForm('${r.id}')">Edit</button>
+        <button class="edit-btn" onclick="openRuleForm(${r.coupon_id})">Edit</button>
       </td>
     </tr>
   `).join("");
 }
 
-function saveLoyaltyEarnRate() {
-  const rules = loadLoyaltyRules();
-  rules.earnRate = Number(document.getElementById("loyaltyEarnRateInput").value) || 0;
-  persistLoyaltyRules(rules);
+async function removeLoyaltyRule(couponId) {
+  if (!confirm("Remove this redemption rule? This cannot be undone.")) return;
+  try {
+    await api.deleteCoupon(couponId);
+  } catch (err) {
+    alert(err.message);
+    return;
+  }
+  const idx = realCoupons.findIndex(r => r.coupon_id === couponId);
+  if (idx !== -1) realCoupons.splice(idx, 1);
   renderLoyaltyRulesPanel();
+  closeDetailPage();
 }
 
-function removeLoyaltyRule(ruleId) {
-  const rules = loadLoyaltyRules();
-  rules.redemptionRules = rules.redemptionRules.filter(r => r.id !== ruleId);
-  persistLoyaltyRules(rules);
-  renderLoyaltyRulesPanel();
-}
-
-function openRuleForm(ruleId = null) {
-  const isEdit = Boolean(ruleId);
-  const rules = loadLoyaltyRules();
+function openRuleForm(couponId = null) {
+  const isEdit = Boolean(couponId);
   const rule = isEdit
-    ? rules.redemptionRules.find(r => r.id === ruleId)
-    : { points: "", reward: "", type: "discount", value: "" };
+    ? realCoupons.find(r => r.coupon_id === couponId)
+    : { coupon_id: null, points_required: "", reward_name: "", reward_type: "Discount (RM value)", "discount_value (RM)": "" };
   if (isEdit && !rule) return;
 
   detailPage.style.display = "flex";
-  detailTitle.textContent = isEdit ? `Edit Redemption Rule · ${rule.reward}` : "Add Redemption Rule";
+  detailTitle.textContent = isEdit ? `Edit Redemption Rule · ${rule.reward_name}` : "Add Redemption Rule";
 
   detailForm.innerHTML = `
     <div class="form-group">
       <label>Points Required</label>
-      <input type="number" name="points" min="1" placeholder="e.g. 200" value="${rule.points}" required />
+      <input type="number" name="points_required" min="1" placeholder="e.g. 200" value="${rule.points_required}" required />
     </div>
 
     <div class="form-group">
       <label>Reward Name</label>
-      <input name="reward" placeholder="e.g. RM10 Voucher" value="${rule.reward}" required />
+      <input name="reward_name" placeholder="e.g. RM10 Voucher" value="${rule.reward_name}" required />
     </div>
 
     <div class="form-group">
       <label>Reward Type</label>
-      <select name="type" id="ruleTypeSelect" onchange="document.getElementById('ruleValueGroup').classList.toggle('hidden', this.value !== 'discount')">
-        <option value="discount" ${rule.type === "discount" ? "selected" : ""}>Discount (RM value)</option>
-        <option value="free" ${rule.type === "free" ? "selected" : ""}>Free Service</option>
+      <select name="reward_type" id="ruleTypeSelect" onchange="document.getElementById('ruleValueGroup').classList.toggle('hidden', this.value !== 'Discount (RM value)')">
+        <option value="Discount (RM value)" ${rule.reward_type === "Discount (RM value)" ? "selected" : ""}>Discount (RM value)</option>
+        <option value="Free service" ${rule.reward_type === "Free service" ? "selected" : ""}>Free Service</option>
       </select>
     </div>
 
-    <div class="form-group" id="ruleValueGroup">
+    <div class="form-group" id="ruleValueGroup" ${rule.reward_type === "Free service" ? 'class="hidden"' : ""}>
       <label>Discount Value (RM)</label>
-      <input type="number" name="value" min="0" placeholder="e.g. 10" value="${rule.value || ""}" />
+      <input type="number" name="discount_value" min="0" placeholder="e.g. 10" value="${rule["discount_value (RM)"] && rule["discount_value (RM)"] !== "-" ? rule["discount_value (RM)"] : ""}" />
     </div>
 
     <div class="form-actions">
       <button type="button" class="cancel-btn" onclick="closeDetailPage()"><img src="icon/close-circle.png" alt="" class="btn-icon">Cancel</button>
-      ${isEdit ? `<button type="button" class="btn btn-secondary bk-danger-btn" onclick="removeLoyaltyRule('${rule.id}')"><img src="icon/delete.png" alt="" class="btn-icon">Remove Rule</button>` : ""}
+      ${isEdit ? `<button type="button" class="btn btn-secondary bk-danger-btn" onclick="removeLoyaltyRule(${rule.coupon_id})"><img src="icon/delete.png" alt="" class="btn-icon">Remove Rule</button>` : ""}
       <button type="submit" class="save-btn"><img src="icon/confirm-circle.png" alt="" class="btn-icon solid-btn-icon">${isEdit ? "Save Rule" : "Add Rule"}</button>
     </div>
   `;
 
-  detailForm.onsubmit = function(event) {
+  detailForm.onsubmit = async function(event) {
     event.preventDefault();
     const formData = new FormData(detailForm);
-    const latestRules = loadLoyaltyRules();
+    const rewardType = formData.get("reward_type");
 
-    const updated = {
-      id: isEdit ? rule.id : `RULE${latestRules.redemptionRules.length + 1}_${Date.now()}`,
-      points: Number(formData.get("points")) || 0,
-      reward: formData.get("reward"),
-      type: formData.get("type"),
-      value: formData.get("type") === "discount" ? (Number(formData.get("value")) || 0) : 0
+    const payload = {
+      points_required: Number(formData.get("points_required")) || 0,
+      reward_name: formData.get("reward_name"),
+      reward_type: rewardType,
+      "discount_value (RM)": rewardType === "Discount (RM value)" ? String(Number(formData.get("discount_value")) || 0) : "-",
     };
 
-    if (isEdit) {
-      const index = latestRules.redemptionRules.findIndex(r => r.id === rule.id);
-      latestRules.redemptionRules[index] = updated;
-    } else {
-      latestRules.redemptionRules.push(updated);
+    try {
+      if (isEdit) {
+        const updated = await api.updateCoupon(rule.coupon_id, payload);
+        const index = realCoupons.findIndex(r => r.coupon_id === rule.coupon_id);
+        realCoupons[index] = updated;
+      } else {
+        const created = await api.createCoupon(payload);
+        realCoupons.push(created);
+      }
+    } catch (err) {
+      alert(err.message);
+      return;
     }
 
-    persistLoyaltyRules(latestRules);
     renderLoyaltyRulesPanel();
     closeDetailPage();
   };
@@ -3415,7 +3984,23 @@ const paymentHistoryBody = document.getElementById("paymentHistoryBody");
 const paymentPendingRecordCount = document.getElementById("paymentPendingRecordCount");
 const paymentHistoryRecordCount = document.getElementById("paymentHistoryRecordCount");
 
-function initPaymentPage() {
+// ── Real-data payment page (payment.html only — dashboard.html's System
+// panel still reads the mock `paymentRecords` array above; that's a
+// separate, not-yet-converted page). Requires supabase-config.js +
+// api-client.js loaded before this file. ──────────────────────────────────
+let _couponsCache = null;
+async function getCouponsCached() {
+  if (!_couponsCache) _couponsCache = await api.listCoupons();
+  return _couponsCache;
+}
+
+// Cached full list + the KPI cards' selected date range (tables below stay
+// unfiltered/full — only the 4 KPI cards react to this, per the date-filter
+// feature request). Defaults to today.
+let paymentRowsCache = [];
+let paymentMetricsRange = { start: getToday(), end: getToday() };
+
+async function initPaymentPage() {
   document.querySelectorAll("#paymentTabs .tab-btn").forEach(btn => {
     btn.addEventListener("click", () => {
       document.querySelectorAll("#paymentTabs .tab-btn").forEach(b => b.classList.remove("active"));
@@ -3427,187 +4012,243 @@ function initPaymentPage() {
 
   paymentSearchInput.addEventListener("input", renderPaymentLists);
 
+  createDateRangeFilter("paymentMetrics", (range) => {
+    paymentMetricsRange = range;
+    updatePaymentKPI();
+  }).init();
+
+  await renderPaymentLists();
+}
+
+async function renderPaymentLists() {
+  const searchValue = paymentSearchInput.value.toLowerCase().trim();
+
+  // One bulk-enriched call (petName/customerName already joined server-side
+  // via findNamesForPayments) instead of a per-row detail fetch — real data
+  // is 500+ rows, so an N+1 pattern here would mean hundreds of round trips.
+  paymentRowsCache = await api.listPayments({ limit: 1000 });
+
+  const pendingRows = paymentRowsCache.filter(p => p.status === "Pending");
+  // Real payment.status has 4 values (Paid/Unpaid/Pending/Refunded); history
+  // shows everything that isn't awaiting verification.
+  const historyRows = paymentRowsCache.filter(p => p.status !== "Pending");
+
   updatePaymentKPI();
-  renderPaymentLists();
+  renderPaymentPendingTable(pendingRows, searchValue);
+  renderPaymentHistoryTable(historyRows, searchValue);
 }
 
 function updatePaymentKPI() {
-  const verified = paymentRecords.filter(p => p.status === "verified");
+  const rows = paymentRowsCache.filter(p => p.date >= paymentMetricsRange.start && p.date <= paymentMetricsRange.end);
+  const paid = rows.filter(p => p.status === "Paid");
+  const pendingCount = rows.filter(p => p.status === "Pending").length;
 
-  document.getElementById("paymentTotalRevenue").textContent = `RM ${verified.reduce((sum, p) => sum + p.finalAmount, 0).toLocaleString()}`;
-  document.getElementById("paymentPendingCount").textContent = paymentRecords.filter(p => p.status === "pending").length;
-  document.getElementById("paymentTotalCount").textContent = paymentRecords.length;
-  document.getElementById("paymentLoyaltyDiscount").textContent = `RM ${paymentRecords.reduce((sum, p) => sum + p.loyaltyDiscount, 0).toLocaleString()}`;
+  const totalRevenue = paid.reduce((sum, p) => sum + Number(p.final_amount || 0), 0);
+  const loyaltyDiscountTotal = paid.reduce((sum, p) => sum + Math.max(0, Number(p.base_price || 0) - Number(p.final_amount || 0)), 0);
+
+  document.getElementById("paymentTotalRevenue").textContent = `RM ${totalRevenue.toLocaleString()}`;
+  document.getElementById("paymentPendingCount").textContent = pendingCount;
+  document.getElementById("paymentTotalCount").textContent = rows.length;
+  document.getElementById("paymentLoyaltyDiscount").textContent = `RM ${loyaltyDiscountTotal.toLocaleString()}`;
 }
 
-function filterPaymentRecords(records, searchValue) {
-  return records.filter(p =>
-    p.customerName.toLowerCase().includes(searchValue) ||
-    p.petName.toLowerCase().includes(searchValue) ||
-    p.payment_id.toLowerCase().includes(searchValue)
-  );
+function matchesSearch(row, searchValue) {
+  if (!searchValue) return true;
+  const haystack = `${row.customerName || ""} ${row.petName || ""} ${row.payment_id}`.toLowerCase();
+  return haystack.includes(searchValue);
 }
 
-function renderPaymentLists() {
-  const searchValue = paymentSearchInput.value.toLowerCase().trim();
-  renderPaymentPendingTable(searchValue);
-  renderPaymentHistoryTable(searchValue);
-}
+const PAYMENT_STATUS_TAG = {
+  Paid: "status-done",
+  Pending: "status-pending",
+  Unpaid: "status-no_show",
+  Refunded: "status-cancelled",
+};
 
-function renderAddonChips(addons) {
-  if (addons.length === 0) return `<span class="profile-sub">No add-on</span>`;
-  return addons.map(a => `<span class="key-chip">${a.name} +RM${a.price}</span>`).join(" ");
-}
+function renderPaymentPendingTable(rows, searchValue) {
+  const filtered = rows.filter(r => matchesSearch(r, searchValue));
 
-function renderPaymentPendingTable(searchValue) {
-  const pending = filterPaymentRecords(paymentRecords.filter(p => p.status === "pending"), searchValue);
+  paymentPendingRecordCount.textContent = `${filtered.length} pending`;
 
-  paymentPendingRecordCount.textContent = `${pending.length} pending`;
-
-  if (pending.length === 0) {
+  if (filtered.length === 0) {
     paymentPendingBody.innerHTML = `<tr><td colspan="7" class="empty-row">No payments awaiting verification.</td></tr>`;
     return;
   }
 
-  paymentPendingBody.innerHTML = pending.map(p => `
+  paymentPendingBody.innerHTML = filtered.map(payment => `
     <tr>
-      <td><span class="key-chip">${p.payment_id}</span></td>
+      <td><span class="key-chip">PAY-${String(payment.payment_id).padStart(4, "0")}</span></td>
       <td>
-        <span class="profile-name">${p.customerName}</span>
-        <span class="profile-sub">${p.petName}</span>
+        <span class="profile-name">${payment.customerName || "—"}</span>
+        <span class="profile-sub">${payment.petName || "—"}</span>
       </td>
-      <td>${p.serviceName}</td>
-      <td>RM ${p.finalAmount.toLocaleString()}</td>
-      <td>${p.method}</td>
-      <td>${formatDate(p.date)}</td>
+      <td>${payment.service}</td>
+      <td>RM ${Number(payment.final_amount).toLocaleString()}</td>
+      <td>${payment.payment_method || "—"}</td>
+      <td>${formatDate(payment.date)}</td>
       <td>
-        <button class="action-btn" onclick="openPaymentDetail('${p.payment_id}')"><img src="icon/view.png" alt="" class="btn-icon">View</button>
+        <button class="action-btn" onclick="openPaymentDetail(${payment.payment_id})"><img src="icon/view.png" alt="" class="btn-icon">View</button>
       </td>
     </tr>
   `).join("");
 }
 
-function renderPaymentHistoryTable(searchValue) {
-  const history = filterPaymentRecords(paymentRecords, searchValue)
+function renderPaymentHistoryTable(rows, searchValue) {
+  const filtered = rows
+    .filter(r => matchesSearch(r, searchValue))
     .slice()
     .sort((a, b) => new Date(b.date) - new Date(a.date));
 
-  paymentHistoryRecordCount.textContent = `${history.length} records`;
+  paymentHistoryRecordCount.textContent = `${filtered.length} records`;
 
-  if (history.length === 0) {
+  if (filtered.length === 0) {
     paymentHistoryBody.innerHTML = `<tr><td colspan="13" class="empty-row">No transaction record found.</td></tr>`;
     return;
   }
 
-  paymentHistoryBody.innerHTML = history.map(p => `
+  paymentHistoryBody.innerHTML = filtered.map(payment => {
+    const discount = Math.max(0, Number(payment.base_price || 0) - Number(payment.final_amount || 0));
+    const statusClass = PAYMENT_STATUS_TAG[payment.status] || "status-pending";
+    return `
     <tr>
-      <td><span class="key-chip">${p.payment_id}</span></td>
+      <td><span class="key-chip">PAY-${String(payment.payment_id).padStart(4, "0")}</span></td>
       <td>
-        <span class="profile-name">${p.customerName}</span>
-        <span class="profile-sub">${p.petName}</span>
+        <span class="profile-name">${payment.customerName || "—"}</span>
+        <span class="profile-sub">${payment.petName || "—"}</span>
       </td>
-      <td>${p.serviceName}</td>
-      <td>RM ${p.basePrice.toLocaleString()}</td>
-      <td>${renderAddonChips(p.addons)}</td>
-      <td>${p.loyaltyDiscount > 0 ? `− RM ${p.loyaltyDiscount.toLocaleString()} <span class="profile-sub">${p.loyaltyNote}</span>` : "—"}</td>
-      <td><strong>RM ${p.finalAmount.toLocaleString()}</strong></td>
-      <td>${p.loyaltyPointsEarned > 0 ? `+${p.loyaltyPointsEarned.toLocaleString()} pts` : "—"}</td>
-      <td>${p.loyaltyPointsSpent > 0 ? `−${p.loyaltyPointsSpent.toLocaleString()} pts` : "—"}</td>
-      <td>${p.method}</td>
-      <td><span class="status-tag status-${p.status === "verified" ? "done" : "pending"}">${p.status === "verified" ? "Verified" : "Pending"}</span></td>
-      <td>${formatDate(p.date)}</td>
-      <td><button class="action-btn" onclick="openPaymentDetail('${p.payment_id}')"><img src="icon/view.png" alt="" class="btn-icon">View</button></td>
+      <td>${payment.service}</td>
+      <td>RM ${Number(payment.base_price).toLocaleString()}</td>
+      <td>${payment.add_ons || "—"}</td>
+      <td>${discount > 0 ? `− RM ${discount.toLocaleString()}` : "—"}</td>
+      <td><strong>RM ${Number(payment.final_amount).toLocaleString()}</strong></td>
+      <td>—</td>
+      <td>—</td>
+      <td>${payment.payment_method || "—"}</td>
+      <td><span class="status-tag ${statusClass}">${payment.status}</span></td>
+      <td>${formatDate(payment.date)}</td>
+      <td><button class="action-btn" onclick="openPaymentDetail(${payment.payment_id})"><img src="icon/view.png" alt="" class="btn-icon">View</button></td>
     </tr>
-  `).join("");
+  `;
+  }).join("");
 }
 
-function verifyPayment(paymentId) {
-  const record = paymentRecords.find(p => p.payment_id === paymentId);
-  if (record) record.status = "verified";
-  persistPaymentRecords();
-  updatePaymentKPI();
-  renderPaymentLists();
+async function verifyPayment(paymentId, couponId) {
+  try {
+    await api.verifyPayment(paymentId, { couponId });
+  } catch (err) {
+    alert(err.message);
+    return;
+  }
   closeDetailPage();
+  await renderPaymentLists();
 }
 
-function openPaymentDetail(paymentId) {
-  const p = paymentRecords.find(x => x.payment_id === paymentId);
-  if (!p) return;
+async function openPaymentDetail(paymentId) {
+  const { payment, pet, customer, member } = await api.getPaymentDetail(paymentId);
+  const coupons = payment.status === "Pending" ? await getCouponsCached() : [];
 
   detailPage.style.display = "flex";
-  detailTitle.textContent = `Payment Detail · ${p.payment_id}`;
+  detailTitle.textContent = `Payment Detail · PAY-${String(payment.payment_id).padStart(4, "0")}`;
+
+  const memberLine = member
+    ? `${member.tier} member · ${member.points_balance.toLocaleString()} points`
+    : "No loyalty member on file";
 
   detailForm.innerHTML = `
     <div class="form-group">
       <label>Payment ID</label>
-      <input value="${p.payment_id}" readonly />
+      <input value="PAY-${String(payment.payment_id).padStart(4, "0")}" readonly />
     </div>
 
     <div class="form-group">
       <label>Customer</label>
-      <input value="${p.customerName}" readonly />
+      <input value="${customer?.full_name || "—"}" readonly />
     </div>
 
     <div class="form-group">
       <label>Pet</label>
-      <input value="${p.petName}" readonly />
+      <input value="${pet?.pet_name || "—"}" readonly />
     </div>
 
     <div class="form-group">
       <label>Service</label>
-      <input value="${p.serviceName}" readonly />
+      <input value="${payment.service}" readonly />
     </div>
 
     <div class="form-group">
       <label>Base Price</label>
-      <input value="RM ${p.basePrice.toLocaleString()}" readonly />
+      <input value="RM ${Number(payment.base_price).toLocaleString()}" readonly />
     </div>
 
     <div class="form-group">
       <label>Add-ons</label>
-      <input value="${p.addons.length === 0 ? "None" : p.addons.map(a => `${a.name} (+RM${a.price})`).join(", ")}" readonly />
-    </div>
-
-    <div class="form-group">
-      <label>Loyalty Discount</label>
-      <input value="${p.loyaltyDiscount > 0 ? `− RM ${p.loyaltyDiscount.toLocaleString()} (${p.loyaltyNote})` : "None"}" readonly />
+      <input value="${payment.add_ons || "None"}" readonly />
     </div>
 
     <div class="form-group">
       <label>Final Amount</label>
-      <input value="RM ${p.finalAmount.toLocaleString()}" readonly />
+      <input id="verifyCurrentTotal" value="RM ${Number(payment.final_amount).toLocaleString()}" readonly />
     </div>
 
-    <div class="form-group">
-      <label>Loyalty Earn</label>
-      <input value="${p.loyaltyPointsEarned > 0 ? `+${p.loyaltyPointsEarned.toLocaleString()} pts` : "None"}" readonly />
-    </div>
-
-    <div class="form-group">
-      <label>Loyalty Spend</label>
-      <input value="${p.loyaltyPointsSpent > 0 ? `−${p.loyaltyPointsSpent.toLocaleString()} pts` : "None"}" readonly />
+    <div class="form-group full">
+      <label>Loyalty Member</label>
+      <input value="${memberLine}" readonly />
     </div>
 
     <div class="form-group">
       <label>Payment Method</label>
-      <input value="${p.method}" readonly />
+      <input value="${payment.payment_method || "—"}" readonly />
     </div>
 
     <div class="form-group">
       <label>Date</label>
-      <input value="${formatDate(p.date)}" readonly />
+      <input value="${formatDate(payment.date)}" readonly />
     </div>
 
     <div class="form-group">
       <label>Status</label>
-      <input value="${p.status === "verified" ? "Verified" : "Pending Verification"}" readonly />
+      <input value="${payment.status}" readonly />
     </div>
+
+    ${payment.status === "Pending" ? `
+    <div class="form-group full">
+      <label>Apply Voucher (optional)</label>
+      <select id="verifyCouponSelect">
+        <option value="">No voucher</option>
+        ${coupons.map(c => `<option value="${c.coupon_id}">${c.reward_name} (${c.points_required} pts)</option>`).join("")}
+      </select>
+    </div>
+    <div class="form-group full">
+      <p id="verifyVoucherNote" style="font-size:0.8rem;color:var(--text-muted);"></p>
+    </div>
+    ` : ""}
 
     <div class="form-actions">
       <button type="button" class="cancel-btn" onclick="closeDetailPage()"><img src="icon/close-circle.png" alt="" class="btn-icon">Close</button>
-      ${p.status === "pending" ? `<button type="button" class="save-btn" onclick="verifyPayment('${p.payment_id}')"><img src="icon/confirm-circle.png" alt="" class="btn-icon solid-btn-icon">Verify</button>` : ""}
+      ${payment.status === "Pending" ? `<button type="button" class="save-btn" id="verifyConfirmBtn"><img src="icon/confirm-circle.png" alt="" class="btn-icon solid-btn-icon">Verify</button>` : ""}
     </div>
   `;
+
+  if (payment.status !== "Pending") return;
+
+  const couponSelect = document.getElementById("verifyCouponSelect");
+  const note = document.getElementById("verifyVoucherNote");
+
+  couponSelect.addEventListener("change", async () => {
+    if (!couponSelect.value) { note.textContent = ""; return; }
+    try {
+      const quote = await api.quoteVoucher(payment.payment_id, Number(couponSelect.value));
+      note.style.color = "";
+      note.textContent = `New total: RM ${quote.finalAmount} (discount RM ${quote.discountApplied})`;
+    } catch (err) {
+      note.style.color = "#DC2626";
+      note.textContent = err.message;
+    }
+  });
+
+  document.getElementById("verifyConfirmBtn").addEventListener("click", () => {
+    verifyPayment(payment.payment_id, couponSelect.value ? Number(couponSelect.value) : undefined);
+  });
 }
 
 /* ==========================================================================
@@ -3625,184 +4266,136 @@ function getWhatsAppLink(phone) {
 const enquirySearchInput = document.getElementById("enquirySearchInput");
 const enquiryPendingBody = document.getElementById("enquiryPendingBody");
 const enquiryPendingRecordCount = document.getElementById("enquiryPendingRecordCount");
-const enquiryHistoryBody = document.getElementById("enquiryHistoryBody");
-const enquiryHistoryRecordCount = document.getElementById("enquiryHistoryRecordCount");
 
-function initEnquiriesPage() {
+// Real data (enquiries.html only). Your real `messages` table is a plain
+// inbound-message log (sender_type/sender_id/message_text/intent_label/
+// receive_date/receive_time) — no status, handled-by, channel, or reply
+// tracking at all, so the mock's Pending/Resolved/SLA/AI-vs-human workflow
+// has no real backing. This page is rebuilt as a read-only message log
+// filterable by intent_label (booking/policy/loyalty) instead.
+let realMessages = [];
+let currentEnquiryFilter = "all";
+
+async function loadRealEnquiryData() {
+  const [messagesRes, customersRes] = await Promise.all([
+    api.listChatMessages({ limit: 1000 }),
+    api.listCustomers({ limit: 1000 }),
+  ]);
+  const customerById = new Map(customersRes.map(c => [c.customer_id, c]));
+  realMessages = messagesRes.map(m => ({
+    ...m,
+    customerName: customerById.get(m.sender_id)?.full_name || "—",
+    phone: customerById.get(m.sender_id)?.phone_number || "",
+  }));
+}
+
+let enquiryMetricsRange = { start: getToday(), end: getToday() };
+
+async function initEnquiriesPage() {
+  await loadRealEnquiryData();
+
   document.querySelectorAll("#enquiryTabs .tab-btn").forEach(btn => {
     btn.addEventListener("click", () => {
       document.querySelectorAll("#enquiryTabs .tab-btn").forEach(b => b.classList.remove("active"));
       btn.classList.add("active");
-      document.getElementById("enquiryPendingPanel").classList.toggle("hidden", btn.dataset.panel !== "pending");
-      document.getElementById("enquiryHistoryPanel").classList.toggle("hidden", btn.dataset.panel !== "history");
+      currentEnquiryFilter = btn.dataset.filter;
+      renderEnquiryLists();
     });
   });
 
   enquirySearchInput.addEventListener("input", renderEnquiryLists);
+
+  createDateRangeFilter("enquiryMetrics", (range) => {
+    enquiryMetricsRange = range;
+    updateEnquiryKPI();
+  }).init();
 
   updateEnquiryKPI();
   renderEnquiryLists();
 }
 
 function updateEnquiryKPI() {
-  const total = enquiries.length;
-  const pending = enquiries.filter(e => e.status === "pending").length;
-  const resolved = enquiries.filter(e => e.status === "resolved");
-  const humanHandled = resolved.filter(e => e.handledBy === "human").length;
-
-  document.getElementById("enquiryTotalCount").textContent = total;
-  document.getElementById("enquiryPendingCount").textContent = pending;
-  document.getElementById("enquiryResolutionRate").textContent = `${total ? Math.round((resolved.length / total) * 100) : 0}%`;
-  document.getElementById("enquiryHitlRate").textContent = `${resolved.length ? Math.round((humanHandled / resolved.length) * 100) : 0}%`;
-}
-
-function filterEnquiries(list, searchValue) {
-  return list.filter(e =>
-    e.customerName.toLowerCase().includes(searchValue) ||
-    (e.phone || "").toLowerCase().includes(searchValue) ||
-    e.message.toLowerCase().includes(searchValue)
-  );
+  const rows = realMessages.filter(m => m.receive_date >= enquiryMetricsRange.start && m.receive_date <= enquiryMetricsRange.end);
+  document.getElementById("enquiryTotalCount").textContent = rows.length;
+  document.getElementById("enquiryBookingCount").textContent = rows.filter(m => m.intent_label === "booking").length;
+  document.getElementById("enquiryPolicyCount").textContent = rows.filter(m => m.intent_label === "policy").length;
+  document.getElementById("enquiryLoyaltyCount").textContent = rows.filter(m => m.intent_label === "loyalty").length;
 }
 
 function renderEnquiryLists() {
   const searchValue = enquirySearchInput.value.toLowerCase().trim();
-  renderEnquiryPendingTable(searchValue);
-  renderEnquiryHistoryTable(searchValue);
-}
 
-const PRIORITY_RANK = { urgent: 0, high: 1, normal: 2 };
+  const filtered = realMessages
+    .filter(m => currentEnquiryFilter === "all" || m.intent_label === currentEnquiryFilter)
+    .filter(m =>
+      m.customerName.toLowerCase().includes(searchValue) ||
+      (m.phone || "").toLowerCase().includes(searchValue) ||
+      m.message_text.toLowerCase().includes(searchValue)
+    )
+    .sort((a, b) => `${b.receive_date} ${b.receive_time}`.localeCompare(`${a.receive_date} ${a.receive_time}`));
 
-function renderEnquiryPendingTable(searchValue) {
-  const pending = filterEnquiries(enquiries.filter(e => e.status === "pending"), searchValue)
-    .sort((a, b) => PRIORITY_RANK[computeEnquiryPriority(a)] - PRIORITY_RANK[computeEnquiryPriority(b)] || a.receivedAt.localeCompare(b.receivedAt));
+  enquiryPendingRecordCount.textContent = `${filtered.length} records`;
 
-  enquiryPendingRecordCount.textContent = `${pending.length} pending`;
-
-  if (pending.length === 0) {
-    enquiryPendingBody.innerHTML = `<tr><td colspan="6" class="empty-row">No pending enquiries.</td></tr>`;
+  if (filtered.length === 0) {
+    enquiryPendingBody.innerHTML = `<tr><td colspan="6" class="empty-row">No messages found.</td></tr>`;
     return;
   }
 
-  enquiryPendingBody.innerHTML = pending.map(e => `
+  enquiryPendingBody.innerHTML = filtered.map(m => `
     <tr>
-      <td><span class="key-chip">${e.id}</span></td>
+      <td><span class="key-chip">MSG-${String(m.message_id).padStart(4, "0")}</span></td>
       <td>
-        <span class="profile-name">${e.customerName}</span><br>
-        ${enquiryPriorityBadge(e)}
-        <span class="profile-sub">${e.phone || "—"}</span>
+        <span class="profile-name">${m.customerName}</span>
+        <span class="profile-sub">${m.phone || "—"}</span>
       </td>
-      <td>${e.message}</td>
-      <td>${e.receivedAt}</td>
-      <td>${slaBadge("enquiry", e.receivedAt)}</td>
+      <td>${m.message_text}</td>
+      <td><span class="badge blue">${m.intent_label}</span></td>
+      <td>${formatDate(m.receive_date)} ${(m.receive_time || "").slice(0, 5)}</td>
       <td>
-        <button class="action-btn" onclick="openEnquiryDetailPage('${e.id}')"><img src="icon/view.png" alt="" class="btn-icon">View</button>
+        <button class="action-btn" onclick="openEnquiryDetailPage(${m.message_id})"><img src="icon/view.png" alt="" class="btn-icon">View</button>
       </td>
-    </tr>
-  `).join("");
-}
-
-function renderEnquiryHistoryTable(searchValue) {
-  const history = filterEnquiries(enquiries, searchValue)
-    .sort((a, b) => b.receivedAt.localeCompare(a.receivedAt));
-
-  enquiryHistoryRecordCount.textContent = `${history.length} records`;
-
-  if (history.length === 0) {
-    enquiryHistoryBody.innerHTML = `<tr><td colspan="7" class="empty-row">No enquiries found.</td></tr>`;
-    return;
-  }
-
-  enquiryHistoryBody.innerHTML = history.map(e => `
-    <tr>
-      <td><span class="key-chip">${e.id}</span></td>
-      <td>
-        <span class="profile-name">${e.customerName}</span>
-        <span class="profile-sub">${e.phone || "—"}</span>
-      </td>
-      <td>${e.message}</td>
-      <td>${e.receivedAt}</td>
-      <td>${e.status === "resolved" ? (e.handledBy === "ai" ? '<img src="icon/analytics-dashboard.png" alt="" class="row-icon">AI' : '<img src="icon/team.png" alt="" class="row-icon">Human') : "—"}</td>
-      <td><span class="status-tag status-${e.status === "resolved" ? "done" : "pending"}">${e.status === "resolved" ? "Resolved" : "Pending"}</span></td>
-      <td><button class="action-btn" onclick="openEnquiryDetailPage('${e.id}')"><img src="icon/view.png" alt="" class="btn-icon">View</button></td>
     </tr>
   `).join("");
 }
 
 function openEnquiryDetailPage(id) {
-  const e = enquiries.find(x => x.id === id);
-  if (!e) return;
-
-  const isPending = e.status === "pending";
+  const m = realMessages.find(x => x.message_id === id);
+  if (!m) return;
 
   detailPage.style.display = "flex";
-  detailTitle.textContent = `Enquiry Detail · ${e.id}`;
+  detailTitle.textContent = `Message Detail · MSG-${String(m.message_id).padStart(4, "0")}`;
 
   detailForm.innerHTML = `
     <div class="form-group">
       <label>Customer</label>
-      <input value="${e.customerName}" readonly />
+      <input value="${m.customerName}" readonly />
     </div>
 
     <div class="form-group">
       <label>Phone</label>
-      <input value="${e.phone || "—"}" readonly />
+      <input value="${m.phone || "—"}" readonly />
     </div>
 
     <div class="form-group">
-      <label>Channel</label>
-      <input value="${e.channel}" readonly />
-    </div>
-
-    <div class="form-group">
-      <label>Related Service</label>
-      <input value="${e.relatedService}" readonly />
-    </div>
-
-    <div class="form-group">
-      <label>Priority</label>
-      <input value="${enquiryPriorityLabel(computeEnquiryPriority(e))}" readonly />
+      <label>Intent</label>
+      <input value="${m.intent_label}" readonly />
     </div>
 
     <div class="form-group">
       <label>Received At</label>
-      <input value="${e.receivedAt}" readonly />
+      <input value="${formatDate(m.receive_date)} ${(m.receive_time || "").slice(0, 5)}" readonly />
     </div>
 
     <div class="form-group full">
       <label>Message</label>
-      <textarea readonly>${e.message}</textarea>
+      <textarea readonly>${m.message_text}</textarea>
     </div>
-
-    <div class="form-group">
-      <label>Status</label>
-      <input value="${isPending ? "Pending" : "Resolved"}" readonly />
-    </div>
-
-    ${!isPending ? `
-    <div class="form-group">
-      <label>Handled By</label>
-      <input value="${e.handledBy === "ai" ? "AI (no human needed)" : "Human"}" readonly />
-    </div>
-    ` : ""}
 
     <div class="form-actions">
       <button type="button" class="cancel-btn" onclick="closeDetailPage()"><img src="icon/close-circle.png" alt="" class="btn-icon">Close</button>
-      ${isPending ? `<a class="btn btn-secondary" href="${getWhatsAppLink(e.phone)}" target="_blank" rel="noopener"><img src="icon/chat-message.png" alt="" class="btn-icon">Open WhatsApp</a>` : ""}
-      ${isPending ? `<button type="button" class="save-btn" onclick="resolveEnquiryAndRefresh('${e.id}')"><img src="icon/confirm-circle.png" alt="" class="btn-icon solid-btn-icon">Mark Replied</button>` : ""}
+      ${m.phone ? `<a class="btn btn-secondary" href="${getWhatsAppLink(m.phone)}" target="_blank" rel="noopener"><img src="icon/chat-message.png" alt="" class="btn-icon">Open WhatsApp</a>` : ""}
     </div>
   `;
-}
-
-function resolveEnquiryAndRefresh(id) {
-  const e = enquiries.find(x => x.id === id);
-  if (e) {
-    e.status = "resolved";
-    e.handledBy = "human";
-  }
-  persistEnquiries();
-  updateEnquiryKPI();
-  renderEnquiryLists();
-  closeDetailPage();
 }
 
 /* ==========================================================================
@@ -3813,19 +4406,32 @@ function resolveEnquiryAndRefresh(id) {
    on a staff member's off day / approved leave).
    ========================================================================== */
 
+// Dual-shape: staff.html converts `staff`/`leaveRequests` to real Supabase
+// data, but dashboard.html still calls these same functions against the
+// mock arrays (not converted yet). `bookingsAreReal` (set by
+// loadRealBookingData(), which staff.html also calls) is the shared signal
+// for which shape is currently loaded — real staff uses staff_id/off_days_json,
+// mock staff uses id/offDays.
+function findStaffAny(staffId) {
+  return bookingsAreReal ? findRealStaff(staffId) : findStaff(staffId);
+}
+function staffOffDays(member) {
+  return bookingsAreReal ? (member.off_days_json || []) : (member.offDays || []);
+}
+
 function isStaffOnLeave(staffId, dateStr) {
   return leaveRequests.some(lv =>
-    lv.staffId === staffId && lv.status === "approved" &&
+    String(lv.staffId) === String(staffId) && lv.status === "approved" &&
     dateStr >= lv.startDate && dateStr <= lv.endDate
   );
 }
 
 function getStaffDutyStatus(staffId, dateStr) {
   if (isStaffOnLeave(staffId, dateStr)) return "leave";
-  const member = findStaff(staffId);
+  const member = findStaffAny(staffId);
   if (!member) return "off";
   const dayName = new Date(dateStr + "T00:00:00").toLocaleDateString("en-US", { weekday: "long" });
-  return (member.offDays || []).includes(dayName) ? "off" : "duty";
+  return staffOffDays(member).includes(dayName) ? "off" : "duty";
 }
 
 function isStaffOnDuty(staffId, dateStr) {
@@ -3838,7 +4444,50 @@ function getActiveStaffBookingVolume(dateStr = getToday()) {
 
 function countBookingsForStaffToday(staffId) {
   const todayDate = getToday();
-  return bookings.filter(b => b.staffId === staffId && b.date === todayDate).length;
+  return bookings.filter(b => String(b.staffId) === String(staffId) && b.date === todayDate).length;
+}
+
+// Real staff/leave data (staff.html only) — same pattern as
+// loadRealBookingData()/loadRealCrmData(): only runs from staff.html's own
+// init, every other still-mock page keeps its pristine mock arrays.
+let leaveDataIsReal = false;
+
+function mapLeaveRequest(row) {
+  const member = findRealStaff(row.staff_id);
+  return {
+    id: row.leave_id,
+    staffId: row.staff_id,
+    staffName: member?.staff_name || "—",
+    startDate: row.start_date,
+    endDate: row.end_date,
+    reason: row.reason,
+    status: row.status.toLowerCase(),
+    appliedAt: (row.applied_time || "").slice(0, 5),
+  };
+}
+
+async function loadRealStaffPageData() {
+  await loadRealBookingData(); // populates real `staff` (and `bookings`, for booking-volume KPI)
+  const leaveRes = await api.listLeaveRequests({ limit: 1000 });
+  leaveRequests = leaveRes.map(mapLeaveRequest);
+  leaveDataIsReal = true;
+}
+
+async function decideLeaveRequest(id, decision) {
+  const lv = leaveRequests.find(r => r.id === id);
+  if (!lv) return;
+  try {
+    await api.decideLeaveRequest(lv.id, decision, null);
+  } catch (err) {
+    alert(err.message);
+    return;
+  }
+  lv.status = decision.toLowerCase();
+  updateStaffKPI();
+  renderPendingLeaveTable();
+  renderLeaveHistoryTable();
+  renderDutyCalendar();
+  renderStaffListTable();
 }
 
 let staffDutyWeekAnchor = getStartOfWeek(getToday());
@@ -3849,7 +4498,9 @@ const staffListRecordCount = document.getElementById("staffListRecordCount");
 const staffLeavePendingBody = document.getElementById("staffLeavePendingBody");
 const staffLeavePendingCount = document.getElementById("staffLeavePendingCount");
 
-function initStaffPage() {
+async function initStaffPage() {
+  await loadRealStaffPageData();
+
   if (!isManager(getCurrentAccount())) {
     document.getElementById("addStaffBtn")?.remove();
   }
@@ -3880,8 +4531,8 @@ function initStaffPage() {
 function updateStaffKPI() {
   const todayDate = getToday();
   document.getElementById("staffTotalCount").textContent = staff.length;
-  document.getElementById("staffOnDutyCount").textContent = staff.filter(s => isStaffOnDuty(s.id, todayDate)).length;
-  document.getElementById("staffOnLeaveCount").textContent = staff.filter(s => isStaffOnLeave(s.id, todayDate)).length;
+  document.getElementById("staffOnDutyCount").textContent = staff.filter(s => isStaffOnDuty(s.staff_id, todayDate)).length;
+  document.getElementById("staffOnLeaveCount").textContent = staff.filter(s => isStaffOnLeave(s.staff_id, todayDate)).length;
   document.getElementById("staffBookingVolume").textContent = getActiveStaffBookingVolume(todayDate);
 }
 
@@ -3891,7 +4542,7 @@ function renderStaffListTable() {
   const todayDate = getToday();
 
   const filtered = staff.filter(s =>
-    s.name.toLowerCase().includes(searchValue) ||
+    s.staff_name.toLowerCase().includes(searchValue) ||
     s.role.toLowerCase().includes(searchValue) ||
     (s.email || "").toLowerCase().includes(searchValue)
   );
@@ -3904,26 +4555,26 @@ function renderStaffListTable() {
   }
 
   staffListBody.innerHTML = filtered.map(s => {
-    const status = getStaffDutyStatus(s.id, todayDate);
+    const status = getStaffDutyStatus(s.staff_id, todayDate);
     const statusLabel = status === "duty" ? "On Duty" : status === "leave" ? "On Leave" : "Off Today";
     const statusClass = status === "duty" ? "done" : status === "leave" ? "no_show" : "off";
 
     return `
       <tr>
         <td>
-          <span class="profile-name"><img src="icon/team.png" alt="" class="row-icon">${s.name}</span>
-          <span class="profile-sub">${s.id}</span>
+          <span class="profile-name"><img src="icon/team.png" alt="" class="row-icon">${s.staff_name}</span>
+          <span class="profile-sub">${s.staff_id}</span>
         </td>
         <td>${s.role}</td>
         <td>
           <span class="profile-sub">${s.email || "—"}</span>
           <span class="profile-sub">${s.phone || "—"}</span>
         </td>
-        <td>${(s.offDays || []).join(", ") || "—"}</td>
-        <td>${countBookingsForStaffToday(s.id)}</td>
+        <td>${(s.off_days_json || []).join(", ") || "—"}</td>
+        <td>${countBookingsForStaffToday(s.staff_id)}</td>
         <td><span class="status-tag status-${statusClass}">${statusLabel}</span></td>
         <td>
-          <button class="${manager ? "edit-btn" : "action-btn"}" onclick="openStaffForm('${s.id}')">${manager ? "Edit" : "View"}</button>
+          <button class="${manager ? "edit-btn" : "action-btn"}" onclick="openStaffForm('${s.staff_id}')">${manager ? "Edit" : "View"}</button>
         </td>
       </tr>
     `;
@@ -3934,25 +4585,25 @@ function openStaffForm(staffId = null) {
   const manager = isManager(getCurrentAccount());
   const isEdit = Boolean(staffId);
   const member = isEdit
-    ? staff.find(s => s.id === staffId)
-    : { id: `ST${String(staff.length + 1).padStart(3, "0")}`, name: "", role: "Groomer", email: "", phone: "", offDays: ["Sunday"] };
+    ? findRealStaff(staffId)
+    : { staff_id: null, staff_name: "", role: "Staff", email: "", phone: "", off_days_json: ["Sunday"], status: "active" };
   if (isEdit && !member) return;
 
   const readonly = !manager;
   const dayOptions = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
 
   detailPage.style.display = "flex";
-  detailTitle.textContent = isEdit ? `Staff Info · ${member.id}` : "Add Staff";
+  detailTitle.textContent = isEdit ? `Staff Info · ${member.staff_id}` : "Add Staff";
 
   detailForm.innerHTML = `
     <div class="form-group">
       <label>Staff ID</label>
-      <input value="${member.id}" readonly />
+      <input value="${isEdit ? member.staff_id : "Assigned on save"}" readonly />
     </div>
 
     <div class="form-group">
       <label>Name</label>
-      <input name="name" value="${member.name}" placeholder="Full name" ${readonly ? "readonly" : "required"} />
+      <input name="staff_name" value="${member.staff_name}" placeholder="Full name" ${readonly ? "readonly" : "required"} />
     </div>
 
     <div class="form-group">
@@ -3961,8 +4612,7 @@ function openStaffForm(staffId = null) {
         ? `<input value="${member.role}" readonly />`
         : `<select name="role">
             <option value="Manager" ${member.role === "Manager" ? "selected" : ""}>Manager</option>
-            <option value="Groomer" ${member.role === "Groomer" ? "selected" : ""}>Groomer</option>
-            <option value="Caretaker" ${member.role === "Caretaker" ? "selected" : ""}>Caretaker</option>
+            <option value="Staff" ${member.role === "Staff" ? "selected" : ""}>Staff</option>
           </select>`
       }
     </div>
@@ -3977,14 +4627,25 @@ function openStaffForm(staffId = null) {
       <input name="phone" value="${member.phone || ""}" placeholder="+60..." ${readonly ? "readonly" : ""} />
     </div>
 
+    <div class="form-group">
+      <label>Status</label>
+      ${readonly
+        ? `<input value="${member.status || "active"}" readonly />`
+        : `<select name="status">
+            <option value="active" ${member.status === "active" ? "selected" : ""}>Active</option>
+            <option value="inactive" ${member.status === "inactive" ? "selected" : ""}>Inactive</option>
+          </select>`
+      }
+    </div>
+
     <div class="form-group full">
       <label>Weekly Off Day(s)</label>
       ${readonly
-        ? `<input value="${(member.offDays || []).join(", ") || "None"}" readonly />`
+        ? `<input value="${(member.off_days_json || []).join(", ") || "None"}" readonly />`
         : `<div style="display:flex;flex-wrap:wrap;gap:14px;padding:10px 0;">
             ${dayOptions.map(d => `
               <label style="display:inline-flex;align-items:center;gap:6px;font-weight:500;font-size:0.85rem;color:var(--text-charcoal);">
-                <input type="checkbox" name="offDays" value="${d}" ${(member.offDays || []).includes(d) ? "checked" : ""} />
+                <input type="checkbox" name="off_days_json" value="${d}" ${(member.off_days_json || []).includes(d) ? "checked" : ""} />
                 ${d}
               </label>
             `).join("")}
@@ -3994,33 +4655,39 @@ function openStaffForm(staffId = null) {
 
     <div class="form-actions">
       <button type="button" class="cancel-btn" onclick="closeDetailPage()">${manager ? "Cancel" : "Close"}</button>
-      ${manager && isEdit ? `<button type="button" class="btn btn-secondary bk-danger-btn" onclick="removeStaffMember('${member.id}')">Remove Staff</button>` : ""}
+      ${manager && isEdit ? `<button type="button" class="btn btn-secondary bk-danger-btn" onclick="removeStaffMember('${member.staff_id}')">Remove Staff</button>` : ""}
       ${manager ? `<button type="submit" class="save-btn">${isEdit ? "Save Staff" : "Add Staff"}</button>` : ""}
     </div>
   `;
 
-  detailForm.onsubmit = function(event) {
+  detailForm.onsubmit = async function(event) {
     event.preventDefault();
     if (!manager) return;
 
     const formData = new FormData(detailForm);
-    const updated = {
-      id: member.id,
-      name: formData.get("name"),
+    const payload = {
+      staff_name: formData.get("staff_name"),
       role: formData.get("role"),
       email: formData.get("email"),
       phone: formData.get("phone"),
-      offDays: formData.getAll("offDays")
+      status: formData.get("status") || "active",
+      off_days_json: formData.getAll("off_days_json"),
     };
 
-    if (isEdit) {
-      const index = staff.findIndex(s => s.id === member.id);
-      staff[index] = updated;
-    } else {
-      staff.push(updated);
+    try {
+      if (isEdit) {
+        const updated = await api.updateStaff(member.staff_id, payload);
+        const index = staff.findIndex(s => s.staff_id === member.staff_id);
+        staff[index] = updated;
+      } else {
+        const created = await api.createStaff(payload);
+        staff.push(created);
+      }
+    } catch (err) {
+      alert(err.message);
+      return;
     }
 
-    persistStaff();
     updateStaffKPI();
     renderStaffListTable();
     renderDutyCalendar();
@@ -4028,12 +4695,21 @@ function openStaffForm(staffId = null) {
   };
 }
 
-function removeStaffMember(staffId) {
+async function removeStaffMember(staffId) {
   if (!confirm("Remove this staff member? This cannot be undone.")) return;
-  const index = staff.findIndex(s => s.id === staffId);
+
+  try {
+    await api.deleteStaff(staffId);
+  } catch (err) {
+    // Likely a foreign-key constraint — this staff member still has
+    // bookings/leave records referencing them.
+    alert(err.message);
+    return;
+  }
+
+  const index = staff.findIndex(s => String(s.staff_id) === String(staffId));
   if (index >= 0) staff.splice(index, 1);
 
-  persistStaff();
   updateStaffKPI();
   renderStaffListTable();
   renderDutyCalendar();
@@ -4057,21 +4733,12 @@ function renderPendingLeaveTable() {
       <td>${lv.startDate === lv.endDate ? formatDate(lv.startDate) : `${formatDate(lv.startDate)} – ${formatDate(lv.endDate)}`}</td>
       <td>${lv.reason}</td>
       <td>${lv.appliedAt}</td>
-      <td>${manager ? `<button class="edit-btn" onclick="approveLeaveRequest('${lv.id}')">Approve</button>` : `<span class="profile-sub">Awaiting manager</span>`}</td>
+      <td>${manager
+        ? `<button class="edit-btn" onclick="decideLeaveRequest(${lv.id}, 'Approved')">Approve</button>
+           <button class="action-btn" onclick="decideLeaveRequest(${lv.id}, 'Rejected')">Reject</button>`
+        : `<span class="profile-sub">Awaiting manager</span>`}</td>
     </tr>
   `).join("");
-}
-
-function approveLeaveRequest(id) {
-  const lv = leaveRequests.find(r => r.id === id);
-  if (lv) lv.status = "approved";
-
-  persistLeaveRequests();
-  updateStaffKPI();
-  renderPendingLeaveTable();
-  renderLeaveHistoryTable();
-  renderDutyCalendar();
-  renderStaffListTable();
 }
 
 function renderLeaveHistoryTable() {
@@ -4087,15 +4754,20 @@ function renderLeaveHistoryTable() {
     return;
   }
 
+  const STATUS_TAG = { pending: "pending", approved: "done", rejected: "no_show" };
+  const STATUS_LABEL = { pending: "Pending", approved: "Approved", rejected: "Rejected" };
+
   document.getElementById("staffLeaveHistoryBody").innerHTML = history.map(lv => `
     <tr>
-      <td><span class="key-chip">${lv.id.split("_")[0]}</span></td>
+      <td><span class="key-chip">LV-${String(lv.id).padStart(4, "0")}</span></td>
       <td><span class="profile-name">${lv.staffName}</span></td>
       <td>${lv.startDate === lv.endDate ? formatDate(lv.startDate) : `${formatDate(lv.startDate)} – ${formatDate(lv.endDate)}`}</td>
       <td>${lv.reason}</td>
       <td>${lv.appliedAt}</td>
-      <td><span class="status-tag status-${lv.status === "approved" ? "done" : "pending"}">${lv.status === "approved" ? "Approved" : "Pending"}</span></td>
-      <td>${manager && lv.status === "pending" ? `<button class="edit-btn" onclick="approveLeaveRequest('${lv.id}')">Approve</button>` : "—"}</td>
+      <td><span class="status-tag status-${STATUS_TAG[lv.status] || "pending"}">${STATUS_LABEL[lv.status] || lv.status}</span></td>
+      <td>${manager && lv.status === "pending"
+        ? `<button class="edit-btn" onclick="decideLeaveRequest(${lv.id}, 'Approved')">Approve</button>`
+        : "—"}</td>
     </tr>
   `).join("");
 }
@@ -4108,7 +4780,7 @@ function openApplyLeaveForm() {
     <div class="form-group full">
       <label>Staff</label>
       <select name="staffId" required>
-        ${staff.map(s => `<option value="${s.id}">${s.name} (${s.role})</option>`).join("")}
+        ${staff.map(s => `<option value="${s.staff_id}">${s.staff_name} (${s.role})</option>`).join("")}
       </select>
     </div>
 
@@ -4133,24 +4805,28 @@ function openApplyLeaveForm() {
     </div>
   `;
 
-  detailForm.onsubmit = function(event) {
+  detailForm.onsubmit = async function(event) {
     event.preventDefault();
     const formData = new FormData(detailForm);
-    const selectedStaffId = formData.get("staffId");
-    const member = findStaff(selectedStaffId);
+    const selectedStaffId = Number(formData.get("staffId"));
+    const member = findRealStaff(selectedStaffId);
 
-    leaveRequests.push({
-      id: `LV${String(leaveRequests.length + 1).padStart(3, "0")}_${Date.now()}`,
-      staffId: selectedStaffId,
-      staffName: member?.name || "",
-      startDate: formData.get("startDate"),
-      endDate: formData.get("endDate"),
+    const payload = {
+      staff_id: selectedStaffId,
+      start_date: formData.get("startDate"),
+      end_date: formData.get("endDate"),
       reason: formData.get("reason"),
-      status: "pending",
-      appliedAt: new Date().toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" })
-    });
+      status: "Pending",
+    };
 
-    persistLeaveRequests();
+    try {
+      const created = await api.createLeaveRequest(payload);
+      leaveRequests.push(mapLeaveRequest(created));
+    } catch (err) {
+      alert(err.message);
+      return;
+    }
+
     updateStaffKPI();
     renderPendingLeaveTable();
     renderLeaveHistoryTable();
@@ -4177,15 +4853,15 @@ function renderDutyCalendar() {
   document.getElementById("dutyCalendarBody").innerHTML = staff.map(s => `
     <tr>
       <td>
-        <span class="profile-name">${s.name}</span>
+        <span class="profile-name">${s.staff_name}</span>
         <span class="profile-sub">${s.role}</span>
       </td>
       ${dates.map(d => {
-        const status = getStaffDutyStatus(s.id, d);
+        const status = getStaffDutyStatus(s.staff_id, d);
         const label = status === "duty" ? "Duty" : status === "leave" ? "Leave" : "Off";
         const cls = status === "duty" ? "done" : status === "leave" ? "no_show" : "off";
         const isLeave = status === "leave";
-        return `<td ${isLeave ? `style="cursor:pointer;" onclick="openLeaveCellDetail('${s.id}','${d}')"` : ""}><span class="status-tag status-${cls}">${label}</span></td>`;
+        return `<td ${isLeave ? `style="cursor:pointer;" onclick="openLeaveCellDetail(${s.staff_id},'${d}')"` : ""}><span class="status-tag status-${cls}">${label}</span></td>`;
       }).join("")}
     </tr>
   `).join("");
@@ -4193,7 +4869,7 @@ function renderDutyCalendar() {
 
 function openLeaveCellDetail(staffId, dateStr) {
   const lv = leaveRequests.find(r =>
-    r.staffId === staffId && r.status === "approved" &&
+    String(r.staffId) === String(staffId) && r.status === "approved" &&
     dateStr >= r.startDate && dateStr <= r.endDate
   );
   if (!lv) return;
@@ -4225,12 +4901,65 @@ function openLeaveCellDetail(staffId, dateStr) {
 
 /* ==========================================================================
    ANALYTICAL DASHBOARD (dashboard.html) — Manager only.
-   Every number and every chart/card drill-down is derived from the shared
-   bookings/CRM/enquiry/loyalty data. Only the AI-performance panel and the
-   Repeat Customer Rate / Customer Satisfaction KPIs have no real historical
-   source in this mock system, so those stay illustrative and are not
-   clickable (no fabricated drill-down for numbers that aren't real).
+   Every number and every chart/card drill-down is derived from real
+   Supabase data. Your schema has no rooms/services catalog (occupancy and
+   revenue-by-service are redesigned around real boarding room_type labels
+   and free-text service names instead), and your `messages`/loyalty tables
+   have no pending/resolved workflow at all (see enquiries.html/loyalty.html
+   conversions) — those specific numbers are repurposed into real,
+   non-fabricated equivalents rather than kept as a fake approval queue.
+   Only genuinely fabricated numbers (AI accuracy, uptime, response time)
+   stay marked "Illustrative" and non-clickable.
    ========================================================================== */
+
+let realPayments = [];
+
+async function loadRealDashboardData() {
+  await loadRealBookingData(); // bookings + staff
+
+  const [customersRes, petsRes, membersRes, couponsRes, redemptionsRes, leaveRes, messagesRes, paymentsRes] = await Promise.all([
+    api.listCustomers({ limit: 1000 }),
+    api.listPets({ limit: 1000 }),
+    api.listMembers({ limit: 1000 }),
+    api.listCoupons(),
+    api.listRedemptions({ limit: 1000 }),
+    api.listLeaveRequests({ limit: 1000 }),
+    api.listChatMessages({ limit: 1000 }),
+    api.listPayments({ limit: 2000 }),
+  ]);
+
+  customers = customersRes;
+  pets = petsRes;
+  crmDataIsReal = true;
+
+  const customerById = new Map(customers.map(c => [c.customer_id, c]));
+
+  realMembers = membersRes.map(m => ({
+    ...m,
+    customerName: customerById.get(m.customer_id)?.full_name || "—",
+    phone: customerById.get(m.customer_id)?.phone_number || "—",
+  }));
+  realCoupons = couponsRes;
+  const couponById = new Map(realCoupons.map(c => [c.coupon_id, c]));
+  const memberByLoyaltyId = new Map(realMembers.map(m => [m.loyalty_id, m]));
+  realRedemptions = redemptionsRes.map(r => ({
+    ...r,
+    memberName: memberByLoyaltyId.get(r.loyalty_id)?.customerName || "—",
+    couponName: r.coupon_id ? (couponById.get(r.coupon_id)?.reward_name || "—") : null,
+  }));
+  loyaltyDataIsReal = true;
+
+  leaveRequests = leaveRes.map(mapLeaveRequest);
+  leaveDataIsReal = true;
+
+  realMessages = messagesRes.map(m => ({
+    ...m,
+    customerName: customerById.get(m.sender_id)?.full_name || "—",
+    phone: customerById.get(m.sender_id)?.phone_number || "",
+  }));
+
+  realPayments = paymentsRes;
+}
 
 const SERVICE_MIX_COLORS = { grooming: "#3B82F6", boarding: "#10B981", daycare: "#F59E0B" };
 
@@ -4283,20 +5012,38 @@ function formatPeriodChip(period, range) {
   return `<img src="icon/calendar-simple.png" alt="" class="row-icon">${periodRangeLabel(period, range)}`;
 }
 
-function isRoomOccupiedOnDate(roomId, date) {
-  return bookings.some(b => {
-    if (b.roomId !== roomId || b.status === "no_show" || b.status === "cancelled") return false;
-    if (b.checkInDate && b.checkOutDate) return date >= b.checkInDate && date <= b.checkOutDate;
-    return b.date === date;
-  });
+// Your real schema has no rooms/capacity catalog — only boarding_booking's
+// free-text room_type per booking (see dailyoverview.html's
+// getActiveRoomLabels(), reused here). "Occupancy" is redefined as: of the
+// distinct real room labels currently in use, what fraction are occupied on
+// a given day — there's no fixed total room count to divide by instead.
+function isRoomLabelOccupiedOnDate(roomLabel, date) {
+  return bookings.some(b =>
+    b.bookingType === "boarding" && b.roomLabel === roomLabel &&
+    b.status !== "no_show" && b.status !== "cancelled" &&
+    b.checkInDate && b.checkOutDate && date >= b.checkInDate && date <= b.checkOutDate
+  );
 }
 
 function computeOccupancyRate(range) {
-  if (!rooms.length) return 0;
+  const roomLabels = getActiveRoomLabels();
+  if (!roomLabels.length) return 0;
   const days = getDateRange(range.start, range.end);
   if (!days.length) return 0;
-  const dailyRates = days.map(d => rooms.filter(r => isRoomOccupiedOnDate(r.id, d)).length / rooms.length);
+  const dailyRates = days.map(d => roomLabels.filter(label => isRoomLabelOccupiedOnDate(label, d)).length / roomLabels.length);
   return (dailyRates.reduce((a, b) => a + b, 0) / dailyRates.length) * 100;
+}
+
+// dailyoverview.html's computeSlaCompliance() reads the mock enquiries/
+// loyaltyRequests arrays — dashboard.html now has real bookings but no real
+// pending/SLA concept for messages or loyalty (see enquiries.html/
+// loyalty.html conversions), so this only tracks the one SLA that's real:
+// grooming service pending past its 15-minute window.
+function computeRealSlaCompliance() {
+  const pendingGrooming = bookings.filter(b => b.bookingType === "grooming" && b.date === today && b.status === "pending");
+  const breaches = slaBreachCount("pendingService", pendingGrooming, "time");
+  const total = pendingGrooming.length;
+  return { total, breaches, rate: total ? Math.round(((total - breaches) / total) * 100) : 100 };
 }
 
 function computeRepeatCustomerRate(periodBookings) {
@@ -4324,7 +5071,7 @@ function computeDashboardMetrics(period) {
   const noShowCount = allPeriodBookings.filter(b => b.status === "no_show").length;
   const noShowRate = allPeriodBookings.length ? (noShowCount / allPeriodBookings.length) * 100 : 0;
 
-  const slaCompliance = computeSlaCompliance();
+  const slaCompliance = computeRealSlaCompliance();
   const occupancyRate = computeOccupancyRate(range);
   const repeatCustomerRate = computeRepeatCustomerRate(periodBookings);
 
@@ -4332,11 +5079,16 @@ function computeDashboardMetrics(period) {
     type, count: periodBookings.filter(b => b.serviceType === type).length
   }));
 
+  // No services catalog in your real schema — group by the free-text
+  // service label instead of a serviceId, prefixed with bookingType since a
+  // grooming service name and a daycare package name could otherwise collide.
   const revenueByService = {};
-  periodBookings.forEach(b => { revenueByService[b.serviceId] = (revenueByService[b.serviceId] || 0) + b.amount; });
-  const topServices = Object.entries(revenueByService)
-    .map(([serviceId, revenue]) => ({ serviceId, service: findService(serviceId), revenue }))
-    .sort((a, b) => b.revenue - a.revenue);
+  periodBookings.forEach(b => {
+    const key = `${b.bookingType}:${b.serviceLabel}`;
+    if (!revenueByService[key]) revenueByService[key] = { key, bookingType: b.bookingType, serviceLabel: b.serviceLabel, revenue: 0 };
+    revenueByService[key].revenue += b.amount;
+  });
+  const topServices = Object.values(revenueByService).sort((a, b) => b.revenue - a.revenue);
 
   const pendingTasks = buildActionQueue("all").length;
 
@@ -4387,10 +5139,11 @@ function openKpiDetail(key) {
     openDetailModal("Total Bookings", `${items.length} booking(s) · ${label}`, items.map(bookingDetailRow).join(""), { label: "Open Booking Dashboard", href: "booking.html" });
   } else if (key === "occupancy") {
     const days = getDateRange(metrics.range.start, metrics.range.end);
-    const rows = rooms.map(r => {
-      const occupiedDays = days.filter(d => isRoomOccupiedOnDate(r.id, d)).length;
+    const roomLabels = getActiveRoomLabels();
+    const rows = roomLabels.map(roomLabel => {
+      const occupiedDays = days.filter(d => isRoomLabelOccupiedOnDate(roomLabel, d)).length;
       const pct = days.length ? Math.round((occupiedDays / days.length) * 100) : 0;
-      return renderDetailRow({ title: r.name, sub: `${r.type} · capacity ${r.capacity}`, tag: pct >= 50 ? "scheduled" : "done", tagLabel: `${occupiedDays}/${days.length} day(s) · ${pct}%` });
+      return renderDetailRow({ title: roomLabel, sub: "Boarding room", tag: pct >= 50 ? "scheduled" : "done", tagLabel: `${occupiedDays}/${days.length} day(s) · ${pct}%` });
     }).join("");
     openDetailModal("Room Occupancy", `Average ${Math.round(metrics.occupancyRate)}% occupancy · ${label}`, rows, { label: "Open Booking Dashboard", href: "booking.html" });
   } else if (key === "repeat") {
@@ -4713,12 +5466,11 @@ function renderServiceMixDonut(serviceMix) {
   });
 }
 
-function openTopServiceDetail(serviceId) {
-  const items = bookings.filter(b => b.serviceId === serviceId && b.date >= dashboardRange.start && b.date <= dashboardRange.end).sort((a, b) => b.date.localeCompare(a.date));
-  const service = findService(serviceId);
+function openTopServiceDetail(bookingType, serviceLabel) {
+  const items = bookings.filter(b => b.bookingType === bookingType && b.serviceLabel === serviceLabel && b.date >= dashboardRange.start && b.date <= dashboardRange.end).sort((a, b) => b.date.localeCompare(a.date));
   const revenue = items.reduce((sum, b) => sum + b.amount, 0);
   const label = periodRangeLabel(currentDashboardPeriod, dashboardRange);
-  openDetailModal(`${service?.name || "Service"} — Bookings`, `${items.length} booking(s) · RM ${revenue.toLocaleString("en-MY")} total revenue · ${label}`, items.map(bookingDetailRow).join(""), { label: "Open Booking Dashboard", href: "booking.html" });
+  openDetailModal(`${serviceLabel} — Bookings`, `${items.length} booking(s) · RM ${revenue.toLocaleString("en-MY")} total revenue · ${label}`, items.map(bookingDetailRow).join(""), { label: "Open Booking Dashboard", href: "booking.html" });
 }
 
 function renderTopServices(topServices) {
@@ -4726,9 +5478,9 @@ function renderTopServices(topServices) {
   const max = top.length ? top[0].revenue : 1;
 
   q("topServicesList").innerHTML = top.map(item => `
-    <div class="top-service-row" onclick="openTopServiceDetail('${item.serviceId}')">
+    <div class="top-service-row" onclick="openTopServiceDetail('${item.bookingType}', '${item.serviceLabel}')">
       <div class="top-service-row-head">
-        <span>${item.service?.name || "Unknown Service"}</span>
+        <span>${item.serviceLabel || "Unknown Service"}</span>
         <span>RM ${item.revenue.toLocaleString("en-MY")}</span>
       </div>
       <div class="top-service-bar-track">
@@ -4756,12 +5508,11 @@ function openOpsHighlightDetail(key) {
   if (key === "pendingTasks") return openPendingTasksDetail();
 
   if (key === "slaCompliance") {
-    const pendingGrooming = bookings.filter(b => b.serviceType === "grooming" && b.date === today && b.status === "pending");
-    const pendingEnquiries = enquiries.filter(e => e.status === "pending");
-    const pendingLoyalty = loyaltyRequests.filter(r => r.status === "pending");
-    const rows = [...pendingGrooming.map(bookingDetailRow), ...pendingEnquiries.map(enquiryDetailRow), ...pendingLoyalty.map(loyaltyDetailRow)].join("");
-    const total = pendingGrooming.length + pendingEnquiries.length + pendingLoyalty.length;
-    openDetailModal("SLA Compliance", `${total} item(s) currently tracked against SLA.`, rows, { label: "Open Daily Overview", href: "dailyoverview.html" });
+    // Only grooming-service SLA is real — your messages/loyalty tables have
+    // no pending/SLA concept at all (see enquiries.html/loyalty.html).
+    const pendingGrooming = bookings.filter(b => b.bookingType === "grooming" && b.date === today && b.status === "pending");
+    const rows = pendingGrooming.map(bookingDetailRow).join("");
+    openDetailModal("SLA Compliance", `${pendingGrooming.length} item(s) currently tracked against SLA.`, rows, { label: "Open Daily Overview", href: "dailyoverview.html" });
     return;
   }
 
@@ -4796,19 +5547,19 @@ function renderOpsHighlights(metrics) {
 
 function openSnapshotDetail(key) {
   if (key === "members") {
-    const rows = customers.map(c => renderDetailRow({ title: c.full_name, sub: `${c.customer_id} · ${c.phone}`, tag: "done", tagLabel: "Active" })).join("");
+    const rows = customers.map(c => renderDetailRow({ title: c.full_name, sub: `${c.customer_id} · ${c.phone_number || "—"}`, tag: "done", tagLabel: "Active" })).join("");
     openDetailModal("Active Members", `${customers.length} registered customer(s).`, rows, { label: "Open CRM", href: "profile.html" });
   } else if (key === "pets") {
-    const rows = pets.map(p => renderDetailRow({ title: `${p.pet_name} (${p.species})`, sub: `Owner: ${getCustomerById(p.customer_id)?.full_name || "Unknown"}`, tag: "done", tagLabel: p.species })).join("");
+    const rows = pets.map(p => renderDetailRow({ title: `${p.pet_name} (${p.pet_type})`, sub: `Owner: ${getCustomerById(p.customer_id)?.full_name || "Unknown"}`, tag: "done", tagLabel: p.pet_type })).join("");
     openDetailModal("Total Pets", `${pets.length} registered pet(s).`, rows, { label: "Open CRM", href: "profile.html" });
   } else if (key === "staff") {
     const rows = staff.map(s => {
-      const status = getStaffDutyStatus(s.id, today);
+      const status = getStaffDutyStatus(s.staff_id, today);
       const tagLabel = status === "duty" ? "On Duty" : status === "leave" ? "On Leave" : "Off Today";
       const tag = status === "duty" ? "done" : status === "leave" ? "no_show" : "off";
-      return renderDetailRow({ title: s.name, sub: s.role || "Staff", tag, tagLabel });
+      return renderDetailRow({ title: s.staff_name, sub: s.role || "Staff", tag, tagLabel });
     }).join("");
-    const onDutyCount = staff.filter(s => isStaffOnDuty(s.id, today)).length;
+    const onDutyCount = staff.filter(s => isStaffOnDuty(s.staff_id, today)).length;
     openDetailModal("Staff On Duty", `${onDutyCount} of ${staff.length} staff member(s) on duty today.`, rows, { label: "Open Staff Management", href: "staff.html" });
   }
 }
@@ -4817,7 +5568,7 @@ function renderSnapshot() {
   const rows = [
     { key: "members", icon: "users.png", label: "Active Members", value: customers.length.toLocaleString("en-MY") },
     { key: "pets", icon: "paw-print.png", label: "Total Pets", value: pets.length.toLocaleString("en-MY") },
-    { key: "staff", icon: "team.png", label: "Staff On Duty Today", value: staff.filter(s => isStaffOnDuty(s.id, today)).length },
+    { key: "staff", icon: "team.png", label: "Staff On Duty Today", value: staff.filter(s => isStaffOnDuty(s.staff_id, today)).length },
     { key: null, icon: "time.png", label: "Operating Hours", value: "8:00 AM – 8:00 PM" }
   ];
 
@@ -4953,8 +5704,8 @@ function renderStaffDashboard() {
 }
 
 function renderStaffKpiHero(metrics, todayDate) {
-  const onDuty = staff.filter(s => isStaffOnDuty(s.id, todayDate)).length;
-  const onLeave = staff.filter(s => isStaffOnLeave(s.id, todayDate)).length;
+  const onDuty = staff.filter(s => isStaffOnDuty(s.staff_id, todayDate)).length;
+  const onLeave = staff.filter(s => isStaffOnLeave(s.staff_id, todayDate)).length;
 
   const cards = [
     { icon: "team.png", label: "Total Staff", value: staff.length, sub: "Registered team members" },
@@ -4989,24 +5740,24 @@ function renderStaffWorkloadTrend(metrics) {
 
 function openStaffBookingDetail(staffId) {
   const items = bookings
-    .filter(b => b.staffId === staffId && b.date >= dashboardRange.start && b.date <= dashboardRange.end)
+    .filter(b => String(b.staffId) === String(staffId) && b.date >= dashboardRange.start && b.date <= dashboardRange.end)
     .sort((a, b) => a.date.localeCompare(b.date) || a.time.localeCompare(b.time));
-  const member = findStaff(staffId);
+  const member = findRealStaff(staffId);
   const label = periodRangeLabel(currentDashboardPeriod, dashboardRange);
-  openDetailModal(`${member?.name || "Staff"} — Bookings`, `${items.length} booking(s) · ${label}`, items.map(bookingDetailRow).join(""), { label: "Open Staff Management", href: "staff.html" });
+  openDetailModal(`${member?.staff_name || "Staff"} — Bookings`, `${items.length} booking(s) · ${label}`, items.map(bookingDetailRow).join(""), { label: "Open Staff Management", href: "staff.html" });
 }
 
 function renderStaffBookingRanking(metrics) {
   const ranked = staff
-    .map(s => ({ staff: s, count: metrics.periodBookings.filter(b => b.staffId === s.id).length }))
+    .map(s => ({ staff: s, count: metrics.periodBookings.filter(b => String(b.staffId) === String(s.staff_id)).length }))
     .sort((a, b) => b.count - a.count);
 
   const max = ranked.length && ranked[0].count ? ranked[0].count : 1;
 
   q("staffBookingRankList").innerHTML = ranked.map(r => `
-    <div class="top-service-row" onclick="openStaffBookingDetail('${r.staff.id}')">
+    <div class="top-service-row" onclick="openStaffBookingDetail(${r.staff.staff_id})">
       <div class="top-service-row-head">
-        <span>${r.staff.name}</span>
+        <span>${r.staff.staff_name}</span>
         <span>${r.count} booking(s)</span>
       </div>
       <div class="top-service-bar-track">
@@ -5018,16 +5769,16 @@ function renderStaffBookingRanking(metrics) {
 
 function openStaffDutyDetail(key) {
   const todayDate = getToday();
-  const members = staff.filter(s => getStaffDutyStatus(s.id, todayDate) === key);
+  const members = staff.filter(s => getStaffDutyStatus(s.staff_id, todayDate) === key);
   const label = key === "duty" ? "On Duty" : key === "leave" ? "On Leave" : "Off Today";
   const tag = key === "duty" ? "done" : key === "leave" ? "no_show" : "off";
-  const rows = members.map(s => renderDetailRow({ title: s.name, sub: s.role, tag, tagLabel: label })).join("");
+  const rows = members.map(s => renderDetailRow({ title: s.staff_name, sub: s.role, tag, tagLabel: label })).join("");
   openDetailModal(`Staff ${label}`, `${members.length} of ${staff.length} staff member(s).`, rows, { label: "Open Staff Management", href: "staff.html" });
 }
 
 function renderStaffDutyDonut(todayDate) {
   const counts = { duty: 0, off: 0, leave: 0 };
-  staff.forEach(s => { counts[getStaffDutyStatus(s.id, todayDate)]++; });
+  staff.forEach(s => { counts[getStaffDutyStatus(s.staff_id, todayDate)]++; });
 
   const segments = [
     { key: "duty", label: "On Duty", count: counts.duty, color: STAFF_DUTY_COLORS.duty },
@@ -5075,7 +5826,7 @@ function renderStaffLeaveSnapshot(todayDate) {
     { key: "pending", icon: "time.png", label: "Pending Requests", value: pendingCount },
     { key: "approved", icon: "confirm-circle.png", label: "Approved Requests", value: approvedCount },
     { key: "all", icon: "list-view.png", label: "Total Applications", value: leaveRequests.length },
-    { key: null, icon: "logout.png", label: "On Leave Today", value: staff.filter(s => isStaffOnLeave(s.id, todayDate)).length }
+    { key: null, icon: "logout.png", label: "On Leave Today", value: staff.filter(s => isStaffOnLeave(s.staff_id, todayDate)).length }
   ];
 
   q("staffLeaveSnapshotList").innerHTML = rows.map(r => `
@@ -5092,25 +5843,25 @@ function openStaffHighlightDetail(key) {
 
   const metrics = computeDashboardMetrics(currentDashboardPeriod);
   const rows = staff
-    .map(s => ({ s, count: metrics.periodBookings.filter(b => b.staffId === s.id).length }))
+    .map(s => ({ s, count: metrics.periodBookings.filter(b => String(b.staffId) === String(s.staff_id)).length }))
     .sort((a, b) => b.count - a.count)
-    .map(r => renderDetailRow({ title: r.s.name, sub: r.s.role, tag: "done", tagLabel: `${r.count} booking(s)` }))
+    .map(r => renderDetailRow({ title: r.s.staff_name, sub: r.s.role, tag: "done", tagLabel: `${r.count} booking(s)` }))
     .join("");
   openDetailModal("Bookings per Staff", periodRangeLabel(currentDashboardPeriod, dashboardRange), rows, { label: "Open Staff Management", href: "staff.html" });
 }
 
 function renderStaffHighlights(metrics, todayDate) {
   const ranked = staff
-    .map(s => ({ staff: s, count: metrics.periodBookings.filter(b => b.staffId === s.id).length }))
+    .map(s => ({ staff: s, count: metrics.periodBookings.filter(b => String(b.staffId) === String(s.staff_id)).length }))
     .sort((a, b) => b.count - a.count);
   const busiest = ranked[0];
-  const activeStaffCount = staff.filter(s => isStaffOnDuty(s.id, todayDate)).length;
+  const activeStaffCount = staff.filter(s => isStaffOnDuty(s.staff_id, todayDate)).length;
   const avgBookings = activeStaffCount ? Math.round((getActiveStaffBookingVolume(todayDate) / activeStaffCount) * 10) / 10 : 0;
   const pendingLeaveCount = leaveRequests.filter(lv => lv.status === "pending").length;
   const onDutyRate = staff.length ? Math.round((activeStaffCount / staff.length) * 100) : 0;
 
   const cards = [
-    { key: "busiest", icon: "bar-chart.png", label: "Busiest Staff", value: busiest?.staff.name || "—", sub: `${busiest?.count || 0} booking(s) this period`, tone: "neutral" },
+    { key: "busiest", icon: "bar-chart.png", label: "Busiest Staff", value: busiest?.staff.staff_name || "—", sub: `${busiest?.count || 0} booking(s) this period`, tone: "neutral" },
     { key: "avgLoad", icon: "line-chart.png", label: "Avg Bookings / Active Staff", value: avgBookings, sub: "today", tone: "neutral" },
     { key: "pendingLeave", icon: "time.png", label: "Pending Leave Requests", value: pendingLeaveCount, sub: pendingLeaveCount ? "Needs review" : "All clear", tone: pendingLeaveCount ? "down" : "up" },
     { key: "onDutyRate", icon: "confirm-circle.png", label: "On-Duty Rate Today", value: `${onDutyRate}%`, sub: "of total staff", tone: "neutral" }
@@ -5128,12 +5879,14 @@ function renderStaffHighlights(metrics, todayDate) {
 
 function openStaffRoleDetail(role) {
   const members = staff.filter(s => s.role === role);
-  const rows = members.map(s => renderDetailRow({ title: s.name, sub: s.email || s.phone || "", tag: "done", tagLabel: role })).join("");
+  const rows = members.map(s => renderDetailRow({ title: s.staff_name, sub: s.email || s.phone || "", tag: "done", tagLabel: role })).join("");
   openDetailModal(`${role}s`, `${members.length} ${role.toLowerCase()}(s).`, rows, { label: "Open Staff Management", href: "staff.html" });
 }
 
 function renderStaffRoleSnapshot() {
-  const roleMeta = { Manager: "team.png", Groomer: "grooming-scissors.png", Caretaker: "paw-print.png" };
+  // Your real staff table only has 2 roles (Manager/Staff) — not the mock's
+  // Manager/Groomer/Caretaker.
+  const roleMeta = { Manager: "team.png", Staff: "paw-print.png" };
   const rows = Object.keys(roleMeta).map(role => ({
     key: role, icon: roleMeta[role], label: `${role}s`, value: staff.filter(s => s.role === role).length
   }));
@@ -5154,7 +5907,7 @@ function renderStaffWeekDutyMix() {
   if (weekMixSub) weekMixSub.textContent = `${formatShortDate(weekStart)} – ${formatShortDate(addDays(weekStart, 6))}`;
 
   const counts = { duty: 0, off: 0, leave: 0 };
-  staff.forEach(s => dates.forEach(d => { counts[getStaffDutyStatus(s.id, d)]++; }));
+  staff.forEach(s => dates.forEach(d => { counts[getStaffDutyStatus(s.staff_id, d)]++; }));
 
   const total = staff.length * dates.length;
   const mix = [
@@ -5187,33 +5940,40 @@ function renderStaffWeekDutyMix() {
 
 function openSystemKpiDetail(key) {
   const label = periodRangeLabel(currentDashboardPeriod, dashboardRange);
-  if (key === "enquiry") {
-    const rows = enquiries.map(enquiryDetailRow).join("");
-    openDetailModal("Enquiry Resolution", `${enquiries.filter(e => e.status === "resolved").length} of ${enquiries.length} resolved.`, rows, { label: "Open Enquiries", href: "enquiries.html" });
-  } else if (key === "payment") {
-    const rows = paymentRecords.map(p => renderDetailRow({
-      title: p.customerName, sub: `${p.payment_id} · RM ${p.finalAmount.toLocaleString()}`,
-      tag: p.status === "verified" ? "done" : "pending", tagLabel: p.status === "verified" ? "Verified" : "Pending"
+  if (key === "bookingIntent") {
+    const items = realMessages.filter(m => m.intent_label === "booking");
+    const rows = items.map(m => renderDetailRow({
+      title: m.customerName, sub: `"${m.message_text}"`, tag: "done", tagLabel: "Booking"
     })).join("");
-    openDetailModal("Payment Verification", `${paymentRecords.filter(p => p.status === "verified").length} of ${paymentRecords.length} verified · ${label}`, rows, { label: "Open Payment", href: "payment.html" });
-  } else if (key === "loyalty") {
-    const rows = loyaltyRequests.map(loyaltyDetailRow).join("");
-    openDetailModal("Loyalty Requests", `${loyaltyRequests.filter(r => r.status === "approved").length} of ${loyaltyRequests.length} approved.`, rows, { label: "Open Loyalty", href: "loyalty.html" });
+    openDetailModal("Booking-Related Messages", `${items.length} of ${realMessages.length} messages.`, rows, { label: "Open Enquiries", href: "enquiries.html" });
+  } else if (key === "payment") {
+    const rows = realPayments.map(p => renderDetailRow({
+      title: p.customerName || p.service, sub: `PAY-${String(p.payment_id).padStart(4, "0")} · RM ${Number(p.final_amount).toLocaleString()}`,
+      tag: p.status === "Paid" ? "done" : "pending", tagLabel: p.status
+    })).join("");
+    const verified = realPayments.filter(p => p.status === "Paid").length;
+    openDetailModal("Payment Verification", `${verified} of ${realPayments.length} verified · ${label}`, rows, { label: "Open Payment", href: "payment.html" });
+  } else if (key === "redemption") {
+    const withRedemptions = realMembers.filter(m => m.redemption_made > 0);
+    const rows = withRedemptions.map(m => renderDetailRow({
+      title: m.customerName, sub: `${m.tier} · ${m.points_balance} pts`, tag: "done", tagLabel: `${m.redemption_made} redemption(s)`
+    })).join("");
+    openDetailModal("Members With Redemptions", `${withRedemptions.length} of ${realMembers.length} members have redeemed at least once.`, rows, { label: "Open Loyalty", href: "loyalty.html" });
   }
 }
 
 function renderSystemKpiHero() {
-  const totalEnquiries = enquiries.length;
-  const resolvedEnquiries = enquiries.filter(e => e.status === "resolved").length;
-  const totalPayments = paymentRecords.length;
-  const verifiedPayments = paymentRecords.filter(p => p.status === "verified").length;
-  const totalLoyalty = loyaltyRequests.length;
-  const approvedLoyalty = loyaltyRequests.filter(r => r.status === "approved").length;
+  const totalMessages = realMessages.length;
+  const bookingMessages = realMessages.filter(m => m.intent_label === "booking").length;
+  const totalPayments = realPayments.length;
+  const verifiedPayments = realPayments.filter(p => p.status === "Paid").length;
+  const totalMembers = realMembers.length;
+  const membersWithRedemptions = realMembers.filter(m => m.redemption_made > 0).length;
 
   const cards = [
-    { key: "enquiry", icon: "chat-message.png", label: "Enquiry Resolution Rate", value: `${totalEnquiries ? Math.round((resolvedEnquiries / totalEnquiries) * 100) : 0}%`, sub: `${resolvedEnquiries}/${totalEnquiries} resolved`, clickable: true },
+    { key: "bookingIntent", icon: "chat-message.png", label: "Booking-Related Messages", value: `${totalMessages ? Math.round((bookingMessages / totalMessages) * 100) : 0}%`, sub: `${bookingMessages}/${totalMessages} messages`, clickable: true },
     { key: "payment", icon: "payment-card.png", label: "Payment Verification Rate", value: `${totalPayments ? Math.round((verifiedPayments / totalPayments) * 100) : 0}%`, sub: `${verifiedPayments}/${totalPayments} verified`, clickable: true },
-    { key: "loyalty", icon: "loyalty-reward-gift.png", label: "Loyalty Requests Processed", value: `${totalLoyalty ? Math.round((approvedLoyalty / totalLoyalty) * 100) : 0}%`, sub: `${approvedLoyalty}/${totalLoyalty} approved`, clickable: true },
+    { key: "redemption", icon: "loyalty-reward-gift.png", label: "Members With Redemptions", value: `${totalMembers ? Math.round((membersWithRedemptions / totalMembers) * 100) : 0}%`, sub: `${membersWithRedemptions}/${totalMembers} members`, clickable: true },
     { key: null, icon: "analytics-dashboard.png", label: "AI Response Accuracy", value: "96.4%", sub: "Illustrative", clickable: false }
   ];
 
@@ -5242,12 +6002,14 @@ function renderSystemAutomationTrend(metrics) {
 }
 
 function renderSystemPendingByType() {
+  // Your real messages/loyalty tables have no pending workflow at all (see
+  // enquiries.html/loyalty.html conversions) — only these 3 categories have
+  // a real "pending" concept, so the other 2 mock categories are dropped
+  // rather than shown as a fabricated zero.
   const todayDate = getToday();
   const items = [
-    { label: "Pending Grooming Today", count: bookings.filter(b => b.serviceType === "grooming" && b.date === todayDate && b.status === "pending").length, href: "dailyoverview.html" },
-    { label: "Pending Enquiries", count: enquiries.filter(e => e.status === "pending").length, href: "enquiries.html" },
-    { label: "Pending Loyalty Redemptions", count: loyaltyRequests.filter(r => r.status === "pending").length, href: "loyalty.html" },
-    { label: "Pending Payment Verification", count: paymentRecords.filter(p => p.status === "pending").length, href: "payment.html" },
+    { label: "Pending Grooming Today", count: bookings.filter(b => b.bookingType === "grooming" && b.date === todayDate && b.status === "pending").length, href: "dailyoverview.html" },
+    { label: "Pending Payment Verification", count: realPayments.filter(p => p.status === "Pending").length, href: "payment.html" },
     { label: "Pending Leave Requests", count: leaveRequests.filter(lv => lv.status === "pending").length, href: "staff.html" }
   ].sort((a, b) => b.count - a.count);
 
@@ -5266,27 +6028,23 @@ function renderSystemPendingByType() {
   `).join("");
 }
 
-function openSystemEnquiryDetail(key) {
-  const items = enquiries.filter(e => e.status === key);
-  const rows = items.map(enquiryDetailRow).join("");
-  openDetailModal(key === "resolved" ? "Resolved Enquiries" : "Pending Enquiries", `${items.length} enquirie(s).`, rows, { label: "Open Enquiries", href: "enquiries.html" });
-}
+const MESSAGE_INTENT_COLORS = { booking: "#3B82F6", policy: "#10B981", loyalty: "#D97706" };
 
-function openEnquiryHandledByDetail(handledBy) {
-  const items = enquiries.filter(e => e.status === "resolved" && e.handledBy === handledBy);
-  const rows = items.map(enquiryDetailRow).join("");
-  openDetailModal(handledBy === "ai" ? "Auto-Resolved Enquiries" : "Human-Resolved Enquiries", `${items.length} enquirie(s) resolved by ${handledBy === "ai" ? "AI, no human needed" : "staff"}.`, rows, { label: "Open Enquiries", href: "enquiries.html" });
+function openSystemEnquiryDetail(intent) {
+  const items = realMessages.filter(m => m.intent_label === intent);
+  const rows = items.map(m => renderDetailRow({ title: m.customerName, sub: `"${m.message_text}"`, tag: "done", tagLabel: intent })).join("");
+  openDetailModal(`${intent.charAt(0).toUpperCase()}${intent.slice(1)} Messages`, `${items.length} message(s).`, rows, { label: "Open Enquiries", href: "enquiries.html" });
 }
 
 function renderSystemEnquiryDonut() {
-  const resolved = enquiries.filter(e => e.status === "resolved").length;
-  const pending = enquiries.filter(e => e.status === "pending").length;
-  const total = enquiries.length || 1;
-
-  const segments = [
-    { key: "resolved", label: "Resolved", count: resolved, color: "#059669" },
-    { key: "pending", label: "Pending", count: pending, color: "#D97706" }
-  ];
+  // Your real messages table has no resolved/pending status at all (see
+  // enquiries.html) — this shows the real intent breakdown instead.
+  const total = realMessages.length || 1;
+  const segments = ["booking", "policy", "loyalty"].map(intent => ({
+    key: intent, label: intent.charAt(0).toUpperCase() + intent.slice(1),
+    count: realMessages.filter(m => m.intent_label === intent).length,
+    color: MESSAGE_INTENT_COLORS[intent]
+  }));
 
   q("systemEnquiryDonutLegend").innerHTML = segments.map(s => `
     <div class="chart-legend-item" onclick="openSystemEnquiryDetail('${s.key}')">
@@ -5320,13 +6078,16 @@ function renderSystemIntegrationSnapshot() {
   `).join("");
 }
 
-function renderSystemHighlights() {
-  const autoResolved = enquiries.filter(e => e.status === "resolved" && e.handledBy === "ai").length;
+function openMessagesLoggedDetail() {
+  const rows = realMessages.map(m => renderDetailRow({ title: m.customerName, sub: `"${m.message_text}"`, tag: "done", tagLabel: m.intent_label })).join("");
+  openDetailModal("Messages Logged", `${realMessages.length} inbound message(s), all-time.`, rows, { label: "Open Enquiries", href: "enquiries.html" });
+}
 
+function renderSystemHighlights() {
   const cards = [
     { icon: "confirm-circle.png", label: "API Uptime", value: "99.9%", sub: "Illustrative", clickable: false },
     { icon: "time.png", label: "Avg AI Response Time", value: "1.2s", sub: "Illustrative", clickable: false },
-    { icon: "confirm-circle.png", label: "Auto-Resolved Enquiries", value: autoResolved, sub: "All-time, no human needed", clickable: true, onclick: "openEnquiryHandledByDetail('ai')" },
+    { icon: "confirm-circle.png", label: "Messages Logged", value: realMessages.length, sub: "All-time", clickable: true, onclick: "openMessagesLoggedDetail()" },
     { icon: "notification-bell.png", label: "Error Rate", value: "0.3%", sub: "Illustrative", clickable: false }
   ];
 
@@ -5343,10 +6104,9 @@ function renderSystemHighlights() {
 function renderSystemQueueSnapshot() {
   const todayDate = getToday();
   const rows = [
-    { icon: "grooming-scissors.png", label: "Pending Grooming Today", value: bookings.filter(b => b.serviceType === "grooming" && b.date === todayDate && b.status === "pending").length, href: "dailyoverview.html" },
-    { icon: "chat-message.png", label: "Pending Enquiries", value: enquiries.filter(e => e.status === "pending").length, href: "enquiries.html" },
-    { icon: "loyalty-reward-gift.png", label: "Pending Loyalty Redemptions", value: loyaltyRequests.filter(r => r.status === "pending").length, href: "loyalty.html" },
-    { icon: "payment-card.png", label: "Pending Payment Verification", value: paymentRecords.filter(p => p.status === "pending").length, href: "payment.html" }
+    { icon: "grooming-scissors.png", label: "Pending Grooming Today", value: bookings.filter(b => b.bookingType === "grooming" && b.date === todayDate && b.status === "pending").length, href: "dailyoverview.html" },
+    { icon: "payment-card.png", label: "Pending Payment Verification", value: realPayments.filter(p => p.status === "Pending").length, href: "payment.html" },
+    { icon: "list-view.png", label: "Pending Leave Requests", value: leaveRequests.filter(lv => lv.status === "pending").length, href: "staff.html" }
   ];
 
   q("systemQueueSnapshotList").innerHTML = rows.map(r => `
@@ -5357,16 +6117,16 @@ function renderSystemQueueSnapshot() {
   `).join("");
 }
 
-const SYSTEM_QUEUE_COLORS = { grooming: "#3B82F6", enquiries: "#10B981", loyalty: "#D97706", payment: "#7C3AED", leave: "#DC2626" };
+const SYSTEM_QUEUE_COLORS = { grooming: "#3B82F6", payment: "#7C3AED", leave: "#DC2626" };
 
 function renderSystemQueueMix() {
+  // Only these 3 categories have a real pending concept — your
+  // messages/loyalty tables have no pending workflow at all.
   const todayDate = getToday();
-  const labels = { grooming: "Grooming", enquiries: "Enquiries", loyalty: "Loyalty", payment: "Payment", leave: "Leave" };
+  const labels = { grooming: "Grooming", payment: "Payment", leave: "Leave" };
   const counts = {
-    grooming: bookings.filter(b => b.serviceType === "grooming" && b.date === todayDate && b.status === "pending").length,
-    enquiries: enquiries.filter(e => e.status === "pending").length,
-    loyalty: loyaltyRequests.filter(r => r.status === "pending").length,
-    payment: paymentRecords.filter(p => p.status === "pending").length,
+    grooming: bookings.filter(b => b.bookingType === "grooming" && b.date === todayDate && b.status === "pending").length,
+    payment: realPayments.filter(p => p.status === "Pending").length,
     leave: leaveRequests.filter(lv => lv.status === "pending").length
   };
 
@@ -5408,7 +6168,9 @@ function renderSystemDashboard() {
   renderSystemQueueMix();
 }
 
-function initAnalyticsDashboard() {
+async function initAnalyticsDashboard() {
+  await loadRealDashboardData();
+
   document.querySelectorAll("#dashboardPeriodToggle .tab-btn").forEach(btn => {
     btn.addEventListener("click", () => {
       document.querySelectorAll("#dashboardPeriodToggle .tab-btn").forEach(b => b.classList.remove("active"));

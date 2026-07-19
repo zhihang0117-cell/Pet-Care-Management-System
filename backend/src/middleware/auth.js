@@ -1,20 +1,24 @@
 import "dotenv/config";
 
-const DEFAULT_COMPANY_ID = Number(process.env.DEFAULT_COMPANY_ID || 1);
-
 /**
- * Every table in your schema has a company_id column (multi-tenant). Real
- * logins should set req.companyId from the authenticated account's
- * company_id (see the accounts table) instead of trusting a header. For now,
- * this reads it from an `x-company-id` header so you can test multiple
- * companies from Postman/curl, and falls back to DEFAULT_COMPANY_ID.
+ * Every table in your schema has a company_id column (multi-tenant). This
+ * middleware is ONLY used for the /api/llm/* routes (see server.js) — an LLM
+ * agent isn't a logged-in human with a session, so it has no token to derive
+ * a company from. Whatever system prompt/session sets up the agent must tell
+ * it which business it's acting for, and it must send that as `x-company-id`.
  *
- * TODO when you wire up real auth: replace this with middleware that
- * verifies a session/JWT and looks up accounts.company_id server-side.
+ * No default/fallback on purpose: this is a B2B multi-tenant product, so a
+ * request that doesn't say which company it's for should fail loudly, not
+ * silently fall back to some company and risk touching the wrong tenant's
+ * data. Every other route uses requireAuthUser instead (middleware/authUser.js),
+ * which derives company_id from the real logged-in user's token server-side.
  */
-export function resolveCompany(req, _res, next) {
+export function resolveCompany(req, res, next) {
   const headerValue = req.header("x-company-id");
-  req.companyId = headerValue ? Number(headerValue) : DEFAULT_COMPANY_ID;
+  if (!headerValue) {
+    return res.status(400).json({ error: "Missing x-company-id header." });
+  }
+  req.companyId = Number(headerValue);
   next();
 }
 

@@ -55,11 +55,40 @@ const api = {
     api.post(`/payments/${paymentId}/verify`, { coupon_id: couponId, staff_id: staffId }),
 
   listBookings: (type, filters = {}) => api.get(`/bookings/${type}?${new URLSearchParams(filters)}`),
+  getBooking: (type, id) => api.get(`/bookings/${type}/${id}`),
   createBooking: (type, data) => api.post(`/bookings/${type}`, data),
   updateBooking: (type, id, data) => api.patch(`/bookings/${type}/${id}`, data),
+  deleteBooking: (type, id) => api.del(`/bookings/${type}/${id}`),
 
   listCoupons: () => api.get("/coupons"),
+  createCoupon: (data) => api.post("/coupons", data),
+  updateCoupon: (id, data) => api.patch(`/coupons/${id}`, data),
+  deleteCoupon: (id) => api.del(`/coupons/${id}`),
+
   listMembers: (filters = {}) => api.get(`/member-info?${new URLSearchParams(filters)}`),
+  listRedemptions: (filters = {}) => api.get(`/redemptions?${new URLSearchParams(filters)}`),
+
+  listPets: (filters = {}) => api.get(`/pets?${new URLSearchParams(filters)}`),
+  createPet: (data) => api.post("/pets", data),
+  updatePet: (id, data) => api.patch(`/pets/${id}`, data),
+  deletePet: (id) => api.del(`/pets/${id}`),
+
+  listCustomers: (filters = {}) => api.get(`/customers?${new URLSearchParams(filters)}`),
+  createCustomer: (data) => api.post("/customers", data),
+  updateCustomer: (id, data) => api.patch(`/customers/${id}`, data),
+  deleteCustomer: (id) => api.del(`/customers/${id}`),
+
+  listChatMessages: (filters = {}) => api.get(`/chat-messages?${new URLSearchParams(filters)}`),
+
+  listStaff: (filters = {}) => api.get(`/staff?${new URLSearchParams(filters)}`),
+  createStaff: (data) => api.post("/staff", data),
+  updateStaff: (id, data) => api.patch(`/staff/${id}`, data),
+  deleteStaff: (id) => api.del(`/staff/${id}`),
+
+  listLeaveRequests: (filters = {}) => api.get(`/leave-requests?${new URLSearchParams(filters)}`),
+  createLeaveRequest: (data) => api.post("/leave-requests", data),
+  decideLeaveRequest: (id, status, reviewedByStaffId) =>
+    api.post(`/leave-requests/${id}/decision`, { status, reviewedByStaffId }),
 
   dashboardSummary: () => api.get("/dashboard/summary"),
   dashboardRevenue: (period) => api.get(`/dashboard/revenue?period=${period}`),

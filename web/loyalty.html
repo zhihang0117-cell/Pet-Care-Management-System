@@ -85,6 +85,23 @@
       </div>
     </section>
 
+    <!-- KPI date-range filter -->
+    <section class="bk-section bk-section-slim">
+      <div class="bk-view-header">
+        <div class="bk-tab-group" id="loyaltyMetricsPeriodToggle">
+          <button class="tab-btn active" data-period="daily">Daily</button>
+          <button class="tab-btn" data-period="weekly">Weekly</button>
+          <button class="tab-btn" data-period="monthly">Monthly</button>
+        </div>
+        <div class="calendar-nav-controls">
+          <button class="btn btn-secondary" id="loyaltyMetricsPrevBtn">←</button>
+          <button class="btn btn-primary" id="loyaltyMetricsTodayBtn" style="font-size:0.78rem;">Today</button>
+          <button class="btn btn-secondary" id="loyaltyMetricsNextBtn">→</button>
+          <span class="overview-chip" id="loyaltyMetricsRangeChip" style="margin:0 0 0 6px;"></span>
+        </div>
+      </div>
+    </section>
+
     <!-- KPI Cards -->
     <section class="bk-section bk-section-slim">
       <div class="bk-kpi-grid">
@@ -94,9 +111,9 @@
           <small style="font-size:0.78rem;color:var(--text-muted);">Enrolled in loyalty program</small>
         </div>
         <div class="metric-card" style="border-color:#FEF3C7;">
-          <h3 style="color:#92400E;">Pending Approvals</h3>
+          <h3 style="color:#92400E;">Total Redemptions</h3>
           <p id="loyaltyPendingCount">0</p>
-          <small style="font-size:0.78rem;color:var(--text-muted);">Redemptions &amp; new sign-ups awaiting review</small>
+          <small style="font-size:0.78rem;color:var(--text-muted);">Point-spending transactions in range</small>
         </div>
         <div class="metric-card">
           <h3>Gold+ Members</h3>
@@ -106,7 +123,7 @@
         <div class="metric-card">
           <h3>Points Redeemed</h3>
           <p id="loyaltyPointsRedeemed">0</p>
-          <small style="font-size:0.78rem;color:var(--text-muted);">Total points redeemed to date</small>
+          <small style="font-size:0.78rem;color:var(--text-muted);">Total points redeemed in range</small>
         </div>
       </div>
     </section>
@@ -114,26 +131,26 @@
     <!-- Filter tabs -->
     <section class="bk-section bk-section-slim">
       <div class="bk-tab-group" id="loyaltyTabs">
-        <button class="tab-btn active" data-panel="pending"><img src="icon/time.png" alt="" class="tab-icon">Pending List</button>
+        <button class="tab-btn active" data-panel="pending"><img src="icon/time.png" alt="" class="tab-icon">Redemption History</button>
         <button class="tab-btn" data-panel="members"><img src="icon/loyalty-reward-gift.png" alt="" class="tab-icon">Member List</button>
         <button class="tab-btn" data-panel="rules"><img src="icon/settings.png" alt="" class="tab-icon">Point &amp; Redemption Rules</button>
       </div>
     </section>
 
-    <!-- Pending List -->
+    <!-- Redemption History -->
     <section class="bk-section" id="loyaltyPendingPanel">
       <div class="bk-view-header" style="margin-bottom:16px;">
         <div>
-          <h2 style="font-family:var(--font-serif);font-size:1.15rem;font-weight:700;margin-bottom:2px;">Pending Approvals</h2>
-          <p style="font-size:0.78rem;color:var(--text-muted);">Point redemption requests and new member registrations awaiting approval</p>
+          <h2 style="font-family:var(--font-serif);font-size:1.15rem;font-weight:700;margin-bottom:2px;">Redemption History</h2>
+          <p style="font-size:0.78rem;color:var(--text-muted);">Every point-earning or point-spending transaction, logged automatically when a payment is verified</p>
         </div>
-        <span id="loyaltyPendingRecordCount" style="font-size:0.78rem;font-weight:700;color:var(--text-muted);white-space:nowrap;">0 pending</span>
+        <span id="loyaltyPendingRecordCount" style="font-size:0.78rem;font-weight:700;color:var(--text-muted);white-space:nowrap;">0 records</span>
       </div>
       <div class="bk-table-wrap">
         <table class="bk-table">
           <thead>
             <tr>
-              <th>Request ID</th><th>Member</th><th>Type</th><th>Detail</th><th>Requested At</th><th>Action</th>
+              <th>Redemption ID</th><th>Member</th><th>Points Earned</th><th>Points Spent</th><th>Coupon Used</th>
             </tr>
           </thead>
           <tbody id="loyaltyPendingBody"></tbody>
@@ -171,11 +188,7 @@
         </div>
       </div>
       <div style="display:flex;gap:12px;flex-wrap:wrap;align-items:flex-end;">
-        <div class="form-group" style="max-width:220px;">
-          <label>Points earned per RM1 spent</label>
-          <input type="number" id="loyaltyEarnRateInput" min="0" step="0.1" />
-        </div>
-        <button class="btn btn-primary" onclick="saveLoyaltyEarnRate()" style="height:40px;">Save Rate</button>
+        <p style="font-size:0.85rem;color:var(--text-muted);">Configured server-side via the <code>LOYALTY_EARN_RATE</code> environment variable — not editable from this screen.</p>
       </div>
 
       <div class="bk-view-header" style="margin:28px 0 16px;padding-top:20px;border-top:1px solid var(--accent-sand);">
@@ -211,6 +224,9 @@
   </div>
 </div>
 
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js"></script>
+<script src="supabase-config.js"></script>
+<script src="api-client.js"></script>
 <script src="auth.js"></script>
 <script src="common.js"></script>
 </body>

@@ -245,8 +245,10 @@ before responding).
 ## 9. Before going to production
 
 - [ ] Run all three SQL files, in order (see README).
-- [ ] Decide what happens to `DEFAULT_COMPANY_ID`/`resolveCompany` — it's
-      now only used by `/api/llm/*`; make sure nothing else still relies on it.
+- [x] `DEFAULT_COMPANY_ID`/`resolveCompany` — resolved: the silent fallback
+      was removed, `x-company-id` is now required for `/api/llm/*` (400 if
+      missing) so a misconfigured agent fails loudly instead of touching the
+      wrong tenant's data.
 - [ ] Rotate `LLM_API_KEY` to a long random value and keep it out of any
       client-side/public code — it should only ever live in your LLM
       agent's server-side config.

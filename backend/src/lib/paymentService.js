@@ -21,6 +21,29 @@ export async function findMemberForPet(companyId, petId) {
   return member || null;
 }
 
+/**
+ * pet -> customer -> loyalty member, all three rows. Used by getPaymentDetail
+ * so the frontend gets pet_name/customer full_name in one call instead of
+ * three separate round trips per row (payment has no direct customer_id —
+ * see backend/README.md "Known gaps to come back to").
+ */
+export async function findPetCustomerMember(companyId, petId) {
+  const { data: pet } = await supabase
+    .from("pet")
+    .select("*")
+    .eq("company_id", companyId)
+    .eq("pet_id", petId)
+    .maybeSingle();
+  if (!pet) return { pet: null, customer: null, member: null };
+
+  const [{ data: customer }, { data: member }] = await Promise.all([
+    supabase.from("customer").select("*").eq("company_id", companyId).eq("customer_id", pet.customer_id).maybeSingle(),
+    supabase.from("loyaltymember").select("*").eq("company_id", companyId).eq("customer_id", pet.customer_id).maybeSingle(),
+  ]);
+
+  return { pet, customer: customer || null, member: member || null };
+}
+
 export async function getPaymentDetail(companyId, paymentId) {
   const { data: payment, error } = await supabase
     .from("payment")
@@ -35,9 +58,11 @@ export async function getPaymentDetail(companyId, paymentId) {
   }
 
   const bookingInfo = await findBookingByPaymentId(companyId, paymentId);
-  const member = bookingInfo ? await findMemberForPet(companyId, bookingInfo.booking.pet_id) : null;
+  const { pet, customer, member } = bookingInfo
+    ? await findPetCustomerMember(companyId, bookingInfo.booking.pet_id)
+    : { pet: null, customer: null, member: null };
 
-  return { payment, bookingType: bookingInfo?.type || null, booking: bookingInfo?.booking || null, member };
+  return { payment, bookingType: bookingInfo?.type || null, booking: bookingInfo?.booking || null, pet, customer, member };
 }
 
 export async function quoteVoucher(companyId, paymentId, couponId) {

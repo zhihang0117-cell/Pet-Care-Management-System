@@ -85,78 +85,76 @@
       </div>
     </section>
 
+    <!-- KPI date-range filter -->
+    <section class="bk-section bk-section-slim">
+      <div class="bk-view-header">
+        <div class="bk-tab-group" id="enquiryMetricsPeriodToggle">
+          <button class="tab-btn active" data-period="daily">Daily</button>
+          <button class="tab-btn" data-period="weekly">Weekly</button>
+          <button class="tab-btn" data-period="monthly">Monthly</button>
+        </div>
+        <div class="calendar-nav-controls">
+          <button class="btn btn-secondary" id="enquiryMetricsPrevBtn">←</button>
+          <button class="btn btn-primary" id="enquiryMetricsTodayBtn" style="font-size:0.78rem;">Today</button>
+          <button class="btn btn-secondary" id="enquiryMetricsNextBtn">→</button>
+          <span class="overview-chip" id="enquiryMetricsRangeChip" style="margin:0 0 0 6px;"></span>
+        </div>
+      </div>
+    </section>
+
     <!-- KPI Cards -->
     <section class="bk-section bk-section-slim">
       <div class="bk-kpi-grid">
         <div class="metric-card">
-          <h3>Total Enquiries</h3>
+          <h3>Total Messages</h3>
           <p id="enquiryTotalCount">0</p>
-          <small style="font-size:0.78rem;color:var(--text-muted);">All-time, all channels</small>
-        </div>
-        <div class="metric-card" style="border-color:#FEF3C7;">
-          <h3 style="color:#92400E;">Pending Response</h3>
-          <p id="enquiryPendingCount">0</p>
-          <small style="font-size:0.78rem;color:var(--text-muted);">Awaiting a reply</small>
+          <small style="font-size:0.78rem;color:var(--text-muted);">In selected range</small>
         </div>
         <div class="metric-card">
-          <h3>Resolution Rate</h3>
-          <p id="enquiryResolutionRate">0%</p>
-          <small style="font-size:0.78rem;color:var(--text-muted);">System performance, all-time</small>
+          <h3>Booking</h3>
+          <p id="enquiryBookingCount">0</p>
+          <small style="font-size:0.78rem;color:var(--text-muted);">Booking-related messages</small>
         </div>
         <div class="metric-card">
-          <h3>HITL Rate</h3>
-          <p id="enquiryHitlRate">0%</p>
-          <small style="font-size:0.78rem;color:var(--text-muted);">Resolved cases needing a human</small>
+          <h3>Policy</h3>
+          <p id="enquiryPolicyCount">0</p>
+          <small style="font-size:0.78rem;color:var(--text-muted);">Policy-related messages</small>
+        </div>
+        <div class="metric-card">
+          <h3>Loyalty</h3>
+          <p id="enquiryLoyaltyCount">0</p>
+          <small style="font-size:0.78rem;color:var(--text-muted);">Loyalty-related messages</small>
         </div>
       </div>
     </section>
 
-    <!-- Filter tabs -->
+    <!-- Intent filter tabs -->
     <section class="bk-section bk-section-slim">
       <div class="bk-tab-group" id="enquiryTabs">
-        <button class="tab-btn active" data-panel="pending"><img src="icon/time.png" alt="" class="tab-icon">Pending List</button>
-        <button class="tab-btn" data-panel="history"><img src="icon/list-view.png" alt="" class="tab-icon">History</button>
+        <button class="tab-btn active" data-filter="all">All</button>
+        <button class="tab-btn" data-filter="booking">Booking</button>
+        <button class="tab-btn" data-filter="policy">Policy</button>
+        <button class="tab-btn" data-filter="loyalty">Loyalty</button>
       </div>
     </section>
 
-    <!-- Pending List -->
+    <!-- Message Log -->
     <section class="bk-section" id="enquiryPendingPanel">
       <div class="bk-view-header" style="margin-bottom:16px;">
         <div>
-          <h2 style="font-family:var(--font-serif);font-size:1.15rem;font-weight:700;margin-bottom:2px;">Pending Enquiries</h2>
-          <p style="font-size:0.78rem;color:var(--text-muted);">Awaiting a reply, tracked against a 3-hour reply SLA</p>
+          <h2 style="font-family:var(--font-serif);font-size:1.15rem;font-weight:700;margin-bottom:2px;">Message Log</h2>
+          <p style="font-size:0.78rem;color:var(--text-muted);">Inbound WhatsApp messages, classified by intent</p>
         </div>
-        <span id="enquiryPendingRecordCount" style="font-size:0.78rem;font-weight:700;color:var(--text-muted);white-space:nowrap;">0 pending</span>
+        <span id="enquiryPendingRecordCount" style="font-size:0.78rem;font-weight:700;color:var(--text-muted);white-space:nowrap;">0 records</span>
       </div>
       <div class="bk-table-wrap">
         <table class="bk-table">
           <thead>
             <tr>
-              <th>Enquiry ID</th><th>Customer</th><th>Message</th><th>Received At</th><th>SLA</th><th>Action</th>
+              <th>Message ID</th><th>Customer</th><th>Message</th><th>Intent</th><th>Received At</th><th>Action</th>
             </tr>
           </thead>
           <tbody id="enquiryPendingBody"></tbody>
-        </table>
-      </div>
-    </section>
-
-    <!-- History -->
-    <section class="bk-section hidden" id="enquiryHistoryPanel">
-      <div class="bk-view-header" style="margin-bottom:16px;">
-        <div>
-          <h2 style="font-family:var(--font-serif);font-size:1.15rem;font-weight:700;margin-bottom:2px;">Enquiry History</h2>
-          <p style="font-size:0.78rem;color:var(--text-muted);">All enquiries, pending and resolved — SLA no longer applies once resolved</p>
-        </div>
-        <span id="enquiryHistoryRecordCount" style="font-size:0.78rem;font-weight:700;color:var(--text-muted);white-space:nowrap;">0 records</span>
-      </div>
-      <div class="bk-table-wrap">
-        <table class="bk-table">
-          <thead>
-            <tr>
-              <th>Enquiry ID</th><th>Customer</th><th>Message</th><th>Received At</th><th>Handled By</th><th>Status</th><th>Action</th>
-            </tr>
-          </thead>
-          <tbody id="enquiryHistoryBody"></tbody>
         </table>
       </div>
     </section>
@@ -175,6 +173,9 @@
   </div>
 </div>
 
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js"></script>
+<script src="supabase-config.js"></script>
+<script src="api-client.js"></script>
 <script src="auth.js"></script>
 <script src="common.js"></script>
 </body>

@@ -61,6 +61,61 @@ export async function findBookingByPaymentId(companyId, paymentId) {
 }
 
 /**
+ * Bulk version of findBookingByPaymentId + pet/customer name lookup, for
+ * list views (e.g. GET /api/payments) with potentially hundreds of rows.
+ * Does a constant ~5 queries total (one per booking table, one for pets,
+ * one for customers) instead of 3+ queries PER ROW — avoids an N+1 that
+ * would be fine for a handful of pending payments but not for a full
+ * transaction history.
+ *
+ * Returns a Map<payment_id, { petName, customerName }>.
+ */
+export async function findNamesForPayments(companyId, paymentIds) {
+  const result = new Map();
+  if (!paymentIds.length) return result;
+
+  const petIdByPaymentId = new Map();
+  await Promise.all(
+    Object.values(BOOKING_TYPES).map(async (cfg) => {
+      const { data } = await supabase
+        .from(cfg.table)
+        .select(`pet_id, ${cfg.paymentIdColumn}`)
+        .eq("company_id", companyId)
+        .in(cfg.paymentIdColumn, paymentIds);
+      (data || []).forEach((row) => petIdByPaymentId.set(row[cfg.paymentIdColumn], row.pet_id));
+    })
+  );
+
+  const petIds = [...new Set(petIdByPaymentId.values())];
+  if (!petIds.length) return result;
+
+  const { data: pets } = await supabase
+    .from("pet")
+    .select("pet_id, pet_name, customer_id")
+    .eq("company_id", companyId)
+    .in("pet_id", petIds);
+
+  const petById = new Map((pets || []).map((p) => [p.pet_id, p]));
+  const customerIds = [...new Set((pets || []).map((p) => p.customer_id))];
+
+  const { data: customers } = await supabase
+    .from("customer")
+    .select("customer_id, full_name")
+    .eq("company_id", companyId)
+    .in("customer_id", customerIds.length ? customerIds : [-1]);
+
+  const customerById = new Map((customers || []).map((c) => [c.customer_id, c]));
+
+  for (const [paymentId, petId] of petIdByPaymentId.entries()) {
+    const pet = petById.get(petId);
+    const customer = pet ? customerById.get(pet.customer_id) : null;
+    result.set(paymentId, { petName: pet?.pet_name || null, customerName: customer?.full_name || null });
+  }
+
+  return result;
+}
+
+/**
  * Creates a booking row + its linked payment row, with the final
  * amount auto-computed from base price + add-on (no voucher — a voucher is
  * applied later, at verification time, via paymentService.verifyPayment).

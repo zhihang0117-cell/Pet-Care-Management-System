@@ -78,7 +78,21 @@
         <button class="tab-btn" data-filter="grooming"><img src="icon/grooming-scissors.png" alt="" class="tab-icon">Grooming</button>
         <button class="tab-btn" data-filter="boarding"><img src="icon/boarding.png" alt="" class="tab-icon">Boarding</button>
         <button class="tab-btn" data-filter="daycare"><img src="icon/dog-play.png" alt="" class="tab-icon">Daycare</button>
-      </div> 
+      </div>
+
+      <div class="bk-view-header" style="margin-top:20px;padding-top:20px;border-top:1px solid var(--accent-sand);">
+        <div class="bk-tab-group" id="dailyOverviewPeriodToggle">
+          <button class="tab-btn active" data-period="daily">Daily</button>
+          <button class="tab-btn" data-period="weekly">Weekly</button>
+          <button class="tab-btn" data-period="monthly">Monthly</button>
+        </div>
+        <div class="calendar-nav-controls">
+          <button class="btn btn-secondary" id="dailyOverviewPrevBtn">←</button>
+          <button class="btn btn-primary" id="dailyOverviewTodayBtn" style="font-size:0.78rem;">Today</button>
+          <button class="btn btn-secondary" id="dailyOverviewNextBtn">→</button>
+          <span class="overview-chip" id="dailyOverviewRangeChip" style="margin:0 0 0 6px;"></span>
+        </div>
+      </div>
     </section>
 
     <!-- Pending action cards -->
@@ -91,13 +105,8 @@
 
       <section class="bk-section">
         <div class="calendar-nav-row">
-          <h3 class="overview-panel-title" style="margin-bottom:0;">Daily Booking Schedule</h3>
-          <div class="calendar-nav-controls">
-            <button class="btn btn-secondary" id="calPrevBtn">←</button>
-            <button class="btn btn-primary" id="calTodayBtn" style="font-size:0.78rem;">Today</button>
-            <button class="btn btn-secondary" id="calNextBtn">→</button>
-            <span class="overview-panel-sub" id="scheduleWeekLabel" style="margin:0 0 0 6px;white-space:nowrap;"></span>
-          </div>
+          <h3 class="overview-panel-title" style="margin-bottom:0;">Weekly Booking Schedule</h3>
+          <span class="overview-panel-sub" id="scheduleWeekLabel" style="white-space:nowrap;"></span>
         </div>
         <div class="schedule-wrap">
           <div class="schedule-head-row" id="scheduleHead"></div>
@@ -129,10 +138,10 @@
       <section class="bk-section">
         <div class="bk-view-header" style="margin-bottom:20px;">
           <div>
-            <h3 class="overview-panel-title" style="margin-bottom:2px;">Today's Service Load</h3>
-            <p class="overview-panel-sub" style="margin-bottom:0;">Bookings scheduled for today, by service type. Click a bar for details.</p>
+            <h3 class="overview-panel-title" style="margin-bottom:2px;">Service Load</h3>
+            <p class="overview-panel-sub" style="margin-bottom:0;">Bookings in the selected period, by service type. Click a bar for details.</p>
           </div>
-          <span id="serviceLoadTotal" style="font-size:0.78rem;font-weight:700;color:var(--text-muted);white-space:nowrap;">0 bookings today</span>
+          <span id="serviceLoadTotal" style="font-size:0.78rem;font-weight:700;color:var(--text-muted);white-space:nowrap;">0 bookings</span>
         </div>
         <div class="bar-label-row" id="serviceLoadChart"></div>
       </section>
@@ -154,8 +163,8 @@
     <section class="bk-section">
       <div class="bk-view-header">
         <div>
-          <h3 class="overview-panel-title" style="margin-bottom:2px;">Today's Action Queue</h3>
-          <p class="overview-panel-sub" style="margin-bottom:0;">Sorted by time. SLA countdown shown for pending service, enquiries &amp; loyalty. Resolve items directly, or open the relevant workspace.</p>
+          <h3 class="overview-panel-title" style="margin-bottom:2px;">Action Queue</h3>
+          <p class="overview-panel-sub" style="margin-bottom:0;">Sorted by time, for the selected period. SLA countdown shown for pending service, enquiries &amp; loyalty. Resolve items directly, or open the relevant workspace.</p>
         </div>
         <span id="queueCount" style="font-size:0.78rem;font-weight:700;color:var(--text-muted);white-space:nowrap;">0 items</span>
       </div>
@@ -187,6 +196,9 @@
   </div>
 </div>
 
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js"></script>
+<script src="supabase-config.js"></script>
+<script src="api-client.js"></script>
 <script src="auth.js"></script>
 <script src="common.js"></script>
 </body>

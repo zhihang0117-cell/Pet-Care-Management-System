@@ -74,6 +74,20 @@
         <button class="tab-btn" data-filter="boarding"><img src="icon/boarding.png" alt="" class="tab-icon">Boarding</button>
         <button class="tab-btn" data-filter="daycare"><img src="icon/dog-play.png" alt="" class="tab-icon">Daycare</button>
       </div>
+
+      <div class="bk-view-header" style="margin-top:20px;padding-top:20px;border-top:1px solid var(--accent-sand);">
+        <div class="bk-tab-group" id="bookingMetricsPeriodToggle">
+          <button class="tab-btn active" data-period="daily">Daily</button>
+          <button class="tab-btn" data-period="weekly">Weekly</button>
+          <button class="tab-btn" data-period="monthly">Monthly</button>
+        </div>
+        <div class="calendar-nav-controls">
+          <button class="btn btn-secondary" id="bookingMetricsPrevBtn">←</button>
+          <button class="btn btn-primary" id="bookingMetricsTodayBtn" style="font-size:0.78rem;">Today</button>
+          <button class="btn btn-secondary" id="bookingMetricsNextBtn">→</button>
+          <span class="overview-chip" id="bookingMetricsRangeChip" style="margin:0 0 0 6px;"></span>
+        </div>
+      </div>
     </section>
 
     <!-- KPI Cards -->
@@ -167,14 +181,20 @@
     <h2>Booking Details</h2>
     <form id="bookingForm">
       <input type="hidden" id="bookingId" />
+      <input type="hidden" id="selectedPetId" />
       <div class="form-grid-2">
+        <div class="form-group full" style="position:relative;">
+          <label>Find Pet / Customer</label>
+          <input type="text" id="petSearchInput" placeholder="Type a pet or customer name…" autocomplete="off" />
+          <div id="petSearchResults" class="bk-search-results hidden" style="position:absolute;z-index:20;background:var(--surface-white,#fff);border:1px solid var(--accent-sand);border-radius:8px;max-height:220px;overflow-y:auto;width:100%;box-shadow:0 6px 16px rgba(0,0,0,0.08);"></div>
+        </div>
         <div class="form-group">
           <label>Customer Name</label>
-          <input type="text" id="customerName" required />
+          <input type="text" id="customerName" readonly required />
         </div>
         <div class="form-group">
           <label>Pet Name</label>
-          <input type="text" id="petName" required />
+          <input type="text" id="petName" readonly required />
         </div>
         <div class="form-group">
           <label>Service Type</label>
@@ -185,36 +205,8 @@
           </select>
         </div>
         <div class="form-group">
-          <label>Required Service</label>
-          <select id="requiredService" required></select>
-        </div>
-        <div class="form-group">
           <label>Staff Name</label>
           <select id="staffName" required></select>
-        </div>
-        <div class="form-group room-field hidden">
-          <label>Room</label>
-          <select id="roomName"></select>
-        </div>
-        <div class="form-group">
-          <label>Date</label>
-          <input type="date" id="bookingDate" required />
-        </div>
-        <div class="form-group">
-          <label>Time</label>
-          <input type="time" id="bookingTime" required />
-        </div>
-        <div class="form-group boarding-field hidden">
-          <label>Check-in Date</label>
-          <input type="date" id="checkInDate" />
-        </div>
-        <div class="form-group boarding-field hidden">
-          <label>Check-out Date</label>
-          <input type="date" id="checkOutDate" />
-        </div>
-        <div class="form-group">
-          <label>Duration (min)</label>
-          <input type="number" id="duration" min="1" required />
         </div>
         <div class="form-group">
           <label>Status</label>
@@ -226,12 +218,93 @@
             <option value="cancelled">Cancelled</option>
           </select>
         </div>
+
+        <!-- Shared date (grooming + daycare use booking_date) -->
+        <div class="form-group date-field">
+          <label>Date</label>
+          <input type="date" id="bookingDate" />
+        </div>
+
+        <!-- Grooming-only -->
+        <div class="form-group grooming-only hidden">
+          <label>Time</label>
+          <input type="time" id="bookingTime" />
+        </div>
+        <div class="form-group grooming-only hidden">
+          <label>Service Name</label>
+          <input type="text" id="groomingServiceName" placeholder="e.g. Bathing" />
+        </div>
+        <div class="form-group grooming-only hidden">
+          <label>Price (RM)</label>
+          <input type="number" id="groomingPrice" min="0" step="0.01" />
+        </div>
+        <div class="form-group grooming-only hidden">
+          <label>Add-on (optional)</label>
+          <input type="text" id="groomingAddOn" placeholder="e.g. Nail Clipping" />
+        </div>
+        <div class="form-group grooming-only hidden">
+          <label>Add-on Price (RM)</label>
+          <input type="number" id="groomingAddOnPrice" min="0" step="0.01" />
+        </div>
+
+        <!-- Daycare-only -->
+        <div class="form-group daycare-only hidden">
+          <label>Check-in Time</label>
+          <input type="time" id="daycareCheckInTime" />
+        </div>
+        <div class="form-group daycare-only hidden">
+          <label>Check-out Time</label>
+          <input type="time" id="daycareCheckOutTime" />
+        </div>
+        <div class="form-group daycare-only hidden">
+          <label>Package Type</label>
+          <input type="text" id="daycarePackageType" placeholder="e.g. Half-Day Daycare" />
+        </div>
+        <div class="form-group daycare-only hidden">
+          <label>Price (RM)</label>
+          <input type="number" id="daycarePrice" min="0" step="0.01" />
+        </div>
+
+        <!-- Boarding-only -->
+        <div class="form-group boarding-only hidden">
+          <label>Check-in Date</label>
+          <input type="date" id="checkInDate" />
+        </div>
+        <div class="form-group boarding-only hidden">
+          <label>Check-in Time</label>
+          <input type="time" id="checkInTime" />
+        </div>
+        <div class="form-group boarding-only hidden">
+          <label>Check-out Date</label>
+          <input type="date" id="checkOutDate" />
+        </div>
+        <div class="form-group boarding-only hidden">
+          <label>Check-out Time</label>
+          <input type="time" id="checkOutTime" />
+        </div>
+        <div class="form-group boarding-only hidden">
+          <label>Room Type</label>
+          <input type="text" id="boardingRoomType" placeholder="e.g. Mars Room" />
+        </div>
+        <div class="form-group boarding-only hidden">
+          <label>Price per Night (RM)</label>
+          <input type="number" id="boardingPricePerNight" min="0" step="0.01" />
+        </div>
+        <div class="form-group boarding-only hidden">
+          <label>Feeding Instruction</label>
+          <input type="text" id="boardingFeeding" placeholder="e.g. Standard kibbles" />
+        </div>
+        <div class="form-group boarding-only hidden">
+          <label>Medical Instruction</label>
+          <input type="text" id="boardingMedical" placeholder="e.g. -" />
+        </div>
+
         <div class="form-group">
           <label>Amount (RM)</label>
           <input type="number" id="amount" min="0" step="0.01" readonly />
         </div>
         <div class="form-group full">
-          <label>Special Note</label>
+          <label>Notes</label>
           <textarea id="specialNote" rows="3"></textarea>
         </div>
       </div>
@@ -246,6 +319,9 @@
   </div>
 </div>
 
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js"></script>
+<script src="supabase-config.js"></script>
+<script src="api-client.js"></script>
 <script src="auth.js"></script>
 <script src="common.js"></script>
 </body>
