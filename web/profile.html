@@ -123,7 +123,7 @@
       <div class="bk-view-header" style="margin-bottom:16px;">
         <div>
           <h2 style="font-family:var(--font-serif);font-size:1.15rem;font-weight:700;margin-bottom:2px;">Customer Profile List</h2>
-          <p style="font-size:0.78rem;color:var(--text-muted);">Database table: customers</p>
+          <p style="font-size:0.78rem;color:var(--text-muted);">Database table: customer</p>
         </div>
         <span id="customerRecordCount" style="font-size:0.78rem;font-weight:700;color:var(--text-muted);white-space:nowrap;">0 records</span>
       </div>
@@ -132,10 +132,8 @@
           <thead>
             <tr>
               <th>Customer Profile</th>
-              <th>Customer ID</th>
               <th>Contact</th>
               <th>Last Booking Made</th>
-              <th>Linked Pets</th>
               <th>Total Bookings</th>
               <th>Action</th>
             </tr>
@@ -143,6 +141,7 @@
           <tbody id="customerTableBody"></tbody>
         </table>
       </div>
+      <div class="table-pagination" id="customerPagination"></div>
     </section>
 
     <!-- Pet Profile List -->
@@ -150,7 +149,7 @@
       <div class="bk-view-header" style="margin-bottom:16px;">
         <div>
           <h2 style="font-family:var(--font-serif);font-size:1.15rem;font-weight:700;margin-bottom:2px;">Pet Profile List</h2>
-          <p style="font-size:0.78rem;color:var(--text-muted);">Database table: pets, linked by customer_id foreign key</p>
+          <p style="font-size:0.78rem;color:var(--text-muted);">Database table: pet, linked by customer_id foreign key</p>
         </div>
         <span id="petRecordCount" style="font-size:0.78rem;font-weight:700;color:var(--text-muted);white-space:nowrap;">0 records</span>
       </div>
@@ -159,8 +158,6 @@
           <thead>
             <tr>
               <th>Pet Profile</th>
-              <th>Pet ID</th>
-              <th>Customer ID FK</th>
               <th>Owner</th>
               <th>Vaccination</th>
               <th>Special Care Note</th>
@@ -170,6 +167,7 @@
           <tbody id="petTableBody"></tbody>
         </table>
       </div>
+      <div class="table-pagination" id="petPagination"></div>
     </section>
 
   </main>

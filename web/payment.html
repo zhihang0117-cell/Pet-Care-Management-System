@@ -82,6 +82,12 @@
           style="flex:1;min-width:220px;max-width:none;border-radius:var(--radius-small);"
           placeholder="Search customer name, pet name, or payment ID…"
         />
+        <div class="page-date-filter" aria-label="Payment date filter">
+          <button class="btn btn-secondary" id="paymentDatePrevBtn" type="button" aria-label="Previous day">←</button>
+          <button class="btn btn-primary" id="paymentDateTodayBtn" type="button">Today</button>
+          <button class="btn btn-secondary" id="paymentDateNextBtn" type="button" aria-label="Next day">→</button>
+          <span class="overview-chip page-date-label" id="paymentDateLabel"></span>
+        </div>
       </div>
     </section>
 
@@ -118,12 +124,12 @@
         <div class="metric-card">
           <h3>Total Transactions</h3>
           <p id="paymentTotalCount">0</p>
-          <small style="font-size:0.78rem;color:var(--text-muted);">All recorded payments</small>
+          <small style="font-size:0.78rem;color:var(--text-muted);">Payments on selected date</small>
         </div>
         <div class="metric-card">
           <h3>Loyalty Discounts Given</h3>
           <p id="paymentLoyaltyDiscount">RM 0</p>
-          <small style="font-size:0.78rem;color:var(--text-muted);">Deducted via point redemption</small>
+          <small style="font-size:0.78rem;color:var(--text-muted);">Redeemed on selected date</small>
         </div>
       </div>
     </section>
@@ -141,7 +147,7 @@
       <div class="bk-view-header" style="margin-bottom:16px;">
         <div>
           <h2 style="font-family:var(--font-serif);font-size:1.15rem;font-weight:700;margin-bottom:2px;">Pending Verification</h2>
-          <p style="font-size:0.78rem;color:var(--text-muted);">Payments made by customers, awaiting staff confirmation</p>
+          <p style="font-size:0.78rem;color:var(--text-muted);">Payments made by customers, awaiting staff confirmation, tracked against a 5-hour verification SLA</p>
         </div>
         <span id="paymentPendingRecordCount" style="font-size:0.78rem;font-weight:700;color:var(--text-muted);white-space:nowrap;">0 pending</span>
       </div>
@@ -149,12 +155,13 @@
         <table class="bk-table">
           <thead>
             <tr>
-              <th>Payment ID</th><th>Customer</th><th>Service</th><th>Amount</th><th>Method</th><th>Date</th><th>Action</th>
+              <th>Payment ID</th><th>Customer</th><th>Service</th><th>Amount</th><th>Method</th><th>Date</th><th>SLA</th><th>Action</th>
             </tr>
           </thead>
           <tbody id="paymentPendingBody"></tbody>
         </table>
       </div>
+      <div class="table-pagination" id="paymentPendingPagination"></div>
     </section>
 
     <!-- Transaction History -->
@@ -176,6 +183,7 @@
           <tbody id="paymentHistoryBody"></tbody>
         </table>
       </div>
+      <div class="table-pagination" id="paymentHistoryPagination"></div>
     </section>
 
   </main>

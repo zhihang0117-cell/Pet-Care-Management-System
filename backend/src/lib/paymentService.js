@@ -2,6 +2,22 @@ import { supabase } from "../supabaseClient.js";
 import { computeFinalAmount, assertCanRedeem, EARN_RATE } from "./pricing.js";
 import { findBookingByPaymentId } from "./bookingService.js";
 
+/**
+ * Per-company earn rate, editable via loyalty.html -> PATCH /api/companies/me
+ * { settings: { loyalty_earn_rate } } (see routes/companies.js). Falls back
+ * to the LOYALTY_EARN_RATE env default when a company hasn't set its own.
+ */
+async function getEarnRateForCompany(companyId) {
+  const { data } = await supabase
+    .from("companies")
+    .select("settings_json")
+    .eq("company_id", companyId)
+    .single();
+  const configured = data?.settings_json?.loyalty_earn_rate;
+  const rate = configured !== undefined && configured !== null ? Number(configured) : EARN_RATE;
+  return Number.isFinite(rate) && rate >= 0 ? rate : 1;
+}
+
 /** pet -> customer -> loyalty member, so we can validate/deduct points. */
 export async function findMemberForPet(companyId, petId) {
   const { data: pet } = await supabase
@@ -58,11 +74,18 @@ export async function getPaymentDetail(companyId, paymentId) {
   }
 
   const bookingInfo = await findBookingByPaymentId(companyId, paymentId);
-  const { pet, customer, member } = bookingInfo
-    ? await findPetCustomerMember(companyId, bookingInfo.booking.pet_id)
-    : { pet: null, customer: null, member: null };
+  const member = bookingInfo ? await findMemberForPet(companyId, bookingInfo.booking.pet_id) : null;
+  const { data: pet } = bookingInfo
+    ? await supabase.from("pet").select("customer_id").eq("company_id", companyId).eq("pet_id", bookingInfo.booking.pet_id).maybeSingle()
+    : { data: null };
 
-  return { payment, bookingType: bookingInfo?.type || null, booking: bookingInfo?.booking || null, pet, customer, member };
+  return {
+    payment,
+    bookingType: bookingInfo?.type || null,
+    booking: bookingInfo?.booking || null,
+    member,
+    customerId: pet?.customer_id || member?.customer_id || null,
+  };
 }
 
 export async function quoteVoucher(companyId, paymentId, couponId) {
@@ -78,12 +101,17 @@ export async function quoteVoucher(companyId, paymentId, couponId) {
 
   let coupon = null;
   if (couponId) {
-    const { data } = await supabase
+    const { data, error } = await supabase
       .from("coupon")
       .select("*")
       .eq("company_id", companyId)
       .eq("coupon_id", couponId)
       .single();
+    if (error || !data) {
+      const err = new Error("Coupon/voucher not found.");
+      err.status = 404;
+      throw err;
+    }
     coupon = data;
     const member = await findMemberForPet(companyId, bookingInfo.booking.pet_id);
     assertCanRedeem(member, coupon);
@@ -98,29 +126,63 @@ export async function quoteVoucher(companyId, paymentId, couponId) {
  * points, logs the redemption, marks the payment Paid, and marks the
  * underlying booking Done — via the verify_payment() SQL function.
  */
-export async function verifyPayment({ companyId, paymentId, couponId, staffId }) {
+export async function verifyPayment({ companyId, paymentId, couponId, staffId, paymentMethod }) {
   const bookingInfo = await findBookingByPaymentId(companyId, paymentId);
   if (!bookingInfo) {
     const err = new Error("No booking found for this payment.");
     err.status = 404;
     throw err;
   }
+  if (bookingInfo.booking.booking_status === "Cancelled") {
+    const err = new Error("A cancelled booking cannot be paid. Reopen the booking first.");
+    err.status = 409;
+    throw err;
+  }
 
   const member = await findMemberForPet(companyId, bookingInfo.booking.pet_id);
-  if (!member) {
-    const err = new Error("No loyalty member found for this customer.");
-    err.status = 404;
+
+  const methodMap = {
+    Cash: "cash",
+    Card: "card",
+    "E-Wallet": "qr",
+    "Bank Transfer": "online",
+    Online: "online",
+  };
+  if (!methodMap[paymentMethod]) {
+    const err = new Error("Select a valid payment method.");
+    err.status = 400;
+    throw err;
+  }
+  const { data: company } = await supabase
+    .from("companies")
+    .select("settings_json")
+    .eq("company_id", companyId)
+    .single();
+  const acceptedMethods = company?.settings_json?.payment_methods;
+  if (acceptedMethods && acceptedMethods[methodMap[paymentMethod]] === false) {
+    const err = new Error(`${paymentMethod} is disabled in business settings.`);
+    err.status = 400;
     throw err;
   }
 
   let coupon = null;
   if (couponId) {
-    const { data } = await supabase
+    if (!member) {
+      const err = new Error("A loyalty member is required to redeem a voucher.");
+      err.status = 400;
+      throw err;
+    }
+    const { data, error } = await supabase
       .from("coupon")
       .select("*")
       .eq("company_id", companyId)
       .eq("coupon_id", couponId)
       .single();
+    if (error || !data) {
+      const err = new Error("Coupon/voucher not found.");
+      err.status = 404;
+      throw err;
+    }
     coupon = data;
     assertCanRedeem(member, coupon);
   }
@@ -129,33 +191,46 @@ export async function verifyPayment({ companyId, paymentId, couponId, staffId })
   const addOnPrice = bookingInfo.addOnPriceCol ? bookingInfo.booking[bookingInfo.addOnPriceCol] || 0 : 0;
   const { finalAmount } = computeFinalAmount(basePrice, addOnPrice, coupon);
 
-  const { error: updateError } = await supabase
-    .from("payment")
-    .update({ final_amount: finalAmount })
-    .eq("company_id", companyId)
-    .eq("payment_id", paymentId);
-  if (updateError) {
-    updateError.status = 400;
-    throw updateError;
-  }
-
+  const earnRate = await getEarnRateForCompany(companyId);
   const { data: result, error: rpcError } = await supabase.rpc("verify_payment", {
+    p_company_id: companyId,
     p_payment_id: paymentId,
-    p_loyalty_id: member.loyalty_id,
+    p_loyalty_id: member?.loyalty_id || null,
     p_coupon_id: couponId || null,
-    p_earn_rate: EARN_RATE,
+    p_earn_rate: earnRate,
     p_verified_by: staffId || null,
+    p_payment_method: paymentMethod,
+    p_final_amount: finalAmount,
   });
   if (rpcError) {
     rpcError.status = 400;
     throw rpcError;
   }
 
-  await supabase
-    .from(bookingInfo.table)
-    .update({ booking_status: "Done" })
-    .eq("company_id", companyId)
-    .eq(bookingInfo.idColumn, bookingInfo.booking[bookingInfo.idColumn]);
-
   return result;
+}
+
+/**
+ * Refunds a paid transaction through one database function so payment status,
+ * loyalty points, and the redemption ledger cannot drift apart.
+ */
+export async function refundPayment({ companyId, paymentId, staffId, reason }) {
+  const normalizedReason = String(reason || "").trim();
+  if (!normalizedReason) {
+    const err = new Error("A refund reason is required.");
+    err.status = 400;
+    throw err;
+  }
+
+  const { data, error } = await supabase.rpc("refund_payment", {
+    p_company_id: companyId,
+    p_payment_id: paymentId,
+    p_refunded_by: staffId || null,
+    p_refund_reason: normalizedReason,
+  });
+  if (error) {
+    error.status = 400;
+    throw error;
+  }
+  return data;
 }

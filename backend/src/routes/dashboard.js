@@ -45,7 +45,7 @@ dashboardRouter.get(
   "/summary",
   asyncHandler(async (req, res) => {
     const companyId = req.companyId;
-    const today = todayStr();
+    const today = req.query.date || todayStr();
 
     const bookingSummary = {};
     let todayBookingsTotal = 0;
@@ -65,7 +65,7 @@ dashboardRouter.get(
     }
 
     const [pendingPaymentsResult, loyaltyLedgerResult, pendingLeaveResult] = await Promise.all([
-      supabase.from("payment").select("*", { count: "exact", head: true }).eq("company_id", companyId).eq("status", "Pending"),
+      supabase.from("payment").select("*", { count: "exact", head: true }).eq("company_id", companyId).in("status", ["Pending", "Unpaid"]),
       // The redemption table is a historical ledger (rows are only ever created by
       // verify_payment), so this count is "total loyalty transactions so far", not
       // a pending queue — "pending approval" for loyalty lives on payment.status.
@@ -85,7 +85,7 @@ dashboardRouter.get(
 );
 
 /**
- * GET /api/dashboard/revenue?period=today|week|month
+ * GET /api/dashboard/revenue?period=today|week|month&anchor=YYYY-MM-DD
  * Sums payment.final_amount for status='Paid' payments whose `date`
  * falls in the period, filtered directly in SQL (see date note above).
  */
@@ -97,15 +97,22 @@ dashboardRouter.get(
     const pad = (n) => String(n).padStart(2, "0");
     const toIso = (d) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
 
-    const now = new Date();
+    const anchor = req.query.anchor || todayStr();
+    const anchorDate = new Date(`${anchor}T00:00:00`);
     let start;
+    let end;
     if (period === "today") {
-      start = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+      start = new Date(anchorDate);
+      end = new Date(anchorDate);
     } else if (period === "week") {
-      start = new Date(now);
-      start.setDate(start.getDate() - 7);
+      const diffToMonday = (anchorDate.getDay() + 6) % 7;
+      start = new Date(anchorDate);
+      start.setDate(anchorDate.getDate() - diffToMonday);
+      end = new Date(start);
+      end.setDate(start.getDate() + 6);
     } else {
-      start = new Date(now.getFullYear(), now.getMonth(), 1);
+      start = new Date(anchorDate.getFullYear(), anchorDate.getMonth(), 1);
+      end = new Date(anchorDate.getFullYear(), anchorDate.getMonth() + 1, 0);
     }
 
     const { data, error } = await supabase
@@ -114,7 +121,7 @@ dashboardRouter.get(
       .eq("company_id", companyId)
       .eq("status", "Paid")
       .gte("date", toIso(start))
-      .lte("date", toIso(now));
+      .lte("date", toIso(end));
     if (error) return res.status(400).json({ error: error.message });
 
     const totalRevenue = data.reduce((sum, row) => sum + Number(row.final_amount || 0), 0);
@@ -122,9 +129,93 @@ dashboardRouter.get(
     res.json({
       period,
       from: toIso(start),
-      to: toIso(now),
+      to: toIso(end),
       paymentCount: data.length,
       totalRevenue,
     });
+  })
+);
+
+/**
+ * GET /api/dashboard/trend?period=weekly|monthly&anchor=YYYY-MM-DD
+ * Buckets real bookings (all 3 tables) + paid payments within the anchor's
+ * week (daily buckets) or month (weekly buckets) — powers dashboard.html's
+ * trend charts and prev/next period navigation. Fetches each resource once
+ * for the whole range and buckets in Node, rather than one query per bucket.
+ */
+dashboardRouter.get(
+  "/trend",
+  asyncHandler(async (req, res) => {
+    const companyId = req.companyId;
+    const period = req.query.period === "monthly" ? "monthly" : "weekly";
+    const anchor = req.query.anchor || todayStr();
+    const pad = (n) => String(n).padStart(2, "0");
+    const toIso = (d) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+
+    const anchorDate = new Date(anchor + "T00:00:00");
+    let start, end, bucketBy;
+    if (period === "monthly") {
+      start = new Date(anchorDate.getFullYear(), anchorDate.getMonth(), 1);
+      end = new Date(anchorDate.getFullYear(), anchorDate.getMonth() + 1, 0);
+      bucketBy = "week";
+    } else {
+      const dow = anchorDate.getDay(); // 0=Sun..6=Sat
+      const diffToMonday = (dow + 6) % 7;
+      start = new Date(anchorDate);
+      start.setDate(anchorDate.getDate() - diffToMonday);
+      end = new Date(start);
+      end.setDate(start.getDate() + 6);
+      bucketBy = "day";
+    }
+    const startIso = toIso(start);
+    const endIso = toIso(end);
+
+    const [paymentsResult, groomingResult, daycareResult, boardingResult] = await Promise.all([
+      supabase.from("payment").select("date, final_amount, status").eq("company_id", companyId).eq("status", "Paid").gte("date", startIso).lte("date", endIso),
+      supabase.from("grooming_booking").select("booking_date, booking_status").eq("company_id", companyId).gte("booking_date", startIso).lte("booking_date", endIso),
+      supabase.from("daycare_booking").select("booking_date, booking_status").eq("company_id", companyId).gte("booking_date", startIso).lte("booking_date", endIso),
+      supabase.from("boarding_booking").select("check_in_date, booking_status").eq("company_id", companyId).gte("check_in_date", startIso).lte("check_in_date", endIso),
+    ]);
+    for (const r of [paymentsResult, groomingResult, daycareResult, boardingResult]) {
+      if (r.error) return res.status(400).json({ error: r.error.message });
+    }
+
+    const allBookings = [
+      ...groomingResult.data.map((b) => ({ date: b.booking_date, status: b.booking_status })),
+      ...daycareResult.data.map((b) => ({ date: b.booking_date, status: b.booking_status })),
+      ...boardingResult.data.map((b) => ({ date: b.check_in_date, status: b.booking_status })),
+    ];
+
+    const bucketRanges = [];
+    if (bucketBy === "day") {
+      for (let d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) {
+        const iso = toIso(d);
+        bucketRanges.push({ label: iso, start: iso, end: iso });
+      }
+    } else {
+      for (let cursor = new Date(start); cursor <= end; cursor.setDate(cursor.getDate() + 7)) {
+        const weekStart = new Date(cursor);
+        const weekEnd = new Date(cursor);
+        weekEnd.setDate(weekEnd.getDate() + 6);
+        const clampedEnd = weekEnd > end ? end : weekEnd;
+        bucketRanges.push({ label: toIso(weekStart), start: toIso(weekStart), end: toIso(clampedEnd) });
+      }
+    }
+
+    const buckets = bucketRanges.map(({ label, start: bStart, end: bEnd }) => {
+      const bucketPayments = paymentsResult.data.filter((p) => p.date >= bStart && p.date <= bEnd);
+      const bucketBookings = allBookings.filter(
+        (b) => b.date >= bStart && b.date <= bEnd && b.status !== "Cancelled" && b.status !== "No Show"
+      );
+      return {
+        label,
+        start: bStart,
+        end: bEnd,
+        revenue: bucketPayments.reduce((sum, p) => sum + Number(p.final_amount || 0), 0),
+        bookingCount: bucketBookings.length,
+      };
+    });
+
+    res.json({ period, start: startIso, end: endIso, buckets });
   })
 );

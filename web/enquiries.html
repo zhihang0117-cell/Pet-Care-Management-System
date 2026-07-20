@@ -69,6 +69,7 @@
           <h1 class="bk-page-title" style="margin-bottom:8px;">Enquiries (WhatsApp)</h1>
         </div>
         <div style="display:flex;gap:10px;flex-wrap:wrap;flex-shrink:0;align-items:center;">
+          <button class="btn btn-primary" type="button" onclick="openNewEnquiryForm()">+ Log Enquiry</button>
           <span class="overview-chip" id="liveDateTime"></span>
         </div>
       </div>
@@ -108,12 +109,17 @@
         <div class="metric-card">
           <h3>Total Messages</h3>
           <p id="enquiryTotalCount">0</p>
-          <small style="font-size:0.78rem;color:var(--text-muted);">In selected range</small>
+          <small style="font-size:0.78rem;color:var(--text-muted);">All time</small>
+        </div>
+        <div class="metric-card" style="border-color:#FEF3C7;">
+          <h3 style="color:#92400E;">Pending Response</h3>
+          <p id="enquiryPendingCount">0</p>
+          <small style="font-size:0.78rem;color:var(--text-muted);">Awaiting a reply</small>
         </div>
         <div class="metric-card">
-          <h3>Booking</h3>
-          <p id="enquiryBookingCount">0</p>
-          <small style="font-size:0.78rem;color:var(--text-muted);">Booking-related messages</small>
+          <h3>Resolution Rate</h3>
+          <p id="enquiryResolutionRate">0%</p>
+          <small style="font-size:0.78rem;color:var(--text-muted);">All time</small>
         </div>
         <div class="metric-card">
           <h3>Policy</h3>
@@ -157,6 +163,29 @@
           <tbody id="enquiryPendingBody"></tbody>
         </table>
       </div>
+      <div class="table-pagination" id="enquiryPendingPagination"></div>
+    </section>
+
+    <!-- History -->
+    <section class="bk-section hidden" id="enquiryHistoryPanel">
+      <div class="bk-view-header" style="margin-bottom:16px;">
+        <div>
+          <h2 style="font-family:var(--font-serif);font-size:1.15rem;font-weight:700;margin-bottom:2px;">Enquiry History</h2>
+          <p style="font-size:0.78rem;color:var(--text-muted);">All enquiries, pending and resolved — SLA no longer applies once resolved</p>
+        </div>
+        <span id="enquiryHistoryRecordCount" style="font-size:0.78rem;font-weight:700;color:var(--text-muted);white-space:nowrap;">0 records</span>
+      </div>
+      <div class="bk-table-wrap">
+        <table class="bk-table">
+          <thead>
+            <tr>
+              <th>Enquiry ID</th><th>Customer</th><th>Message</th><th>Received At</th><th>Handled By</th><th>Status</th><th>Action</th>
+            </tr>
+          </thead>
+          <tbody id="enquiryHistoryBody"></tbody>
+        </table>
+      </div>
+      <div class="table-pagination" id="enquiryHistoryPagination"></div>
     </section>
 
   </main>

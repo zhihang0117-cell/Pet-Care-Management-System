@@ -1,449 +1,22 @@
 function q(id) { return document.getElementById(id); }
 
 /* =========================
-   REUSABLE DATE-RANGE FILTER (Daily/Weekly/Monthly + Prev/Today/Next)
-   Same pattern as the Analytical Dashboard's period toggle, reused on
-   dailyoverview.html/booking.html/payment.html/loyalty.html/enquiries.html.
-   Defaults to "Daily" (today), unlike the dashboard's own default of
-   "Weekly" — these pages are meant to open scoped to today's numbers.
-   Relies on getPeriodRange()/formatPeriodChip() defined in the Analytical
-   Dashboard section below (plain functions, no dashboard-specific state).
+   LEGACY VIEW-MODEL COMPATIBILITY
 ========================= */
 
-function createDateRangeFilter(prefix, onChange) {
-  const state = { period: "daily", anchorDate: getToday() };
-
-  function currentRange() {
-    return getPeriodRange(state.period, state.anchorDate);
-  }
-
-  function render() {
-    const range = currentRange();
-    const chip = document.getElementById(`${prefix}RangeChip`);
-    if (chip) chip.innerHTML = formatPeriodChip(state.period, range);
-    onChange(range, state.period);
-  }
-
-  function shift(step) {
-    if (state.period === "daily") state.anchorDate = addDays(state.anchorDate, step);
-    else if (state.period === "monthly") state.anchorDate = addMonths(state.anchorDate, step);
-    else state.anchorDate = addDays(state.anchorDate, step * 7);
-    render();
-  }
-
-  function init() {
-    document.querySelectorAll(`#${prefix}PeriodToggle .tab-btn`).forEach(btn => {
-      btn.addEventListener("click", () => {
-        document.querySelectorAll(`#${prefix}PeriodToggle .tab-btn`).forEach(b => b.classList.remove("active"));
-        btn.classList.add("active");
-        state.period = btn.dataset.period;
-        state.anchorDate = getToday();
-        render();
-      });
-    });
-    document.getElementById(`${prefix}PrevBtn`)?.addEventListener("click", () => shift(-1));
-    document.getElementById(`${prefix}NextBtn`)?.addEventListener("click", () => shift(1));
-    document.getElementById(`${prefix}TodayBtn`)?.addEventListener("click", () => {
-      state.anchorDate = getToday();
-      render();
-    });
-    render();
-  }
-
-  return { init, getRange: currentRange, getPeriod: () => state.period };
-}
-
-/* =========================
-   MOCK DATA
-========================= */
-
-const services = [
-  { id: "S001", type: "grooming", name: "Basic Grooming", price: 80, duration: 90 },
-  { id: "S002", type: "grooming", name: "Full Grooming", price: 150, duration: 150 },
-  { id: "S003", type: "boarding", name: "Standard Boarding", price: 120, duration: 1440 },
-  { id: "S004", type: "boarding", name: "Deluxe Boarding", price: 180, duration: 1440 },
-  { id: "S005", type: "daycare", name: "Half-Day Daycare", price: 60, duration: 240 },
-  { id: "S006", type: "daycare", name: "Full-Day Daycare", price: 100, duration: 480 }
-];
-
-function staffStorageKey() {
-  const account = getCurrentAccount();
-  return "pawfect_staff_" + (account?.businessKey || "default");
-}
-function loadStaff(seedStaff) {
-  try {
-    const raw = localStorage.getItem(staffStorageKey());
-    return raw ? JSON.parse(raw) : seedStaff;
-  } catch (e) {
-    return seedStaff;
-  }
-}
-function persistStaff() {
-  if (bookingsAreReal) return;
-  localStorage.setItem(staffStorageKey(), JSON.stringify(staff));
-}
-
-const SEED_STAFF = [
-  { id: "ST001", name: "Sarah Wong", role: "Manager",   email: "sarah.wong@happypaws.my", phone: "+60 12-345 6801", offDays: ["Sunday"] },
-  { id: "ST002", name: "Adam Tan",   role: "Groomer",   email: "adam.tan@happypaws.my",   phone: "+60 12-345 6802", offDays: ["Monday"] },
-  { id: "ST003", name: "Mei Ling",   role: "Caretaker", email: "mei.ling@happypaws.my",   phone: "+60 12-345 6803", offDays: ["Tuesday", "Sunday"] }
-];
-
-let staff = loadStaff(SEED_STAFF);
-
-const rooms = [
-  { id: "R001", name: "Room A", type: "boarding", capacity: 5 },
-  { id: "R002", name: "Room B", type: "boarding", capacity: 4 },
-  { id: "R003", name: "Playroom 1", type: "daycare", capacity: 12 },
-  { id: "R004", name: "Playroom 2", type: "daycare", capacity: 10 }
-];
+// Older dashboard helpers still read these collections synchronously before
+// their real API-backed panels finish loading. Keep empty collections so an
+// empty database renders as empty instead of resurrecting browser seed data.
+const services = [];
+const rooms = [];
+let staff = [];
+let bookings = [];
+let enquiries = [];
+let loyaltyRequests = [];
+let leaveRequests = [];
+let paymentRecords = [];
 
 const today = getToday();
-
-function bookingsStorageKey() {
-  const account = getCurrentAccount();
-  return "pawfect_bookings_" + (account?.businessKey || "default");
-}
-
-function loadBookings(seedBookings) {
-  try {
-    const raw = localStorage.getItem(bookingsStorageKey());
-    return raw ? JSON.parse(raw) : seedBookings;
-  } catch (e) {
-    return seedBookings;
-  }
-}
-
-// Set true once loadRealBookingData() overwrites `bookings` with real
-// Supabase rows, so persistBookings() never writes real-shaped booking
-// objects into the mock localStorage key (which other not-yet-converted
-// pages like dashboard.html/profile.html/staff.html still read from).
-let bookingsAreReal = false;
-
-function persistBookings() {
-  if (bookingsAreReal) return;
-  localStorage.setItem(bookingsStorageKey(), JSON.stringify(bookings));
-}
-
-const SEED_BOOKINGS = [
-  { id: "B001", customerName: "Alicia Lee",   petName: "Milo",   serviceType: "grooming", serviceId: "S002", staffId: "ST002", roomId: "",     date: today, time: "09:00", duration: 150,  status: "pending",   amount: 150, checkInDate: "", checkOutDate: "", specialNote: "Sensitive skin. Use mild shampoo." },
-  { id: "B002", customerName: "Jason Lim",    petName: "Coco",   serviceType: "grooming", serviceId: "S001", staffId: "ST002", roomId: "",     date: today, time: "10:30", duration: 90,   status: "scheduled", amount: 80,  checkInDate: "", checkOutDate: "", specialNote: "" },
-  { id: "B003", customerName: "Farah Hana",   petName: "Luna",   serviceType: "grooming", serviceId: "S002", staffId: "ST002", roomId: "",     date: today, time: "08:00", duration: 150,  status: "pending",   amount: 150, checkInDate: "", checkOutDate: "", specialNote: "" },
-  { id: "B004", customerName: "Tan Wei",      petName: "Buddy",  serviceType: "grooming", serviceId: "S001", staffId: "ST002", roomId: "",     date: today, time: "14:00", duration: 90,   status: "done",      amount: 80,  checkInDate: "", checkOutDate: "", specialNote: "" },
-  { id: "B005", customerName: "Wong Mei",     petName: "Simba",  serviceType: "grooming", serviceId: "S002", staffId: "ST002", roomId: "",     date: today, time: "16:00", duration: 150,  status: "scheduled", amount: 150, checkInDate: "", checkOutDate: "", specialNote: "" },
-  { id: "B006", customerName: "Nur Aina",     petName: "Snowy",  serviceType: "grooming", serviceId: "S001", staffId: "ST002", roomId: "",     date: today, time: "11:00", duration: 90,   status: "no_show",   amount: 80,  checkInDate: "", checkOutDate: "", specialNote: "" },
-
-  { id: "B007", customerName: "David Chong",  petName: "Rocky",  serviceType: "boarding", serviceId: "S003", staffId: "ST003", roomId: "R001", date: addDays(today, -2), time: "09:00", duration: 1440, status: "scheduled", amount: 120, checkInDate: addDays(today, -2), checkOutDate: today,              specialNote: "" },
-  { id: "B008", customerName: "Siti Zainab",  petName: "Bella",  serviceType: "boarding", serviceId: "S004", staffId: "ST003", roomId: "R002", date: today,              time: "10:00", duration: 1440, status: "pending",   amount: 180, checkInDate: today,               checkOutDate: addDays(today, 3),  specialNote: "Needs evening medication." },
-  { id: "B009", customerName: "Kumar Raj",    petName: "Max",    serviceType: "boarding", serviceId: "S003", staffId: "ST003", roomId: "R001", date: addDays(today, -1), time: "09:30", duration: 1440, status: "scheduled", amount: 120, checkInDate: addDays(today, -1), checkOutDate: addDays(today, 2),  specialNote: "" },
-  { id: "B010", customerName: "Angeline Foo", petName: "Cleo",   serviceType: "boarding", serviceId: "S004", staffId: "ST003", roomId: "R002", date: today,              time: "11:30", duration: 1440, status: "pending",   amount: 180, checkInDate: today,               checkOutDate: addDays(today, 4),  specialNote: "" },
-  { id: "B011", customerName: "Hafiz Rahman", petName: "Tommy",  serviceType: "boarding", serviceId: "S003", staffId: "ST003", roomId: "R001", date: addDays(today, -3), time: "08:30", duration: 1440, status: "scheduled", amount: 120, checkInDate: addDays(today, -3), checkOutDate: today,              specialNote: "" },
-  { id: "B012", customerName: "Michelle Yap", petName: "Nala",   serviceType: "boarding", serviceId: "S004", staffId: "ST003", roomId: "R002", date: addDays(today, 1),  time: "09:00", duration: 1440, status: "scheduled", amount: 180, checkInDate: addDays(today, 1),  checkOutDate: addDays(today, 5),  specialNote: "" },
-
-  { id: "B013", customerName: "Chong Li Wei", petName: "Oreo",   serviceType: "daycare", serviceId: "S006", staffId: "ST003", roomId: "R003", date: today, time: "08:00", duration: 480, status: "pending",   amount: 100, checkInDate: "", checkOutDate: "", specialNote: "" },
-  { id: "B014", customerName: "Aisyah Bakar", petName: "Chichi", serviceType: "daycare", serviceId: "S005", staffId: "ST003", roomId: "R003", date: today, time: "08:30", duration: 240, status: "done",      amount: 60,  checkInDate: "", checkOutDate: "", specialNote: "Very active. Needs more playtime." },
-  { id: "B015", customerName: "Ravi Kumar",   petName: "Leo",    serviceType: "daycare", serviceId: "S006", staffId: "ST003", roomId: "R004", date: today, time: "09:00", duration: 480, status: "scheduled", amount: 100, checkInDate: "", checkOutDate: "", specialNote: "" },
-  { id: "B016", customerName: "Grace Tan",    petName: "Mochi",  serviceType: "daycare", serviceId: "S005", staffId: "ST003", roomId: "R004", date: today, time: "13:00", duration: 240, status: "pending",   amount: 60,  checkInDate: "", checkOutDate: "", specialNote: "" },
-  { id: "B017", customerName: "Faizal Idris", petName: "Coco",   serviceType: "daycare", serviceId: "S006", staffId: "ST003", roomId: "R003", date: today, time: "07:45", duration: 480, status: "no_show",   amount: 100, checkInDate: "", checkOutDate: "", specialNote: "" }
-];
-
-let bookings = loadBookings(SEED_BOOKINGS);
-
-/* =========================
-   REAL BOOKING DATA (booking.html only)
-   Overwrites the mock `bookings`/`staff` globals above with real Supabase
-   data — but ONLY when booking.html's own init path calls
-   loadRealBookingData(). Every other page (dailyoverview.html, profile.html,
-   dashboard.html, staff.html) still reads the mock arrays untouched, since
-   they haven't been converted yet and this is a fresh page load each time
-   (static multi-page app, no shared runtime state between pages).
-
-   Real bookings live in 3 separate tables (grooming_booking/daycare_booking/
-   boarding_booking) with different columns and no shared services/rooms
-   catalog. They're merged here into the same unified booking shape the
-   existing Kanban/Calendar/Listing render code already expects, so that
-   code doesn't need to change — only the mapping in and the mutations
-   (which now call the real API instead of mutating an in-memory array)
-   are new.
-========================= */
-
-// Named bookingPets/bookingCustomers (not pets/customers) to avoid colliding
-// with profile.html's own mock `pets`/`customers` globals declared later in
-// this file — both are top-level `let` in the same shared script.
-let bookingPets = [];
-let bookingCustomers = [];
-const GROOMING_DEFAULT_DURATION = 90; // grooming_booking has no duration column
-
-function normalizeStatus(raw) {
-  // Real booking_status casing is inconsistent across tables (grooming is
-  // lowercase, daycare/boarding are Title Case, and "no show" has a space
-  // instead of an underscore) — fold all of that down to this app's
-  // existing pending/scheduled/done/no_show/cancelled convention.
-  return String(raw || "").trim().toLowerCase().replace(/\s+/g, "_");
-}
-
-// Denormalize back to whatever casing convention that specific real table
-// already uses, on write — rather than inventing a 4th convention.
-const STATUS_WRITE_LOWERCASE = { pending: "pending", scheduled: "scheduled", done: "done", no_show: "no show", cancelled: "cancelled" };
-const STATUS_WRITE_TITLECASE = { pending: "Pending", scheduled: "Scheduled", done: "Done", no_show: "No Show", cancelled: "Cancelled" };
-function denormalizeStatus(bookingType, status) {
-  return bookingType === "grooming" ? STATUS_WRITE_LOWERCASE[status] : STATUS_WRITE_TITLECASE[status];
-}
-
-function nightsBetweenDates(checkIn, checkOut) {
-  const ms = new Date(checkOut) - new Date(checkIn);
-  return Math.max(1, Math.round(ms / (1000 * 60 * 60 * 24)));
-}
-
-function minutesBetweenTimes(start, end) {
-  const toMin = t => { const [h, m] = String(t || "0:0").split(":").map(Number); return h * 60 + m; };
-  return Math.max(1, toMin(end) - toMin(start));
-}
-
-function findRealStaff(staffId) {
-  return staff.find(s => Number(s.staff_id) === Number(staffId));
-}
-
-function findPet(petId) {
-  return bookingPets.find(p => Number(p.pet_id) === Number(petId));
-}
-
-function mapGroomingBooking(row) {
-  const pet = findPet(row.pet_id);
-  return {
-    id: `grooming-${row.grooming_booking_id}`,
-    realId: row.grooming_booking_id,
-    bookingType: "grooming",
-    customerName: pet?.customerName || "—",
-    petName: pet?.pet_name || "—",
-    petId: row.pet_id,
-    serviceType: "grooming",
-    serviceLabel: row.service_name || "-",
-    price: Number(row.price) || 0,
-    addOn: row.add_on && row.add_on !== "-" ? row.add_on : "",
-    addOnPrice: Number(row.add_on_price) || 0,
-    staffId: row.staff_id,
-    roomLabel: "",
-    date: row.booking_date,
-    time: (row.booking_time || "").slice(0, 5),
-    duration: GROOMING_DEFAULT_DURATION,
-    status: normalizeStatus(row.booking_status),
-    amount: (Number(row.price) || 0) + (Number(row.add_on_price) || 0),
-    checkInDate: "",
-    checkOutDate: "",
-    specialNote: row.notes && row.notes !== "-" ? row.notes : "",
-    paymentId: row.payment_id,
-    createdDate: row.created_date || "",
-  };
-}
-
-function mapDaycareBooking(row) {
-  const pet = findPet(row.pet_id);
-  const checkInTime = (row.check_in_time || "").slice(0, 5);
-  const checkOutTime = (row.check_out_time || "").slice(0, 5);
-  return {
-    id: `daycare-${row.daycare_booking_id}`,
-    realId: row.daycare_booking_id,
-    bookingType: "daycare",
-    customerName: pet?.customerName || "—",
-    petName: pet?.pet_name || "—",
-    petId: row.pet_id,
-    serviceType: "daycare",
-    serviceLabel: row.package_type || "-",
-    price: Number(row.price) || 0,
-    addOn: "",
-    addOnPrice: 0,
-    staffId: row.staff_id,
-    roomLabel: "",
-    date: row.booking_date,
-    time: checkInTime,
-    checkInTime,
-    checkOutTime,
-    duration: minutesBetweenTimes(checkInTime, checkOutTime),
-    status: normalizeStatus(row.booking_status),
-    amount: Number(row.price) || 0,
-    checkInDate: "",
-    checkOutDate: "",
-    specialNote: row.special_instruction && row.special_instruction !== "-" ? row.special_instruction : "",
-    paymentId: row.payment_id,
-    createdDate: row.created_date || "",
-  };
-}
-
-function mapBoardingBooking(row) {
-  const pet = findPet(row.pet_id);
-  return {
-    id: `boarding-${row.boarding_booking_id}`,
-    realId: row.boarding_booking_id,
-    bookingType: "boarding",
-    customerName: pet?.customerName || "—",
-    petName: pet?.pet_name || "—",
-    petId: row.pet_id,
-    serviceType: "boarding",
-    serviceLabel: row.room_type || "-",
-    price: Number(row.price_per_night) || 0,
-    addOn: "",
-    addOnPrice: 0,
-    staffId: row.staff_id,
-    roomLabel: row.room_type || "",
-    date: row.check_in_date,
-    time: (row.check_in_time || "").slice(0, 5),
-    checkInTime: (row.check_in_time || "").slice(0, 5),
-    checkOutTime: (row.check_out_time || "").slice(0, 5),
-    duration: 1440,
-    status: normalizeStatus(row.booking_status),
-    amount: Number(row.total_price) || 0,
-    checkInDate: row.check_in_date,
-    checkOutDate: row.check_out_date,
-    feedingInstruction: row.feeding_instruction && row.feeding_instruction !== "-" ? row.feeding_instruction : "",
-    medicalInstruction: row.medical_instruction && row.medical_instruction !== "-" ? row.medical_instruction : "",
-    specialNote: row.notes && row.notes !== "-" ? row.notes : "",
-    paymentId: row.payment_id,
-    createdDate: row.created_date || "",
-  };
-}
-
-async function loadRealBookingData() {
-  const [petsRes, customersRes, staffRes, grooming, daycare, boarding] = await Promise.all([
-    api.listPets({ limit: 1000 }),
-    api.listCustomers({ limit: 1000 }),
-    api.listStaff({ limit: 1000 }),
-    api.listBookings("grooming", { limit: 1000 }),
-    api.listBookings("daycare", { limit: 1000 }),
-    api.listBookings("boarding", { limit: 1000 }),
-  ]);
-
-  bookingCustomers = customersRes;
-  const customerById = new Map(bookingCustomers.map(c => [c.customer_id, c]));
-  bookingPets = petsRes.map(p => ({ ...p, customerName: customerById.get(p.customer_id)?.full_name || "—" }));
-  staff = staffRes;
-
-  bookings = [
-    ...grooming.map(mapGroomingBooking),
-    ...daycare.map(mapDaycareBooking),
-    ...boarding.map(mapBoardingBooking),
-  ];
-  bookingsAreReal = true;
-}
-
-async function updateBookingStatus(booking, newStatus) {
-  try {
-    await api.updateBooking(booking.bookingType, booking.realId, {
-      booking_status: denormalizeStatus(booking.bookingType, newStatus),
-    });
-  } catch (err) {
-    alert(err.message);
-    return false;
-  }
-  booking.status = newStatus;
-  return true;
-}
-
-async function moveBooking(booking, newDate, newTime) {
-  const payload = {};
-  if (booking.bookingType === "grooming") {
-    payload.booking_date = newDate;
-    if (newTime) payload.booking_time = `${newTime}:00`;
-  } else if (booking.bookingType === "daycare") {
-    payload.booking_date = newDate;
-  } else if (booking.bookingType === "boarding") {
-    const nights = nightsBetweenDates(booking.checkInDate, booking.checkOutDate);
-    payload.check_in_date = newDate;
-    payload.check_out_date = addDays(newDate, nights);
-  }
-
-  try {
-    await api.updateBooking(booking.bookingType, booking.realId, payload);
-  } catch (err) {
-    alert(err.message);
-    return false;
-  }
-
-  booking.date = newDate;
-  if (newTime) booking.time = newTime;
-  if (booking.bookingType === "boarding") {
-    const nights = nightsBetweenDates(booking.checkInDate, booking.checkOutDate);
-    booking.checkInDate = newDate;
-    booking.checkOutDate = addDays(newDate, nights);
-  }
-  return true;
-}
-
-function enquiriesStorageKey() {
-  const account = getCurrentAccount();
-  return "pawfect_enquiries_" + (account?.businessKey || "default");
-}
-function loadEnquiries(seedEnquiries) {
-  try {
-    const raw = localStorage.getItem(enquiriesStorageKey());
-    return raw ? JSON.parse(raw) : seedEnquiries;
-  } catch (e) {
-    return seedEnquiries;
-  }
-}
-function persistEnquiries() {
-  localStorage.setItem(enquiriesStorageKey(), JSON.stringify(enquiries));
-}
-
-const SEED_ENQUIRIES = [
-  { id: 'ENQ001', customerName: 'Priya Nathan',  phone: '+60 12-345 7001', channel: 'WhatsApp', message: 'Can I reschedule my grooming appointment to tomorrow?', relatedService: 'grooming', status: 'pending',  receivedAt: '08:12' },
-  { id: 'ENQ002', customerName: 'Ben Ooi',       phone: '+60 12-345 7002', channel: 'WhatsApp', message: "Is my dog's boarding room ready for early check-in?",    relatedService: 'boarding', status: 'pending',  receivedAt: '08:40' },
-  { id: 'ENQ003', customerName: 'Lim Hui Yi',    phone: '+60 12-345 7003', channel: 'WhatsApp', message: 'What time is daycare pickup cut-off?',                   relatedService: 'daycare',  status: 'pending',  receivedAt: '09:05' },
-  { id: 'ENQ004', customerName: 'Farid Azman',   phone: '+60 12-345 7004', channel: 'WhatsApp', message: 'Need to confirm deluxe boarding pricing.',               relatedService: 'boarding', status: 'pending',  receivedAt: '09:20' },
-  { id: 'ENQ005', customerName: 'Cheryl Wong',   phone: '+60 12-345 7005', channel: 'WhatsApp', message: 'Thanks for the update!',                                 relatedService: 'grooming', status: 'resolved', receivedAt: '07:50', handledBy: 'human' },
-  { id: 'ENQ006', customerName: 'Wong Mei',      phone: '+60 12-345 6705', channel: 'WhatsApp', message: 'What are your operating hours today?',                  relatedService: 'grooming', status: 'resolved', receivedAt: '07:15', handledBy: 'ai' }
-];
-
-let enquiries = loadEnquiries(SEED_ENQUIRIES);
-
-function loyaltyRequestsStorageKey() {
-  const account = getCurrentAccount();
-  return "pawfect_loyalty_requests_" + (account?.businessKey || "default");
-}
-function loadLoyaltyRequests(seedRequests) {
-  try {
-    const raw = localStorage.getItem(loyaltyRequestsStorageKey());
-    return raw ? JSON.parse(raw) : seedRequests;
-  } catch (e) {
-    return seedRequests;
-  }
-}
-function persistLoyaltyRequests() {
-  localStorage.setItem(loyaltyRequestsStorageKey(), JSON.stringify(loyaltyRequests));
-}
-
-const SEED_LOYALTY_REQUESTS = [
-  { id: 'LOY001', customerName: 'Alicia Lee',   type: 'RM20 Voucher Redemption', points: 400,  relatedService: 'grooming', status: 'pending',  requestedAt: '08:15' },
-  { id: 'LOY002', customerName: 'Siti Zainab',  type: 'Free Boarding Night',     points: 1200, relatedService: 'boarding', status: 'pending',  requestedAt: '08:55' },
-  { id: 'LOY003', customerName: 'Grace Tan',    type: 'Free Daycare Session',    points: 600,  relatedService: 'daycare',  status: 'pending',  requestedAt: '10:02' },
-  { id: 'LOY004', customerName: 'David Chong',  type: 'RM10 Voucher Redemption', points: 200,  relatedService: 'boarding', status: 'approved', requestedAt: '07:30' }
-];
-
-let loyaltyRequests = loadLoyaltyRequests(SEED_LOYALTY_REQUESTS);
-
-function leaveRequestsStorageKey() {
-  const account = getCurrentAccount();
-  return "pawfect_leave_requests_" + (account?.businessKey || "default");
-}
-function loadLeaveRequests(seedRequests) {
-  try {
-    const raw = localStorage.getItem(leaveRequestsStorageKey());
-    return raw ? JSON.parse(raw) : seedRequests;
-  } catch (e) {
-    return seedRequests;
-  }
-}
-function persistLeaveRequests() {
-  if (leaveDataIsReal) return;
-  localStorage.setItem(leaveRequestsStorageKey(), JSON.stringify(leaveRequests));
-}
-
-const SEED_LEAVE_REQUESTS = [
-  { id: 'LV001', staffId: 'ST002', staffName: 'Adam Tan', startDate: addDays(today, 2), endDate: addDays(today, 3), reason: 'Personal errand',      status: 'approved', appliedAt: '09:00' },
-  { id: 'LV002', staffId: 'ST003', staffName: 'Mei Ling', startDate: addDays(today, 5), endDate: addDays(today, 5), reason: 'Medical appointment',   status: 'pending',  appliedAt: '10:15' }
-];
-
-let leaveRequests = loadLeaveRequests(SEED_LEAVE_REQUESTS);
 
 /* =========================
    STATE
@@ -451,18 +24,53 @@ let leaveRequests = loadLeaveRequests(SEED_LEAVE_REQUESTS);
 
 let currentServiceFilter = "all";
 let currentView = "kanban";
-let kanbanDateMode = "today";
+let bookingFilterDate = getToday();
 let currentStaffFilter = "all";
 let draggedBookingId = null;
 let listingSearchKeyword = "";
 let calendarAnchorDate = getToday();
-let _newBookingDraft = null;
-let _bookingIdCounter = bookings.length;
 
 const CALENDAR_HOURS = [
   "08:00", "09:00", "10:00", "11:00", "12:00",
   "13:00", "14:00", "15:00", "16:00", "17:00"
 ];
+
+// Real backend data for booking.html (separate from the mock `bookings`/
+// `staff`/`rooms`/`services` arrays above, which dailyoverview.html,
+// loyalty.html and dashboard.html's charts still read directly until
+// they're wired too). Bookings live in 3 real tables (grooming_booking /
+// daycare_booking / boarding_booking) with no shared id space and no price
+// catalog / room table backing them, so we normalize all 3 into one flat
+// array of view-model objects (`bookingRecords`) that the existing kanban /
+// calendar / listing render functions below consume just like the old
+// `bookings` mock array did. `id` on each record is a composite
+// "type:rawId" string (e.g. "grooming:14") since raw ids are only unique
+// within their own table.
+const BOOKING_STATUS_TO_INTERNAL = {
+  "Pending": "pending",
+  "Scheduled": "scheduled",
+  "Done": "done",
+  "No Show": "no_show",
+  "Cancelled": "cancelled"
+};
+const BOOKING_STATUS_TO_REAL = {
+  pending: "Pending",
+  scheduled: "Scheduled",
+  done: "Done",
+  no_show: "No Show",
+  cancelled: "Cancelled"
+};
+function normalizeBookingStatus(rawStatus) {
+  return BOOKING_STATUS_TO_INTERNAL[rawStatus] || (rawStatus || "pending").toLowerCase().replace(/\s+/g, "_");
+}
+function denormalizeBookingStatus(internalStatus) {
+  return BOOKING_STATUS_TO_REAL[internalStatus] || internalStatus;
+}
+
+let bookingRecords = [];         // normalized grooming+daycare+boarding bookings
+let bookingPetOptions = [];      // raw /api/pets
+let bookingCustomerOptions = []; // raw /api/customers
+let bookingStaffOptions = [];    // raw /api/staff
 
 /* =========================
    INIT
@@ -475,32 +83,11 @@ document.addEventListener("DOMContentLoaded", async () => {
     }
 
     if (document.getElementById("kanbanBoard")) {
-      await loadRealBookingData();
-      promoteScheduledBookingsForToday();
-
-      setupTabs();
-      setupModalEvents();
-      setupCalendarEvents();
-      setupListingEvents();
-      setupPetSearch();
-      populateStaffDropdown();
-      createDateRangeFilter("bookingMetrics", (range, period) => {
-        bookingMetricsRange = range;
-        bookingMetricsPeriod = period;
-        renderMetricCards();
-      }).init();
-      renderAll();
-
-      setTimeout(() => scrollCalendarToToday(), 100);
-    } else if (document.getElementById("actionCards")) {
-      await loadRealBookingData();
-      promoteScheduledBookingsForToday();
-    } else {
-      promoteScheduledBookingsForToday();
+      initBookingPage();
     }
 
     if (document.getElementById("actionCards")) {
-      setupDailyOverview();
+      initDailyOverviewReal();
     }
 
     if (document.getElementById("profileTypeFilter")) {
@@ -535,6 +122,145 @@ document.addEventListener("DOMContentLoaded", async () => {
     alert(`Something failed to load: ${err.message}`);
   }
 });
+
+/* =========================
+   BOOKING DATA (booking.html real backend)
+========================= */
+
+async function initBookingPage() {
+  try {
+    await refreshBookingPageData();
+  } catch (error) {
+    alert(error.message || "Failed to load bookings.");
+  }
+
+  setupTabs();
+  setupModalEvents();
+  setupCalendarEvents();
+  setupListingEvents();
+
+  setTimeout(() => scrollCalendarToToday(), 100);
+}
+
+async function refreshBookingPageData() {
+  await fetchBookingPageData();
+  renderAll();
+}
+
+async function fetchBookingPageData() {
+  const [grooming, daycare, boarding, pets, customers, staffList] = await Promise.all([
+    api.get("/bookings/grooming"),
+    api.get("/bookings/daycare"),
+    api.get("/bookings/boarding"),
+    api.get("/pets"),
+    api.get("/customers"),
+    api.get("/staff"),
+  ]);
+
+  bookingPetOptions = pets;
+  bookingCustomerOptions = customers;
+  bookingStaffOptions = staffList;
+
+  bookingRecords = [
+    ...grooming.map(normalizeGroomingBooking),
+    ...daycare.map(normalizeDaycareBooking),
+    ...boarding.map(normalizeBoardingBooking),
+  ];
+
+  await promoteDueScheduledBookings();
+}
+
+// A booking sits "Scheduled" until its date arrives, then it becomes
+// "Pending" — today's queue of bookings that actually need servicing. The
+// backend has no cron/trigger for this, so it's applied here instead, the
+// one place booking.html/dailyoverview.html/dashboard.html all load
+// bookings from. `<=` (not `===`) also sweeps up anything that was due on
+// a day nobody had the app open, not just bookings due exactly today.
+async function promoteDueScheduledBookings() {
+  const todayStr = getToday();
+  const due = bookingRecords.filter(b => b.status === "scheduled" && b.date && b.date <= todayStr);
+  if (!due.length) return;
+
+  await Promise.all(due.map(booking =>
+    api.updateBooking(booking.type, booking.rawId, { booking_status: "Pending" })
+      .then(() => { booking.status = "pending"; })
+      // Best-effort: a failed promotion just leaves that booking Scheduled
+      // for the next page load to retry, instead of blocking the page.
+      .catch(() => {})
+  ));
+}
+
+function normalizeGroomingBooking(b) {
+  const pet = findBookingPet(b.pet_id);
+  return {
+    type: "grooming",
+    rawId: b.grooming_booking_id,
+    id: `grooming:${b.grooming_booking_id}`,
+    petId: b.pet_id,
+    customerId: pet?.customer_id ?? null,
+    staffId: b.staff_id,
+    petName: pet?.pet_name || "Unknown pet",
+    customerName: bookingOwnerNameForPet(b.pet_id) || "Unknown owner",
+    staffName: findBookingStaffMember(b.staff_id)?.staff_name || "Unassigned",
+    serviceLabel: b.service_name || "-",
+    date: b.booking_date,
+    time: b.booking_time ? b.booking_time.slice(0, 5) : "",
+    status: normalizeBookingStatus(b.booking_status),
+    amount: Number(b.price || 0) + Number(b.add_on_price || 0),
+    checkInDate: undefined,
+    checkOutDate: undefined,
+    notes: b.notes || "",
+    raw: b,
+  };
+}
+
+function normalizeDaycareBooking(b) {
+  const pet = findBookingPet(b.pet_id);
+  return {
+    type: "daycare",
+    rawId: b.daycare_booking_id,
+    id: `daycare:${b.daycare_booking_id}`,
+    petId: b.pet_id,
+    customerId: pet?.customer_id ?? null,
+    staffId: b.staff_id,
+    petName: pet?.pet_name || "Unknown pet",
+    customerName: bookingOwnerNameForPet(b.pet_id) || "Unknown owner",
+    staffName: findBookingStaffMember(b.staff_id)?.staff_name || "Unassigned",
+    serviceLabel: b.package_type || "-",
+    date: b.booking_date,
+    time: b.check_in_time ? b.check_in_time.slice(0, 5) : "",
+    status: normalizeBookingStatus(b.booking_status),
+    amount: Number(b.price || 0),
+    checkInDate: undefined,
+    checkOutDate: undefined,
+    notes: b.special_instruction || "",
+    raw: b,
+  };
+}
+
+function normalizeBoardingBooking(b) {
+  const pet = findBookingPet(b.pet_id);
+  return {
+    type: "boarding",
+    rawId: b.boarding_booking_id,
+    id: `boarding:${b.boarding_booking_id}`,
+    petId: b.pet_id,
+    customerId: pet?.customer_id ?? null,
+    staffId: b.staff_id,
+    petName: pet?.pet_name || "Unknown pet",
+    customerName: bookingOwnerNameForPet(b.pet_id) || "Unknown owner",
+    staffName: findBookingStaffMember(b.staff_id)?.staff_name || "Unassigned",
+    serviceLabel: b.room_type || "-",
+    date: b.check_in_date,
+    time: b.check_in_time ? b.check_in_time.slice(0, 5) : "",
+    status: normalizeBookingStatus(b.booking_status),
+    amount: Number(b.total_price || 0),
+    checkInDate: b.check_in_date,
+    checkOutDate: b.check_out_date,
+    notes: b.notes || "",
+    raw: b,
+  };
+}
 
 /* =========================
    LIVE DATE & TIME
@@ -574,27 +300,18 @@ function setupTabs() {
     });
   });
 
-  document.getElementById("todayBtn").addEventListener("click", () => {
-    kanbanDateMode = "today";
-    document.getElementById("todayBtn").classList.add("active");
-    document.getElementById("allBtn").classList.remove("active");
-    renderKanban();
-  });
-
-  document.getElementById("allBtn").addEventListener("click", () => {
-    kanbanDateMode = "all";
-    document.getElementById("allBtn").classList.add("active");
-    document.getElementById("todayBtn").classList.remove("active");
-    renderKanban();
+  bindDateNavigator("bookingFilter", {
+    getDate: () => bookingFilterDate,
+    setDate: date => { bookingFilterDate = date; },
+    onChange: date => {
+      calendarAnchorDate = date;
+      renderAll();
+    },
   });
 
   const kanbanStaffFilter = document.getElementById("kanbanStaffFilter");
-  staff.forEach(member => {
-    const option = document.createElement("option");
-    option.value = member.staff_id;
-    option.textContent = member.staff_name;
-    kanbanStaffFilter.appendChild(option);
-  });
+  kanbanStaffFilter.innerHTML = `<option value="all">All Staff</option>` +
+    bookingStaffOptions.map(member => `<option value="${member.staff_id}">${member.staff_name}</option>`).join("");
   kanbanStaffFilter.addEventListener("change", () => {
     currentStaffFilter = kanbanStaffFilter.value;
     renderKanban();
@@ -610,31 +327,42 @@ function setupModalEvents() {
 
   document.getElementById("serviceType").addEventListener("change", () => {
     toggleServiceSpecificFields();
-    recalcAmount();
   });
 
-  ["groomingPrice", "groomingAddOnPrice", "daycarePrice", "boardingPricePerNight", "checkInDate", "checkOutDate"].forEach(id => {
-    document.getElementById(id).addEventListener("input", recalcAmount);
-  });
+  document.getElementById("bookingPetId").addEventListener("change", updateOwnerNameDisplay);
 
   document.getElementById("bookingForm").addEventListener("submit", event => {
     event.preventDefault();
     saveBooking();
   });
 
-  document.getElementById("doneServiceBtn").addEventListener("click", () => {
-    document.getElementById("bookingStatus").value = "done";
-    saveBooking();
+  document.getElementById("doneServiceBtn").addEventListener("click", async () => {
+    closeModal();
+    location.href = "payment.html";
   });
 
-  document.getElementById("cancelBookingBtn").addEventListener("click", () => {
+  document.getElementById("cancelBookingBtn").addEventListener("click", async () => {
     document.getElementById("bookingStatus").value = "cancelled";
-    saveBooking();
+    await saveBooking();
+  });
+
+  document.getElementById("deleteBookingBtn").addEventListener("click", async () => {
+    const bookingId = document.getElementById("bookingId").value;
+    const booking = findBookingRecord(bookingId);
+    if (!booking) return;
+    if (!confirm("Delete this booking? This cannot be undone.")) return;
+
+    try {
+      await api.del(`/bookings/${booking.type}/${booking.rawId}`);
+      closeModal();
+      await refreshBookingPageData();
+    } catch (error) {
+      alert(error.message || "Failed to delete booking.");
+    }
   });
 
   document.getElementById("openPetProfileBtn").addEventListener("click", () => {
-    const petName = document.getElementById("petName").value;
-    alert(`Open pet profile: ${petName}`);
+    location.href = "profile.html";
   });
 
   document.getElementById("bookingModal").addEventListener("click", event => {
@@ -663,18 +391,43 @@ function setupCalendarSlotEvents() {
 
     cell.addEventListener("drop", async event => {
       event.preventDefault();
-      const booking = bookings.find(item => item.id === draggedBookingId);
+      const booking = findBookingRecord(draggedBookingId);
       draggedBookingId = null;
       if (!booking) return;
+
       const newDate = cell.dataset.date;
       const newTime = cell.dataset.time || booking.time;
-      if (!canAddBookingToSlot(newDate, newTime, booking.staffId, booking.duration, booking.id)) {
+      if (!canAddBookingToSlot(newDate, newTime, booking.staffId, booking.id)) {
         alert("This slot is not available. Maximum 3 bookings are allowed per timeslot, and staff cannot be duplicated.");
         return;
       }
-      if (await moveBooking(booking, newDate, newTime)) renderAll();
+      rescheduleBooking(booking, newDate, newTime);
     });
   });
+}
+
+async function rescheduleBooking(booking, newDate, newTime) {
+  try {
+    await api.updateBooking(booking.type, booking.rawId, bookingDateTimePayload(booking, newDate, newTime));
+    await refreshBookingPageData();
+  } catch (error) {
+    alert(error.message || "Failed to reschedule booking.");
+  }
+}
+
+function bookingDateTimePayload(booking, date, time) {
+  if (booking.type === "grooming") return { booking_date: date, booking_time: time };
+  if (booking.type === "daycare") return { booking_date: date, check_in_time: time };
+  if (booking.type === "boarding") {
+    // Shift check_out_date by the same number of nights so dragging to a new
+    // date can't leave check_out_date behind check_in_date (a stay's length
+    // must be preserved, not just its start).
+    const nights = booking.checkInDate && booking.checkOutDate
+      ? Math.max(1, Math.round((new Date(booking.checkOutDate) - new Date(booking.checkInDate)) / 86400000))
+      : 1;
+    return { check_in_date: date, check_in_time: time, check_out_date: addDays(date, nights) };
+  }
+  return {};
 }
 
 function scrollCalendarToToday() {
@@ -702,57 +455,6 @@ function setupListingEvents() {
   });
 }
 
-function setupPetSearch() {
-  const input = document.getElementById("petSearchInput");
-  const results = document.getElementById("petSearchResults");
-
-  input.addEventListener("input", () => {
-    const query = input.value.toLowerCase().trim();
-    if (!query) {
-      results.classList.add("hidden");
-      results.innerHTML = "";
-      return;
-    }
-
-    const matches = bookingPets.filter(p =>
-      (p.pet_name || "").toLowerCase().includes(query) || (p.customerName || "").toLowerCase().includes(query)
-    ).slice(0, 8);
-
-    if (!matches.length) {
-      results.innerHTML = `<div style="padding:10px;color:var(--text-muted);font-size:0.85rem;">No matching pet found.</div>`;
-      results.classList.remove("hidden");
-      return;
-    }
-
-    results.innerHTML = matches.map(p => `
-      <div class="pet-search-result" data-pet-id="${p.pet_id}" style="padding:10px;cursor:pointer;border-bottom:1px solid var(--accent-sand);">
-        <strong>${p.pet_name}</strong> (${p.pet_type || "-"}) — <span style="color:var(--text-muted);">${p.customerName || "-"}</span>
-      </div>
-    `).join("");
-    results.classList.remove("hidden");
-
-    results.querySelectorAll(".pet-search-result").forEach(row => {
-      row.addEventListener("click", () => selectPet(row.dataset.petId));
-    });
-  });
-
-  document.addEventListener("click", event => {
-    if (event.target !== input && !results.contains(event.target)) {
-      results.classList.add("hidden");
-    }
-  });
-}
-
-function selectPet(petId) {
-  const pet = findPet(petId);
-  if (!pet) return;
-  document.getElementById("selectedPetId").value = pet.pet_id;
-  document.getElementById("customerName").value = pet.customerName || "";
-  document.getElementById("petName").value = pet.pet_name;
-  document.getElementById("petSearchInput").value = `${pet.pet_name} (${pet.customerName || "-"})`;
-  document.getElementById("petSearchResults").classList.add("hidden");
-}
-
 /* =========================
    RENDER MAIN
 ========================= */
@@ -778,20 +480,34 @@ function switchView() {
 ========================= */
 
 function getFilteredBookings() {
-  return bookings.filter(booking => {
-    const serviceMatch =
-      currentServiceFilter === "all" || booking.serviceType === currentServiceFilter;
-
-    return serviceMatch;
+  return bookingRecords.filter(booking => {
+    const matchesService = currentServiceFilter === "all" || booking.type === currentServiceFilter;
+    return matchesService && booking.date === bookingFilterDate;
   });
 }
 
 function getKanbanBookings() {
   return getFilteredBookings().filter(booking => {
-    if (kanbanDateMode === "today" && booking.date !== getToday()) return false;
-    if (currentStaffFilter !== "all" && Number(booking.staffId) !== Number(currentStaffFilter)) return false;
+    if (currentStaffFilter !== "all" && String(booking.staffId) !== String(currentStaffFilter)) return false;
     return true;
   });
+}
+
+// Unlike the other kanban columns, "Scheduled" isn't pinned to whichever
+// single date the top filter is on — bookings can be scheduled across many
+// different future dates, so this shows the whole upcoming pipeline
+// (still respecting the service/staff filters) instead of just one day.
+// Never includes today or earlier: promoteDueScheduledBookings() already
+// promotes anything due to "pending" as soon as its date arrives.
+function getUpcomingScheduledBookings() {
+  const todayStr = getToday();
+  return bookingRecords
+    .filter(booking => {
+      const matchesService = currentServiceFilter === "all" || booking.type === currentServiceFilter;
+      const matchesStaff = currentStaffFilter === "all" || String(booking.staffId) === String(currentStaffFilter);
+      return matchesService && matchesStaff && booking.status === "scheduled" && booking.date > todayStr;
+    })
+    .sort((a, b) => (a.date || "").localeCompare(b.date || "") || (a.time || "").localeCompare(b.time || ""));
 }
 
 /* =========================
@@ -826,45 +542,46 @@ function buildMetrics(filter, data, range, period) {
   const word = periodWord(period);
 
   if (filter === "grooming") {
-    const grooming = data.filter(b => b.serviceType === "grooming");
+    const grooming = data.filter(b => b.type === "grooming");
     const doneRate = percentage(
       grooming.filter(b => b.status === "done").length,
       grooming.length
     );
 
     return [
-      { label: `Booking ${word}`, value: grooming.length },
+      { label: "Bookings", value: countToday(grooming) },
       { label: "Done Rate", value: doneRate },
       { label: "Pending Booking", value: countStatus(grooming, "pending") },
-      { label: "Staff Utilization", value: staffUtilizationToday() },
       { label: "No-show", value: countStatus(grooming, "no_show") }
     ];
   }
 
   if (filter === "boarding") {
-    const boarding = data.filter(b => b.serviceType === "boarding");
+    const boarding = data.filter(b => b.type === "boarding");
 
     return [
-      { label: `Boarding ${word}`, value: boarding.length },
+      { label: "Boarding", value: countToday(boarding) },
       { label: "Current Boarder", value: boarding.filter(b => b.status !== "no_show" && b.status !== "cancelled").length },
-      { label: `Check-in ${word}`, value: boarding.filter(b => b.checkInDate >= range.start && b.checkInDate <= range.end).length },
-      { label: `Check-out ${word}`, value: boarding.filter(b => b.checkOutDate >= range.start && b.checkOutDate <= range.end).length }
+      { label: "Check-in", value: boarding.filter(b => b.checkInDate === bookingFilterDate).length },
+      { label: "Check-out", value: boarding.filter(b => b.checkOutDate === bookingFilterDate).length }
     ];
   }
 
   if (filter === "daycare") {
-    const daycare = data.filter(b => b.serviceType === "daycare");
-    const attending = daycare.filter(b => b.status !== "no_show" && b.status !== "cancelled").length;
+    // No room/capacity table exists in the real schema (mock's `rooms`
+    // array has no backend equivalent), so the old "Capacity" ratio metric
+    // is replaced with a plain active-today count.
+    const daycare = data.filter(b => b.type === "daycare");
 
     return [
-      { label: `Daycare ${word}`, value: daycare.length },
+      { label: "Daycare", value: countToday(daycare) },
       { label: "Pending Pick-up", value: daycare.filter(b => b.status === "done").length },
       { label: "No-show", value: countStatus(daycare, "no_show") },
-      { label: `Attending ${word}`, value: attending }
+      { label: "Active", value: daycare.filter(b => b.date === bookingFilterDate && b.status !== "no_show" && b.status !== "cancelled").length }
     ];
   }
 
-  const grooming = data.filter(b => b.serviceType === "grooming");
+  const grooming = data.filter(b => b.type === "grooming");
   const groomingDoneRate = percentage(
     grooming.filter(b => b.status === "done").length,
     grooming.length
@@ -875,8 +592,8 @@ function buildMetrics(filter, data, range, period) {
   return [
     { label: "Pending Services", value: countStatus(data, "pending") },
     { label: "Grooming Done Rate", value: groomingDoneRate },
-    { label: "Boarding Check-in / Check-out", value: `${boardingCheckIn}/${boardingCheckOut}` },
-    { label: `Daycare Attendance ${word}`, value: data.filter(b => b.serviceType === "daycare").length },
+    { label: "Boarding Check-in / Check-out", value: `${todayCheckIn()}/${todayCheckOut()}` },
+    { label: "Daycare Attendance", value: countToday(data.filter(b => b.type === "daycare")) },
     { label: "No Show", value: countStatus(data, "no_show") }
   ];
 }
@@ -894,14 +611,10 @@ function staffUtilizationToday() {
    KANBAN
 ========================= */
 
-function promoteScheduledBookingsForToday() {
-  const todayDate = getToday();
-  bookings.forEach(booking => {
-    if (booking.status === "scheduled" && booking.date === todayDate) {
-      booking.status = "pending";
-    }
-  });
-}
+// No separate promotion step needed here: `bookings` is derived from
+// `bookingRecords` (see loadAnalyticsDashboardData()), which
+// promoteDueScheduledBookings() in fetchBookingPageData() already promoted
+// before this array was built.
 
 function renderKanban() {
   const board = document.getElementById("kanbanBoard");
@@ -915,24 +628,25 @@ function renderKanban() {
   ];
 
   const data = getKanbanBookings();
+  const upcomingScheduled = getUpcomingScheduledBookings();
 
-  board.innerHTML = columns.map(column => `
+  board.innerHTML = columns.map(column => {
+    const columnBookings = column.key === "scheduled"
+      ? upcomingScheduled
+      : data.filter(booking => booking.status === column.key);
+    return `
     <div class="kanban-column" data-status="${column.key}">
       <h3>${column.label}</h3>
-      ${data
-        .filter(booking => booking.status === column.key)
-        .map(booking => renderBookingCard(booking))
-        .join("")}
+      ${columnBookings.map(booking => renderBookingCard(booking)).join("")}
     </div>
-  `).join("");
+  `;
+  }).join("");
 
   setupKanbanDragAndDrop();
   setupBookingClickEvents();
 }
 
 function renderBookingCard(booking) {
-  const staffMember = findRealStaff(booking.staffId);
-
   return `
     <div class="booking-card" draggable="true" data-booking-id="${booking.id}">
       <div class="booking-card-top">
@@ -941,9 +655,9 @@ function renderBookingCard(booking) {
 
       <strong>${booking.petName} — ${booking.serviceLabel}</strong>
       <small>${booking.customerName}</small><br>
-      <small>${booking.date} | ${booking.time}</small><br>
-      <small>Staff: ${staffMember?.staff_name || "-"}</small><br>
-      <small>RM ${booking.amount}</small>
+      <small>${booking.date || "-"} | ${booking.time || "-"}</small><br>
+      <small>Staff: ${booking.staffName}</small><br>
+      <small>RM ${booking.amount.toFixed(2)}</small>
     </div>
   `;
 }
@@ -964,14 +678,23 @@ function setupKanbanDragAndDrop() {
       event.preventDefault();
 
       const newStatus = event.currentTarget.dataset.status;
-      const booking = bookings.find(b => b.id === draggedBookingId);
+      const booking = findBookingRecord(draggedBookingId);
       draggedBookingId = null;
 
-      if (booking && booking.status !== newStatus) {
-        if (await updateBookingStatus(booking, newStatus)) renderAll();
+      if (booking) {
+        updateBookingStatus(booking, newStatus);
       }
     });
   });
+}
+
+async function updateBookingStatus(booking, newStatusInternal) {
+  try {
+    await api.updateBooking(booking.type, booking.rawId, { booking_status: denormalizeBookingStatus(newStatusInternal) });
+    await refreshBookingPageData();
+  } catch (error) {
+    alert(error.message || "Failed to update booking status.");
+  }
 }
 
 function setupBookingClickEvents() {
@@ -1207,64 +930,55 @@ function updateCalendarRangeByMode() {
 }
 
 
-function defaultDurationFor(type) {
-  if (type === "boarding") return 1440;
-  if (type === "grooming") return GROOMING_DEFAULT_DURATION;
-  return 60;
-}
-
-function buildNewBookingDraft(date, time, staffId) {
-  const type = currentServiceFilter !== "all" ? currentServiceFilter : "grooming";
+function buildNewBookingDraft(type, petId, staffId, date, time) {
   return {
-    id: "new",
-    realId: null,
-    bookingType: type,
-    petId: null,
-    customerName: "",
-    petName: "",
-    serviceType: type,
-    serviceLabel: "",
-    price: 0,
-    addOn: "",
-    addOnPrice: 0,
-    staffId: staffId ?? (staff[0]?.staff_id || ""),
-    roomLabel: "",
-    date,
-    time,
-    checkInTime: time,
-    checkOutTime: "",
-    duration: defaultDurationFor(type),
-    status: "scheduled",
-    amount: 0,
-    checkInDate: type === "boarding" ? date : "",
-    checkOutDate: type === "boarding" ? addDays(date, 1) : "",
-    feedingInstruction: "",
-    medicalInstruction: "",
-    specialNote: "",
-    paymentId: null,
+    id: "",
+    type,
+    petId,
+    staffId,
+    status: "pending",
+    raw: {
+      booking_date: date,
+      booking_time: time,
+      check_in_date: date,
+      check_in_time: time
+    }
   };
 }
 
 function openNewBooking() {
+  if (bookingPetOptions.length === 0) {
+    alert("Add a customer and pet in Customer & Pet Profile before creating a booking.");
+    return;
+  }
+
   const date = getToday();
   const time = findFirstAvailableTime(date) || "09:00";
-  _newBookingDraft = buildNewBookingDraft(date, time);
-  openBookingDetails(_newBookingDraft);
+
+  openBookingDetails(buildNewBookingDraft(
+    "grooming",
+    bookingPetOptions[0].pet_id,
+    bookingStaffOptions[0]?.staff_id || "",
+    date,
+    time
+  ));
 }
 
 function createBookingFromSlot(date, time) {
-  const type = currentServiceFilter !== "all" ? currentServiceFilter : "grooming";
-  const duration = defaultDurationFor(type);
+  if (bookingPetOptions.length === 0) {
+    alert("Add a customer and pet in Customer & Pet Profile before creating a booking.");
+    return;
+  }
 
-  const availableStaff = getAvailableStaffForSlot(date, time, duration);
+  const type = currentServiceFilter === "all" ? "grooming" : currentServiceFilter;
+  const availableStaff = getAvailableStaffForSlot(date, time);
 
   if (getSlotBookings(date, time).length >= 3 || availableStaff.length === 0) {
     alert("This timeslot is fully booked. Maximum 3 bookings are allowed, and each booking must use a different staff.");
     return;
   }
 
-  _newBookingDraft = buildNewBookingDraft(date, time, availableStaff[0].staff_id);
-  openBookingDetails(_newBookingDraft);
+  openBookingDetails(buildNewBookingDraft(type, bookingPetOptions[0].pet_id, availableStaff[0].staff_id, date, time));
 }
 
 /* =========================
@@ -1275,35 +989,27 @@ function renderListing() {
   const tbody = document.getElementById("listingTableBody");
 
   const filteredData = getFilteredBookings().filter(booking => {
-    const staffMember = findRealStaff(booking.staffId);
-
     const searchableText = `
       ${booking.customerName}
       ${booking.petName}
-      ${booking.serviceLabel || ""}
-      ${staffMember?.staff_name || ""}
+      ${booking.serviceLabel}
+      ${booking.staffName}
     `.toLowerCase();
 
     return searchableText.includes(listingSearchKeyword);
   });
 
-  filteredData.sort((a, b) => a.date.localeCompare(b.date) || a.time.localeCompare(b.time));
+  filteredData.sort((a, b) => (a.date || "").localeCompare(b.date || "") || (a.time || "").localeCompare(b.time || ""));
 
   tbody.innerHTML = filteredData.map(booking => {
-    const staffMember = findRealStaff(booking.staffId);
-    const durationLabel = booking.bookingType === "boarding"
-      ? `${nightsBetweenDates(booking.checkInDate, booking.checkOutDate)} night(s)`
-      : `${booking.duration} mins`;
-
     return `
       <tr>
-        <td>${booking.date}</td>
+        <td>${booking.date || "-"}</td>
         <td>${booking.customerName}</td>
         <td>${booking.petName}</td>
-        <td>${booking.serviceLabel || "-"}</td>
-        <td>${staffMember?.staff_name || "-"}</td>
-        <td>${booking.time}</td>
-        <td>${durationLabel}</td>
+        <td>${booking.serviceLabel} <span class="profile-sub">(${booking.type})</span></td>
+        <td>${booking.staffName}</td>
+        <td>${booking.time || "-"}</td>
 
         <td>
           <select
@@ -1319,8 +1025,7 @@ function renderListing() {
           </select>
         </td>
 
-        <td>RM ${booking.amount}</td>
-        <td>${booking.roomLabel || "-"}</td>
+        <td>RM ${booking.amount.toFixed(2)}</td>
 
         <td>
           <button
@@ -1340,229 +1045,241 @@ async function updateListingStatus(event) {
 
   const bookingId = event.target.dataset.bookingId;
   const newStatus = event.target.value;
+  const booking = findBookingRecord(bookingId);
 
-  const booking = bookings.find(item => item.id === bookingId);
   if (!booking) return;
 
-  const previousStatus = booking.status;
-  const ok = await updateBookingStatus(booking, newStatus);
-  if (!ok) {
-    event.target.value = previousStatus;
-    return;
-  }
-
-  renderMetricCards();
-  renderKanban();
-  renderCalendar();
-  renderListing();
+  event.target.disabled = true;
+  await updateBookingStatus(booking, newStatus);
+  event.target.disabled = false;
 }
 
 /* =========================
    MODAL / FORM
 ========================= */
 
+function findBookingRecord(id) {
+  return bookingRecords.find(b => b.id === id);
+}
+
+function findBookingPet(petId) {
+  return bookingPetOptions.find(p => String(p.pet_id) === String(petId));
+}
+
+function findBookingCustomer(customerId) {
+  return bookingCustomerOptions.find(c => String(c.customer_id) === String(customerId));
+}
+
+function findBookingStaffMember(staffId) {
+  return bookingStaffOptions.find(s => String(s.staff_id) === String(staffId));
+}
+
+function bookingOwnerNameForPet(petId) {
+  const pet = findBookingPet(petId);
+  if (!pet) return "";
+  return findBookingCustomer(pet.customer_id)?.full_name || "";
+}
+
 function openBookingDetails(bookingIdOrObj) {
   const booking = typeof bookingIdOrObj === "string"
-    ? bookings.find(b => b.id === bookingIdOrObj)
+    ? findBookingRecord(bookingIdOrObj)
     : bookingIdOrObj;
   if (!booking) return;
 
-  document.getElementById("bookingId").value = booking.id;
-  document.getElementById("selectedPetId").value = booking.petId || "";
-  document.getElementById("petSearchInput").value = "";
-  document.getElementById("petSearchResults").classList.add("hidden");
-  document.getElementById("customerName").value = booking.customerName || "";
-  document.getElementById("petName").value = booking.petName || "";
-  document.getElementById("serviceType").value = booking.serviceType;
+  const raw = booking.raw || {};
 
+  populatePetDropdown();
   populateStaffDropdown();
-  document.getElementById("staffName").value = booking.staffId;
-  document.getElementById("bookingStatus").value = booking.status;
-  document.getElementById("amount").value = booking.amount;
-  document.getElementById("specialNote").value = booking.specialNote || "";
 
-  document.getElementById("bookingDate").value = booking.date || "";
-  document.getElementById("bookingTime").value = booking.bookingType === "grooming" ? (booking.time || "") : "";
+  document.getElementById("bookingId").value = booking.id || "";
+  document.getElementById("bookingPetId").value = booking.petId != null ? booking.petId : "";
+  document.getElementById("serviceType").value = booking.type;
+  document.getElementById("serviceType").disabled = !!booking.id;
+  document.getElementById("staffName").value = booking.staffId != null ? booking.staffId : "";
+  document.getElementById("bookingStatus").value = booking.status || "pending";
+  updateOwnerNameDisplay();
 
-  const isGrooming = booking.bookingType === "grooming";
-  document.getElementById("groomingServiceName").value = isGrooming ? (booking.serviceLabel || "") : "";
-  document.getElementById("groomingPrice").value = isGrooming ? booking.price : "";
-  document.getElementById("groomingAddOn").value = isGrooming ? (booking.addOn || "") : "";
-  document.getElementById("groomingAddOnPrice").value = isGrooming ? (booking.addOnPrice || 0) : "";
+  // Grooming-only
+  document.getElementById("serviceName").value = raw.service_name || "";
+  document.getElementById("addOnName").value = raw.add_on || "";
+  document.getElementById("addOnPrice").value = raw.add_on_price ?? "";
+  document.getElementById("bookingTime").value = raw.booking_time ? raw.booking_time.slice(0, 5) : "";
 
-  const isDaycare = booking.bookingType === "daycare";
-  document.getElementById("daycareCheckInTime").value = isDaycare ? (booking.checkInTime || "") : "";
-  document.getElementById("daycareCheckOutTime").value = isDaycare ? (booking.checkOutTime || "") : "";
-  document.getElementById("daycarePackageType").value = isDaycare ? (booking.serviceLabel || "") : "";
-  document.getElementById("daycarePrice").value = isDaycare ? booking.price : "";
+  // Daycare-only
+  document.getElementById("packageType").value = raw.package_type || "";
+  document.getElementById("specialInstruction").value = raw.special_instruction || "";
 
-  const isBoarding = booking.bookingType === "boarding";
-  document.getElementById("checkInDate").value = isBoarding ? (booking.checkInDate || "") : "";
-  document.getElementById("checkInTime").value = isBoarding ? (booking.checkInTime || "") : "";
-  document.getElementById("checkOutDate").value = isBoarding ? (booking.checkOutDate || "") : "";
-  document.getElementById("checkOutTime").value = isBoarding ? (booking.checkOutTime || "") : "";
-  document.getElementById("boardingRoomType").value = isBoarding ? (booking.roomLabel || "") : "";
-  document.getElementById("boardingPricePerNight").value = isBoarding ? booking.price : "";
-  document.getElementById("boardingFeeding").value = isBoarding ? (booking.feedingInstruction || "") : "";
-  document.getElementById("boardingMedical").value = isBoarding ? (booking.medicalInstruction || "") : "";
+  // Boarding-only
+  document.getElementById("roomType").value = raw.room_type || "";
+  document.getElementById("pricePerNight").value = raw.price_per_night ?? "";
+  document.getElementById("checkInDate").value = raw.check_in_date || "";
+  document.getElementById("checkOutDate").value = raw.check_out_date || "";
+  document.getElementById("feedingInstruction").value = raw.feeding_instruction || "";
+  document.getElementById("medicalInstruction").value = raw.medical_instruction || "";
+
+  // Shared across two types
+  document.getElementById("price").value = raw.price ?? "";
+  document.getElementById("bookingDate").value = raw.booking_date || "";
+  document.getElementById("checkInTime").value = raw.check_in_time ? raw.check_in_time.slice(0, 5) : "";
+  document.getElementById("checkOutTime").value = raw.check_out_time ? raw.check_out_time.slice(0, 5) : "";
+  document.getElementById("notes").value = raw.notes || "";
 
   toggleServiceSpecificFields();
+
+  const isExisting = !!booking.id;
+  document.getElementById("doneServiceBtn").classList.toggle("hidden", !isExisting);
+  document.getElementById("cancelBookingBtn").classList.toggle("hidden", !isExisting);
+  document.getElementById("deleteBookingBtn").classList.toggle("hidden", !isExisting);
 
   document.getElementById("bookingModal").style.display = "flex";
 }
 
 function closeModal() {
-  _newBookingDraft = null;
   document.getElementById("bookingModal").style.display = "none";
-}
-
-function recalcAmount() {
-  const type = document.getElementById("serviceType").value;
-  let amount = 0;
-
-  if (type === "grooming") {
-    const price = Number(document.getElementById("groomingPrice").value) || 0;
-    const addOnPrice = Number(document.getElementById("groomingAddOnPrice").value) || 0;
-    amount = price + addOnPrice;
-  } else if (type === "daycare") {
-    amount = Number(document.getElementById("daycarePrice").value) || 0;
-  } else if (type === "boarding") {
-    const pricePerNight = Number(document.getElementById("boardingPricePerNight").value) || 0;
-    const checkInDate = document.getElementById("checkInDate").value;
-    const checkOutDate = document.getElementById("checkOutDate").value;
-    const nights = checkInDate && checkOutDate ? nightsBetweenDates(checkInDate, checkOutDate) : 1;
-    amount = pricePerNight * nights;
-  }
-
-  document.getElementById("amount").value = amount;
 }
 
 async function saveBooking() {
   const bookingId = document.getElementById("bookingId").value;
-  const isNew = bookingId === "new";
-  const booking = isNew ? _newBookingDraft : bookings.find(item => item.id === bookingId);
-  if (!booking) return;
-
-  const petId = document.getElementById("selectedPetId").value;
-  if (!petId) {
-    alert("Please search and select a pet before saving.");
-    return;
-  }
-  const pet = findPet(petId);
-
   const type = document.getElementById("serviceType").value;
-  if (!isNew && type !== booking.bookingType) {
-    alert("Changing service type on an existing booking isn't supported — cancel this booking and create a new one for the new service type.");
-    return;
-  }
+  const petId = document.getElementById("bookingPetId").value;
+  const staffId = document.getElementById("staffName").value;
+  const statusInternal = document.getElementById("bookingStatus").value;
 
-  const staffId = Number(document.getElementById("staffName").value);
-  const status = document.getElementById("bookingStatus").value;
-  const notes = document.getElementById("specialNote").value;
+  if (!petId) { alert("Please select a pet."); return; }
+  if (!staffId) { alert("Please select a staff member."); return; }
 
-  let payload = {
+  const payload = {
     pet_id: Number(petId),
-    staff_id: staffId,
-    booking_status: denormalizeStatus(type, status),
+    staff_id: Number(staffId),
+    booking_status: denormalizeBookingStatus(statusInternal)
   };
 
-  let date, time, duration, amount, serviceLabel, price;
-  let addOn = "", addOnPrice = 0, roomLabel = "";
-  let checkInDate = "", checkOutDate = "", checkInTime = "", checkOutTime = "";
-  let feedingInstruction = "", medicalInstruction = "";
+  let slotDate = "";
+  let slotTime = "";
 
   if (type === "grooming") {
-    date = document.getElementById("bookingDate").value;
-    time = document.getElementById("bookingTime").value;
-    serviceLabel = document.getElementById("groomingServiceName").value;
-    price = Number(document.getElementById("groomingPrice").value) || 0;
-    addOn = document.getElementById("groomingAddOn").value;
-    addOnPrice = Number(document.getElementById("groomingAddOnPrice").value) || 0;
-    duration = GROOMING_DEFAULT_DURATION;
-    amount = price + addOnPrice;
-    payload = { ...payload, service_name: serviceLabel, booking_date: date, booking_time: time ? `${time}:00` : null, price, add_on: addOn || "-", add_on_price: addOnPrice, notes: notes || "-" };
+    const serviceName = document.getElementById("serviceName").value.trim();
+    const price = document.getElementById("price").value;
+    const date = document.getElementById("bookingDate").value;
+    const time = document.getElementById("bookingTime").value;
+
+    if (!serviceName || price === "" || !date || !time) {
+      alert("Please fill in service name, price, booking date and booking time.");
+      return;
+    }
+
+    payload.service_name = serviceName;
+    payload.price = Number(price);
+    payload.booking_date = date;
+    payload.booking_time = time;
+
+    const addOnName = document.getElementById("addOnName").value.trim();
+    payload.add_on = addOnName || null;
+    payload.add_on_price = addOnName ? Number(document.getElementById("addOnPrice").value || 0) : null;
+    payload.notes = document.getElementById("notes").value.trim() || null;
+
+    slotDate = date;
+    slotTime = time;
   } else if (type === "daycare") {
-    date = document.getElementById("bookingDate").value;
-    checkInTime = document.getElementById("daycareCheckInTime").value;
-    checkOutTime = document.getElementById("daycareCheckOutTime").value;
-    time = checkInTime;
-    serviceLabel = document.getElementById("daycarePackageType").value;
-    price = Number(document.getElementById("daycarePrice").value) || 0;
-    duration = minutesBetweenTimes(checkInTime, checkOutTime);
-    amount = price;
-    payload = { ...payload, booking_date: date, check_in_time: checkInTime ? `${checkInTime}:00` : null, check_out_time: checkOutTime ? `${checkOutTime}:00` : null, package_type: serviceLabel, price, special_instruction: notes || "-" };
-  } else {
-    checkInDate = document.getElementById("checkInDate").value;
-    checkInTime = document.getElementById("checkInTime").value;
-    checkOutDate = document.getElementById("checkOutDate").value;
-    checkOutTime = document.getElementById("checkOutTime").value;
-    date = checkInDate;
-    time = checkInTime;
-    roomLabel = document.getElementById("boardingRoomType").value;
-    price = Number(document.getElementById("boardingPricePerNight").value) || 0;
-    const nights = nightsBetweenDates(checkInDate, checkOutDate);
-    duration = 1440;
-    amount = price * nights;
-    feedingInstruction = document.getElementById("boardingFeeding").value;
-    medicalInstruction = document.getElementById("boardingMedical").value;
-    payload = { ...payload, check_in_date: checkInDate, check_in_time: checkInTime ? `${checkInTime}:00` : null, check_out_date: checkOutDate, check_out_time: checkOutTime ? `${checkOutTime}:00` : null, room_type: roomLabel, price_per_night: price, feeding_instruction: feedingInstruction || "-", medical_instruction: medicalInstruction || "-", notes: notes || "-" };
+    const packageType = document.getElementById("packageType").value.trim();
+    const price = document.getElementById("price").value;
+    const date = document.getElementById("bookingDate").value;
+    const checkInTime = document.getElementById("checkInTime").value;
+    const checkOutTime = document.getElementById("checkOutTime").value;
+
+    if (!packageType || price === "" || !date || !checkInTime || !checkOutTime) {
+      alert("Please fill in package type, price, booking date, check-in time and check-out time.");
+      return;
+    }
+    if (checkOutTime <= checkInTime) {
+      alert("Check-out time must be after check-in time.");
+      return;
+    }
+
+    payload.package_type = packageType;
+    payload.price = Number(price);
+    payload.booking_date = date;
+    payload.check_in_time = checkInTime;
+    payload.check_out_time = checkOutTime;
+    payload.special_instruction = document.getElementById("specialInstruction").value.trim() || null;
+
+    slotDate = date;
+    slotTime = checkInTime;
+  } else if (type === "boarding") {
+    const roomType = document.getElementById("roomType").value.trim();
+    const pricePerNight = document.getElementById("pricePerNight").value;
+    const checkInDate = document.getElementById("checkInDate").value;
+    const checkOutDate = document.getElementById("checkOutDate").value;
+    const checkInTime = document.getElementById("checkInTime").value;
+    const checkOutTime = document.getElementById("checkOutTime").value;
+
+    if (!roomType || pricePerNight === "" || !checkInDate || !checkOutDate || !checkInTime || !checkOutTime) {
+      alert("Please fill in room type, price per night, check-in/out date and check-in/out time.");
+      return;
+    }
+    if (checkOutDate < checkInDate || (checkOutDate === checkInDate && checkOutTime <= checkInTime)) {
+      alert("Check-out must be after check-in.");
+      return;
+    }
+
+    payload.room_type = roomType;
+    payload.price_per_night = Number(pricePerNight);
+    payload.check_in_date = checkInDate;
+    payload.check_out_date = checkOutDate;
+    payload.check_in_time = checkInTime;
+    payload.check_out_time = checkOutTime;
+    payload.feeding_instruction = document.getElementById("feedingInstruction").value.trim() || null;
+    payload.medical_instruction = document.getElementById("medicalInstruction").value.trim() || null;
+    payload.notes = document.getElementById("notes").value.trim() || null;
+
+    slotDate = checkInDate;
+    slotTime = checkInTime;
   }
 
-  const leavingActiveSchedule = status === "cancelled" || status === "no_show";
-  const excludeId = isNew ? "" : bookingId;
-  if (!leavingActiveSchedule && !canAddBookingToSlot(date, time, staffId, duration, excludeId)) {
+  const leavingActiveSchedule = statusInternal === "cancelled" || statusInternal === "no_show";
+  if (!leavingActiveSchedule && slotDate && slotTime &&
+      !canAddBookingToSlot(slotDate, slotTime, staffId, bookingId)) {
     alert("This booking cannot be saved. The selected timeslot already has 3 bookings or the selected staff is already assigned at this time.");
     return;
   }
 
+  const submitBtn = document.querySelector("#bookingForm button[type=submit]");
+  if (submitBtn) submitBtn.disabled = true;
+
   try {
-    if (isNew) {
-      const result = await api.createBooking(type, payload);
-      const idColumn = { grooming: "grooming_booking_id", daycare: "daycare_booking_id", boarding: "boarding_booking_id" }[type];
-      booking.realId = result.booking[idColumn];
-      booking.id = `${type}-${booking.realId}`;
-      booking.paymentId = result.booking.payment_id;
-      bookings.push(booking);
+    const existing = bookingId ? findBookingRecord(bookingId) : null;
+
+    if (existing) {
+      await api.updateBooking(type, existing.rawId, payload);
     } else {
-      await api.updateBooking(type, booking.realId, payload);
+      await api.createBooking(type, payload);
     }
-  } catch (err) {
-    alert(err.message);
-    return;
+
+    closeModal();
+    await refreshBookingPageData();
+  } catch (error) {
+    alert(error.message || "Failed to save booking.");
+  } finally {
+    if (submitBtn) submitBtn.disabled = false;
   }
+}
 
-  booking.bookingType = type;
-  booking.serviceType = type;
-  booking.petId = Number(petId);
-  booking.customerName = pet?.customerName || booking.customerName;
-  booking.petName = pet?.pet_name || booking.petName;
-  booking.staffId = staffId;
-  booking.status = status;
-  booking.date = date;
-  booking.time = time;
-  booking.duration = duration;
-  booking.amount = amount;
-  booking.serviceLabel = serviceLabel;
-  booking.price = price;
-  booking.addOn = addOn;
-  booking.addOnPrice = addOnPrice;
-  booking.roomLabel = roomLabel;
-  booking.checkInDate = checkInDate;
-  booking.checkOutDate = checkOutDate;
-  booking.checkInTime = checkInTime;
-  booking.checkOutTime = checkOutTime;
-  booking.feedingInstruction = feedingInstruction;
-  booking.medicalInstruction = medicalInstruction;
-  booking.specialNote = notes;
+function updateOwnerNameDisplay() {
+  const petId = document.getElementById("bookingPetId").value;
+  document.getElementById("bookingOwnerName").value = bookingOwnerNameForPet(petId);
+}
 
-  _newBookingDraft = null;
-  closeModal();
-  renderAll();
+function populatePetDropdown() {
+  const select = document.getElementById("bookingPetId");
+
+  select.innerHTML = bookingPetOptions.map(pet => {
+    const ownerName = findBookingCustomer(pet.customer_id)?.full_name || "Unknown owner";
+    return `<option value="${pet.pet_id}">${pet.pet_name} (${ownerName}) — PET-${String(pet.pet_id).padStart(4, "0")}</option>`;
+  }).join("");
 }
 
 function populateStaffDropdown() {
-  const staffSelect = document.getElementById("staffName");
-  staffSelect.innerHTML = staff.map(member => `
+  document.getElementById("staffName").innerHTML = bookingStaffOptions.map(member => `
     <option value="${member.staff_id}">${member.staff_name}</option>
   `).join("");
 }
@@ -1570,17 +1287,23 @@ function populateStaffDropdown() {
 function toggleServiceSpecificFields() {
   const selectedType = document.getElementById("serviceType").value;
 
-  document.querySelectorAll(".date-field").forEach(field => {
-    field.classList.toggle("hidden", !["grooming", "daycare"].includes(selectedType));
+  document.querySelectorAll(".gd-field").forEach(field => {
+    field.classList.toggle("hidden", selectedType === "boarding");
   });
-  document.querySelectorAll(".grooming-only").forEach(field => {
+  document.querySelectorAll(".grooming-field").forEach(field => {
     field.classList.toggle("hidden", selectedType !== "grooming");
   });
-  document.querySelectorAll(".daycare-only").forEach(field => {
+  document.querySelectorAll(".daycare-field").forEach(field => {
     field.classList.toggle("hidden", selectedType !== "daycare");
   });
-  document.querySelectorAll(".boarding-only").forEach(field => {
+  document.querySelectorAll(".bd-field").forEach(field => {
+    field.classList.toggle("hidden", selectedType === "grooming");
+  });
+  document.querySelectorAll(".boarding-field").forEach(field => {
     field.classList.toggle("hidden", selectedType !== "boarding");
+  });
+  document.querySelectorAll(".gb-field").forEach(field => {
+    field.classList.toggle("hidden", selectedType === "daycare");
   });
 }
 
@@ -1660,8 +1383,14 @@ function findRoom(roomId) {
   return rooms.find(room => room.id === roomId);
 }
 
+// Real booking rows have no `duration` column at all (grooming/daycare/
+// boarding schemas confirmed to lack it), so slot-conflict checking can no
+// longer compute minute-range overlaps. It now treats a "slot" as an exact
+// date+time match (the same granularity the hourly calendar grid already
+// uses) instead of a start/end window: a conflict is two active bookings
+// sharing the same date and the same time value, not merely overlapping.
 function getSlotBookings(date, time, excludeBookingId = "") {
-  return bookings.filter(booking => {
+  return bookingRecords.filter(booking => {
     return booking.date === date &&
       booking.time === time &&
       booking.id !== excludeBookingId &&
@@ -1670,40 +1399,31 @@ function getSlotBookings(date, time, excludeBookingId = "") {
   });
 }
 
-function timeToMinutes(timeStr) {
-  const [hours, minutes] = timeStr.split(":").map(Number);
-  return hours * 60 + minutes;
-}
-
-function isStaffAlreadyBooked(date, time, staffId, duration = 60, excludeBookingId = "") {
-  const newStart = timeToMinutes(time);
-  const newEnd = newStart + duration;
-
-  return bookings.some(booking => {
-    if (booking.date !== date || Number(booking.staffId) !== Number(staffId) || booking.id === excludeBookingId ||
-        booking.status === "cancelled" || booking.status === "no_show" || !booking.time) {
-      return false;
-    }
-    const existingStart = timeToMinutes(booking.time);
-    const existingEnd = existingStart + booking.duration;
-    return newStart < existingEnd && existingStart < newEnd;
+function isStaffAlreadyBooked(date, time, staffId, excludeBookingId = "") {
+  return bookingRecords.some(booking => {
+    return booking.date === date &&
+      booking.time === time &&
+      String(booking.staffId) === String(staffId) &&
+      booking.id !== excludeBookingId &&
+      booking.status !== "cancelled" &&
+      booking.status !== "no_show";
   });
 }
 
-function getAvailableStaffForSlot(date, time, duration = 60, excludeBookingId = "") {
-  return staff.filter(member => {
-    return !isStaffAlreadyBooked(date, time, member.staff_id, duration, excludeBookingId);
+function getAvailableStaffForSlot(date, time, excludeBookingId = "") {
+  return bookingStaffOptions.filter(member => {
+    return !isStaffAlreadyBooked(date, time, member.staff_id, excludeBookingId);
   });
 }
 
-function canAddBookingToSlot(date, time, staffId, duration = 60, excludeBookingId = "") {
+function canAddBookingToSlot(date, time, staffId, excludeBookingId = "") {
   const slotBookings = getSlotBookings(date, time, excludeBookingId);
 
   if (slotBookings.length >= 3) {
     return false;
   }
 
-  if (isStaffAlreadyBooked(date, time, staffId, duration, excludeBookingId)) {
+  if (isStaffAlreadyBooked(date, time, staffId, excludeBookingId)) {
     return false;
   }
 
@@ -1730,54 +1450,34 @@ function renderAddSlotArea(date, time) {
   `;
 }
 
-function findFirstAvailableTime(date, duration = 60) {
+function findFirstAvailableTime(date) {
   return CALENDAR_HOURS.find(hour => {
     const slotBookings = getSlotBookings(date, hour);
-    const availableStaff = getAvailableStaffForSlot(date, hour, duration);
+    const availableStaff = getAvailableStaffForSlot(date, hour);
 
     return slotBookings.length < 3 && availableStaff.length > 0;
   });
+}
+
+function countToday(data) {
+  return data.filter(booking => booking.date === bookingFilterDate).length;
 }
 
 function countStatus(data, status) {
   return data.filter(booking => booking.status === status).length;
 }
 
+function todayCheckIn() {
+  return bookingRecords.filter(b => b.type === "boarding" && b.checkInDate === bookingFilterDate).length;
+}
+
+function todayCheckOut() {
+  return bookingRecords.filter(b => b.type === "boarding" && b.checkOutDate === bookingFilterDate).length;
+}
+
 function percentage(value, total) {
   if (!total) return "0%";
   return `${Math.round((value / total) * 100)}%`;
-}
-
-function getCalendarDates(mode, startInput, endInput) {
-  // If user selects both start and end date, use the selected date range
-  if (startInput && endInput) {
-    return getDateRange(startInput, endInput);
-  }
-
-  // If only start date is selected, auto-create range based on mode
-  if (startInput && !endInput) {
-    if (mode === "daily") return [startInput];
-    if (mode === "weekly") return getDateRange(startInput, addDays(startInput, 6));
-    if (mode === "monthly") return getDateRange(startInput, addDays(startInput, 29));
-  }
-
-  // If no filter is selected, render a wider scrollable range
-  // This allows user to scroll left for past dates and right for future dates
-  const today = getToday();
-
-  if (mode === "daily") {
-    return getDateRange(addDays(today, -7), addDays(today, 7));
-  }
-
-  if (mode === "weekly") {
-    return getDateRange(addDays(today, -21), addDays(today, 42));
-  }
-
-  if (mode === "monthly") {
-    return getDateRange(addDays(today, -30), addDays(today, 90));
-  }
-
-  return getDateRange(addDays(today, -21), addDays(today, 42));
 }
 
 function formatStatus(status) {
@@ -1800,6 +1500,89 @@ function addDays(dateString, days) {
   const date = new Date(dateString);
   date.setDate(date.getDate() + days);
   return toLocalDateString(date);
+}
+
+function formatDateFilterLabel(dateString) {
+  return new Date(`${dateString}T00:00:00`).toLocaleDateString("en-MY", {
+    weekday: "short",
+    day: "2-digit",
+    month: "short",
+    year: "numeric",
+  });
+}
+
+function updateDateNavigatorLabel(prefix, dateString) {
+  const label = q(`${prefix}Label`);
+  if (label) label.textContent = formatDateFilterLabel(dateString);
+  const picker = q(`${prefix}LabelPickerInput`);
+  if (picker) picker.value = dateString;
+}
+
+// Turns a plain-text date chip next to a date filter into a click target
+// for a native date picker, so any specific date is directly selectable
+// instead of only reachable by stepping one day (or week/month) at a time.
+// The <input type="date"> is created as a sibling (not a child) of the
+// chip, since several call sites (e.g. dashboardWeekChip) overwrite the
+// chip's innerHTML on every render.
+function attachDatePickerToLabel(labelId, applyDate, initialDate) {
+  const label = q(labelId);
+  if (!label || q(`${labelId}PickerInput`)) return;
+
+  const picker = document.createElement("input");
+  picker.type = "date";
+  picker.id = `${labelId}PickerInput`;
+  picker.className = "page-date-native-input";
+  picker.value = initialDate;
+  picker.setAttribute("aria-hidden", "true");
+  picker.tabIndex = -1;
+  label.insertAdjacentElement("afterend", picker);
+  picker.addEventListener("change", () => {
+    if (picker.value) applyDate(picker.value);
+  });
+
+  label.classList.add("page-date-label-pickable");
+  label.setAttribute("role", "button");
+  label.setAttribute("tabindex", "0");
+  label.setAttribute("title", "Click to pick a specific date");
+  const openPicker = () => {
+    if (typeof picker.showPicker === "function") picker.showPicker();
+    else picker.click();
+  };
+  label.addEventListener("click", openPicker);
+  label.addEventListener("keydown", event => {
+    if (event.key === "Enter" || event.key === " ") {
+      event.preventDefault();
+      openPicker();
+    }
+  });
+}
+
+function bindDateNavigator(prefix, { getDate, setDate, onChange }) {
+  const applyDate = dateString => {
+    setDate(dateString);
+    updateDateNavigatorLabel(prefix, dateString);
+    onChange(dateString);
+  };
+
+  q(`${prefix}PrevBtn`)?.addEventListener("click", () => applyDate(addDays(getDate(), -1)));
+  q(`${prefix}TodayBtn`)?.addEventListener("click", () => applyDate(getToday()));
+  q(`${prefix}NextBtn`)?.addEventListener("click", () => applyDate(addDays(getDate(), 1)));
+  updateDateNavigatorLabel(prefix, getDate());
+  attachDatePickerToLabel(`${prefix}Label`, applyDate, getDate());
+}
+
+function recordDateValue(record, fields) {
+  for (const field of fields) {
+    if (record?.[field]) return String(record[field]).slice(0, 10);
+  }
+  return "";
+}
+
+function filterRecordsByDateIfPresent(records, dateString, fields) {
+  const hasDateField = records.some(record => recordDateValue(record, fields));
+  return hasDateField
+    ? records.filter(record => recordDateValue(record, fields) === dateString)
+    : records;
 }
 
 function getStartOfWeek(dateString) {
@@ -1844,13 +1627,16 @@ function getDateRange(startDate, endDate) {
    ========================================================================== */
 
 let currentFilter = 'all';
-// Unified date-range filter (Daily/Weekly/Monthly + Prev/Today/Next), same
-// pattern as the Analytical Dashboard. The Weekly Booking Schedule is always
-// a fixed 7-day grid, so it shows the calendar week containing the range's
-// start date regardless of which period is selected.
-let dailyOverviewRange = { start: today, end: today };
-let dailyOverviewPeriod = 'daily';
+let dailyOverviewDate = getToday();
+let weekAnchor = getStartOfWeek(dailyOverviewDate);
 
+// NOTE: these three still read the mock `bookings`/`services`/`rooms`
+// arrays and are kept byte-for-byte as they were — they're NOT dead code:
+// the shared buildActionQueue() and bookingDetailRow() functions below
+// (used by dashboard.html's not-yet-wired charts) call them directly, so
+// they must keep working against the mock shape. Real-data equivalents
+// (filterRealBookingsByService, and inlined service/room labels on
+// bookingRecords) are defined separately below for this page's own use.
 function findServiceName(id) { return findService(id)?.name || '-'; }
 function findRoomName(id) { return findRoom(id)?.name || '-'; }
 // Dual-shape helpers: real bookings (booking.html/dailyoverview.html) carry
@@ -1861,9 +1647,55 @@ function bookingRoomLabel(b) { return b.roomLabel || (b.roomId ? findRoomName(b.
 function filterBookingsByService(filter) {
   return bookings.filter(b => filter === 'all' || b.serviceType === filter);
 }
-function currentTimeStr() {
-  const d = new Date();
-  return String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0');
+
+// Real backend data for this page (separate from the mock `bookings`/
+// `enquiries`/`loyaltyRequests`/`rooms` arrays above, which dashboard.html's
+// remaining charts and enquiries.html/loyalty.html still read directly
+// until they're wired too). `bookingRecords`/`bookingPetOptions`/etc. are
+// populated via booking.html's fetchBookingPageData() (see "BOOKING DATA"
+// section) — reused here as-is since it's a plain data fetcher, not
+// booking.html-DOM-coupled.
+//
+// `messages` (chat-messages) has no status column: an enquiry is "pending"
+// when reply_date is null, "replied" once it's set. There's no channel
+// column either (this product is WhatsApp-only in practice, so "WhatsApp"
+// below is a hardcoded display label, not a real field) and no per-service
+// tagging on enquiries (`intent_label` is a free-text intent classification
+// — seen values "booking"/"policy"/"loyalty" — not a grooming/boarding/
+// daycare tag), so enquiry counts are NOT scoped by the service filter
+// tabs the way booking counts are.
+//
+// "Pending Loyalty Redemption" has no real equivalent (redemptions are
+// created atomically when staff verify a payment — there's no separate
+// approval queue), so it's replaced by "Pending Payment Verification"
+// (payments with a Pending or Unpaid status, exactly what payment.html shows).
+let enquiryRecords = [];        // normalized /api/chat-messages rows
+let pendingPaymentRecords = []; // raw unpaid /api/payments rows
+
+function normalizeChatMessage(m) {
+  const customerId = m.sender_type === "customer" ? m.sender_id : null;
+  const customer = customerId != null ? findBookingCustomer(customerId) : null;
+  return {
+    id: m.message_id,
+    customerId,
+    customerName: customer?.full_name || "Unknown customer",
+    phone: customer?.phone_number || "",
+    senderType: m.sender_type,
+    message: m.message_text || "",
+    intent: m.intent_label || "",
+    receiveDate: m.receive_date,
+    receiveTime: m.receive_time ? m.receive_time.slice(0, 5) : "",
+    replyDate: m.reply_date,
+    replyTime: m.reply_time ? m.reply_time.slice(0, 5) : "",
+    replyText: m.reply_text || "",
+    repliedByStaffId: m.replied_by_staff_id,
+    status: m.reply_date ? "replied" : "pending",
+    raw: m,
+  };
+}
+
+function filterRealBookingsByService(filter) {
+  return bookingRecords.filter(b => filter === 'all' || b.type === filter);
 }
 
 const TONES = {
@@ -1883,7 +1715,14 @@ function toneStyle(tone) {
    SLA
 ========================= */
 
-const SLA_MINUTES = { pendingService: 15, enquiry: 180, loyalty: 120 };
+// "payment" is a real elapsed-time SLA (payment.created_at is a full
+// timestamp, and a pending payment can sit for hours or days) — kept
+// separate from the time-of-day kinds below, which assume same-day.
+// There's no "loyalty"/redemption entry here: a redemption row is created
+// atomically at the same instant its linked payment is verified (see
+// verify_payment_function.sql), so there's no separate pending-redemption
+// gap to measure — the payment SLA below covers it.
+const SLA_MINUTES = { pendingService: 15, enquiry: 180, payment: 300 };
 
 function toMinutes(hhmm) {
   const [h, m] = hhmm.split(':').map(Number);
@@ -1912,6 +1751,29 @@ function slaBadge(kind, timeStr) {
 }
 function slaBreachCount(kind, items, timeField) {
   return items.filter(item => slaStatus(kind, item[timeField]).breached).length;
+}
+
+// Timestamp-based counterpart of slaStatus/slaBadge above, for kinds whose
+// anchor is a full ISO datetime (e.g. payment.created_at) rather than a
+// same-day "HH:MM" string.
+function minutesSince(isoTimestamp) {
+  return Math.round((Date.now() - new Date(isoTimestamp).getTime()) / 60000);
+}
+function slaStatusFromTimestamp(kind, isoTimestamp) {
+  const elapsed = minutesSince(isoTimestamp);
+  const limit = SLA_MINUTES[kind];
+  return { elapsed, limit, breached: elapsed > limit, remaining: limit - elapsed };
+}
+function slaBadgeFromTimestamp(kind, isoTimestamp) {
+  if (!isoTimestamp) return '';
+  const { elapsed, breached, remaining } = slaStatusFromTimestamp(kind, isoTimestamp);
+  if (elapsed < 0) return '';
+  return breached
+    ? `<span class="status-tag status-no_show">⏱ SLA breached · ${formatElapsed(elapsed)}</span>`
+    : `<span class="status-tag status-done">⏱ ${formatElapsed(remaining)} left</span>`;
+}
+function paymentSlaBreachCount(items) {
+  return items.filter(item => slaStatusFromTimestamp('payment', item.created_at).breached).length;
 }
 
 /* =========================
@@ -1946,11 +1808,10 @@ function enquiryPriorityBadge(e) {
 function computeSlaCompliance() {
   const pendingGrooming = bookings.filter(b => b.serviceType === 'grooming' && b.date === today && b.status === 'pending');
   const pendingEnquiries = enquiries.filter(e => e.status === 'pending');
-  const pendingLoyalty = loyaltyRequests.filter(r => r.status === 'pending');
-  const total = pendingGrooming.length + pendingEnquiries.length + pendingLoyalty.length;
+  const total = pendingGrooming.length + pendingEnquiries.length + pendingPaymentRecords.length;
   const breaches = slaBreachCount('pendingService', pendingGrooming, 'time')
     + slaBreachCount('enquiry', pendingEnquiries, 'receivedAt')
-    + slaBreachCount('loyalty', pendingLoyalty, 'requestedAt');
+    + paymentSlaBreachCount(pendingPaymentRecords);
   return { total, breaches, rate: total ? Math.round(((total - breaches) / total) * 100) : 100 };
 }
 
@@ -1958,39 +1819,38 @@ function computeSlaCompliance() {
    PENDING ACTION CARDS
 ========================= */
 
-const CARD_CTA = {
-  pendingGrooming:      { label: 'Open Service Queue',      href: 'booking.html' },
-  pendingConfirmation:  { label: 'Review Bookings',         href: 'booking.html' },
-  pendingEnquiries:     { label: 'Open Enquiries',          href: 'enquiries.html' },
-  pendingLoyalty:       { label: 'Review Redemptions',      href: 'loyalty.html' },
-  boardingCheckIn:      { label: 'Open Booking Dashboard',  href: 'booking.html' },
-  boardingCheckOut:     { label: 'Open Booking Dashboard',  href: 'booking.html' },
-  daycareCheckIn:       { label: 'Open Booking Dashboard',  href: 'booking.html' },
-  daycarePendingPickup: { label: 'Open Booking Dashboard',  href: 'booking.html' }
+const CARD_CTA_REAL = {
+  pendingGrooming:            { label: 'Open Service Queue',      href: 'booking.html' },
+  pendingConfirmation:        { label: 'Review Bookings',         href: 'booking.html' },
+  pendingEnquiries:           { label: 'Open Enquiries',          href: 'enquiries.html' },
+  pendingPaymentVerification: { label: 'Review Payments',         href: 'payment.html' },
+  boardingCheckIn:            { label: 'Open Booking Dashboard',  href: 'booking.html' },
+  boardingCheckOut:           { label: 'Open Booking Dashboard',  href: 'booking.html' },
+  daycareCheckIn:             { label: 'Open Booking Dashboard',  href: 'booking.html' },
+  daycarePendingPickup:       { label: 'Open Booking Dashboard',  href: 'booking.html' }
 };
 
-function buildActionCards(filter, range = dailyOverviewRange, period = dailyOverviewPeriod) {
-  const inRange = d => d >= range.start && d <= range.end;
-  const word = periodWord(period);
+// Enquiries and pending-payment-verification counts are intentionally NOT
+// scoped to today's date the way booking counts are for enquiries (there's
+// no per-day expectation baked into the mock either — it just showed
+// whatever was pending) beyond limiting to receiveDate === today so the
+// "Daily" overview doesn't surface a backlog from days ago (that full
+// inbox view belongs on enquiries.html once it's wired). Payment
+// verification counts are NOT date-scoped at all — same as payment.html's
+// own "Pending" count — since a payment sits pending until verified,
+// with no daily boundary.
+function buildRealActionCards(filter) {
+  const todayStr = dailyOverviewDate;
+  const todayBookings = filterRealBookingsByService(filter).filter(b => b.date === todayStr);
+  const pendingConfirmation = todayBookings.filter(b => b.status === 'scheduled').length;
 
-  const rangeBookings = filterBookingsByService(filter).filter(b => inRange(b.date));
-  const pendingConfirmation = rangeBookings.filter(b => b.status === 'scheduled').length;
-
-  // The mock enquiries/loyaltyRequests arrays used below have no date field
-  // at all (see common.js's dailyoverview section header) — they stay
-  // unfiltered by the date range, same as before this feature.
-  const relevantEnquiries = enquiries.filter(e => filter === 'all' || e.relatedService === filter);
-  const pendingEnquiries = relevantEnquiries.filter(e => e.status === 'pending');
-  const enquirySlaBreaches = slaBreachCount('enquiry', pendingEnquiries, 'receivedAt');
-
-  const relevantLoyalty = loyaltyRequests.filter(r => filter === 'all' || r.relatedService === filter);
-  const pendingLoyalty = relevantLoyalty.filter(r => r.status === 'pending');
-  const loyaltySlaBreaches = slaBreachCount('loyalty', pendingLoyalty, 'requestedAt');
+  const pendingEnquiries = enquiryRecords.filter(e => e.senderType === 'customer' && e.status === 'pending' && e.receiveDate === todayStr);
+  const enquirySlaBreaches = slaBreachCount('enquiry', pendingEnquiries, 'receiveTime');
 
   const cards = [];
 
   if (filter === 'all' || filter === 'grooming') {
-    const groomingPending = bookings.filter(b => b.serviceType === 'grooming' && inRange(b.date) && b.status === 'pending');
+    const groomingPending = bookingRecords.filter(b => b.type === 'grooming' && b.date === todayStr && b.status === 'pending');
     const groomingSlaBreaches = slaBreachCount('pendingService', groomingPending, 'time');
     cards.push({
       key: 'pendingGrooming',
@@ -2009,19 +1869,20 @@ function buildActionCards(filter, range = dailyOverviewRange, period = dailyOver
     {
       key: 'pendingEnquiries',
       icon: 'chat-message.png', label: 'Pending Enquiries', value: pendingEnquiries.length,
-      sub: enquirySlaBreaches > 0 ? `${enquirySlaBreaches} breaching 30-min reply SLA` : 'Within SLA', tone: enquirySlaBreaches > 0 ? 'alert' : 'purple'
+      sub: enquirySlaBreaches > 0 ? `${enquirySlaBreaches} breaching 3h reply SLA` : 'Within SLA', tone: enquirySlaBreaches > 0 ? 'alert' : 'purple'
     },
     {
-      key: 'pendingLoyalty',
-      icon: 'loyalty-reward-gift.png', label: 'Pending Loyalty Redemption', value: pendingLoyalty.length,
-      sub: loyaltySlaBreaches > 0 ? `${loyaltySlaBreaches} breaching 2h approval SLA` : 'Within SLA', tone: loyaltySlaBreaches > 0 ? 'alert' : 'pink'
+      key: 'pendingPaymentVerification',
+      icon: 'payment-card.png', label: 'Pending Payment Verification', value: pendingPaymentRecords.length,
+      sub: paymentSlaBreachCount(pendingPaymentRecords) > 0 ? `${paymentSlaBreachCount(pendingPaymentRecords)} breaching 5h verification SLA` : 'Within SLA',
+      tone: paymentSlaBreachCount(pendingPaymentRecords) > 0 ? 'alert' : (pendingPaymentRecords.length > 0 ? 'warning' : 'pink')
     }
   );
 
   if (filter === 'all' || filter === 'boarding') {
-    const boardingBookings = bookings.filter(b => b.serviceType === 'boarding');
-    const checkInsDue = boardingBookings.filter(b => inRange(b.checkInDate) && b.status !== 'done' && b.status !== 'no_show' && b.status !== 'cancelled').length;
-    const checkOutsDue = boardingBookings.filter(b => inRange(b.checkOutDate) && b.status !== 'no_show' && b.status !== 'cancelled').length;
+    const boardingBookings = bookingRecords.filter(b => b.type === 'boarding');
+    const checkInsDue = boardingBookings.filter(b => b.checkInDate === todayStr && b.status !== 'done' && b.status !== 'no_show' && b.status !== 'cancelled').length;
+    const checkOutsDue = boardingBookings.filter(b => b.checkOutDate === todayStr && b.status !== 'no_show' && b.status !== 'cancelled').length;
 
     cards.push(
       { key: 'boardingCheckIn', icon: 'login.png', label: 'Boarding Check-In Due', value: checkInsDue, sub: `Arrivals to confirm (${word.toLowerCase()})`, tone: 'success' },
@@ -2030,7 +1891,7 @@ function buildActionCards(filter, range = dailyOverviewRange, period = dailyOver
   }
 
   if (filter === 'all' || filter === 'daycare') {
-    const daycareBookings = bookings.filter(b => b.serviceType === 'daycare' && inRange(b.date));
+    const daycareBookings = bookingRecords.filter(b => b.type === 'daycare' && b.date === todayStr);
     const checkInsDue = daycareBookings.filter(b => b.status === 'pending' || b.status === 'scheduled').length;
     const pendingPickup = daycareBookings.filter(b => b.status === 'done').length;
 
@@ -2043,10 +1904,10 @@ function buildActionCards(filter, range = dailyOverviewRange, period = dailyOver
   return cards;
 }
 
-function renderActionCard(card) {
+function renderRealActionCard(card) {
   const tone = TONES[card.tone] || TONES.info;
   return `
-    <div class="kpi-hero-card action-card clickable" style="border-color:${tone.bg};" onclick="openCardDetail('${card.key}')" title="${card.sub}">
+    <div class="kpi-hero-card action-card clickable" style="border-color:${tone.bg};" onclick="openRealCardDetail('${card.key}')" title="${card.sub}">
       <div class="action-card-head">
         <img src="icon/${card.icon}" alt="" class="card-icon">
         <span class="kpi-hero-label">${card.label}</span>
@@ -2060,20 +1921,21 @@ function renderActionCard(card) {
    SERVICE LOAD CHART
 ========================= */
 
-function renderServiceLoadChart(range = dailyOverviewRange, period = dailyOverviewPeriod) {
+function renderRealServiceLoadChart() {
+  const todayStr = dailyOverviewDate;
   const types = [
     { key: 'grooming', icon: 'grooming-scissors.png', label: 'Grooming', tone: 'info' },
     { key: 'boarding', icon: 'boarding.png', label: 'Boarding', tone: 'purple' },
     { key: 'daycare',  icon: 'dog-play.png', label: 'Daycare',  tone: 'warning' }
   ];
-  const counts = types.map(t => bookings.filter(b => b.serviceType === t.key && b.date >= range.start && b.date <= range.end && b.status !== "cancelled" && b.status !== "no_show").length);
+  const counts = types.map(t => bookingRecords.filter(b => b.type === t.key && b.date === todayStr && b.status !== "cancelled" && b.status !== "no_show").length);
   const max = Math.max(...counts, 1);
   const total = counts.reduce((a, b) => a + b, 0);
 
-  q('serviceLoadTotal').textContent = `${total} booking${total === 1 ? '' : 's'} ${periodWord(period).toLowerCase()}`;
+  q('serviceLoadTotal').textContent = `${total} booking${total === 1 ? '' : 's'} · ${formatShortDate(todayStr)}`;
 
   q('serviceLoadChart').innerHTML = types.map((t, i) => `
-    <div class="bar-label-item" onclick="openServiceLoadDetail('${t.key}')">
+    <div class="bar-label-item" onclick="openRealServiceLoadDetail('${t.key}')">
       <span class="bar-count">${counts[i]}</span>
       <div class="bar-track">
         <div class="mini-bar" style="height:${Math.max((counts[i] / max) * 100, counts[i] ? 8 : 2)}%;${toneStyle(t.tone)}background-color:var(--tone-color);"></div>
@@ -2192,9 +2054,10 @@ const STATUS_META = [
   { key: 'cancelled', label: 'Cancelled',       color: '#78716C' }
 ];
 
-function renderStatusDonut(filter, range = dailyOverviewRange) {
-  const rangeBookings = filterBookingsByService(filter).filter(b => b.date >= range.start && b.date <= range.end);
-  const counts = STATUS_META.map(s => rangeBookings.filter(b => b.status === s.key).length);
+function renderRealStatusDonut(filter) {
+  const todayStr = dailyOverviewDate;
+  const todayBookings = filterRealBookingsByService(filter).filter(b => b.date === todayStr);
+  const counts = STATUS_META.map(s => todayBookings.filter(b => b.status === s.key).length);
   const total = counts.reduce((a, b) => a + b, 0);
 
   const scopeLabel = filter === 'all' ? 'All bookings' : `${filter.charAt(0).toUpperCase() + filter.slice(1)} bookings`;
@@ -2203,7 +2066,7 @@ function renderStatusDonut(filter, range = dailyOverviewRange) {
   q('statusLegend').innerHTML = STATUS_META.map((s, i) => {
     const pct = total ? Math.round((counts[i] / total) * 100) : 0;
     return `
-      <div class="chart-legend-item" data-key="${s.key}" onclick="openServiceStatusDetail('${s.key}')">
+      <div class="chart-legend-item" data-key="${s.key}" onclick="openRealServiceStatusDetail('${s.key}')">
         <span class="legend-swatch" style="background-color:${s.color};"></span>
         <span>${s.label} ${counts[i]} (${pct}%)</span>
       </div>
@@ -2215,7 +2078,7 @@ function renderStatusDonut(filter, range = dailyOverviewRange) {
     totalElId: 'statusDonutTotal',
     legendElId: 'statusLegend',
     segments: STATUS_META.map((s, i) => ({ key: s.key, label: s.label, count: counts[i], color: s.color })),
-    onSegmentClick: openServiceStatusDetail
+    onSegmentClick: openRealServiceStatusDetail
   });
 }
 
@@ -2223,56 +2086,13 @@ function renderStatusDonut(filter, range = dailyOverviewRange) {
    ROOM & PLAY AREA STATUS
 ========================= */
 
-// Your real Supabase schema has no rooms/capacity catalog — only
-// boarding_booking.room_type, a free-text label per booking. So instead of
-// a fixed room list, this derives "rooms in use" from whatever room_type
-// labels currently appear in real boarding bookings.
-function getActiveRoomLabels() {
-  const labels = new Set();
-  bookings.forEach(b => { if (b.bookingType === 'boarding' && b.roomLabel) labels.add(b.roomLabel); });
-  return [...labels].sort();
-}
-
-function renderRoomStatus(filter, range = dailyOverviewRange, period = dailyOverviewPeriod) {
-  const el = q('roomStatusList');
-
-  if (filter === 'grooming' || filter === 'daycare') {
-    const label = filter.charAt(0).toUpperCase() + filter.slice(1);
-    el.innerHTML = `<p class="queue-empty">${label} does not use dedicated rooms.</p>`;
-    q('roomStatusCount').textContent = '0 rooms';
-    return;
-  }
-
-  const roomLabels = getActiveRoomLabels();
-  q('roomStatusCount').textContent = `${roomLabels.length} room${roomLabels.length === 1 ? '' : 's'}`;
-
-  if (!roomLabels.length) {
-    el.innerHTML = `<p class="queue-empty">No boarding rooms currently in use.</p>`;
-    return;
-  }
-
-  const word = periodWord(period);
-
-  el.innerHTML = roomLabels.map(roomLabel => {
-    const roomBookings = bookings.filter(b => b.bookingType === 'boarding' && b.roomLabel === roomLabel);
-    const checkoutInRange = roomBookings.some(b => b.checkOutDate >= range.start && b.checkOutDate <= range.end && b.status !== 'no_show' && b.status !== 'cancelled');
-    const activeInRange = roomBookings.some(b =>
-      b.checkInDate && b.checkOutDate && b.checkInDate <= range.end && b.checkOutDate >= range.start &&
-      b.status !== 'no_show' && b.status !== 'cancelled'
-    );
-
-    let label = 'Vacant';
-    let statusKey = 'done';
-    if (checkoutInRange) { label = `Needs Cleaning · Checkout ${word}`; statusKey = 'no_show'; }
-    else if (activeInRange) { label = `Occupied ${word}`; statusKey = 'scheduled'; }
-
-    return `
-      <div class="room-status-row" onclick="openRoomDetail('${roomLabel}')">
-        <span>${roomLabel}</span>
-        <span class="status-tag status-${statusKey}">${label}</span>
-      </div>
-    `;
-  }).join('');
+// No rooms/capacity table exists anywhere in the real schema, so this panel
+// has no real-backend equivalent at all (unlike the mock `rooms` array,
+// which was entirely invented). Rather than fabricate room/turnover data,
+// this now just states plainly that it isn't tracked yet.
+function renderRealRoomStatus() {
+  q('roomStatusCount').textContent = 'Not tracked';
+  q('roomStatusList').innerHTML = `<p class="queue-empty">Room &amp; play-area tracking isn't available yet — there's no rooms/capacity table in the connected system.</p>`;
 }
 
 /* =========================
@@ -2291,18 +2111,15 @@ function formatShortDate(dateStr) {
   return new Date(dateStr + 'T00:00:00').toLocaleDateString('en-MY', { day: '2-digit', month: 'short' });
 }
 
-function renderWeeklySchedule(filter, range = dailyOverviewRange) {
-  // Always a fixed 7-day grid — shows the calendar week containing the
-  // filter's range start, so it stays in sync with the master date filter
-  // (Daily/Monthly periods land on the week containing that day/month-start).
-  const weekStart = getStartOfWeek(range.start);
-  const dates = getDateRange(weekStart, addDays(weekStart, 6));
+function renderRealWeeklySchedule(filter) {
+  const dates = getDateRange(weekAnchor, addDays(weekAnchor, 6));
+  const todayStr = getToday();
 
   q('scheduleWeekLabel').textContent = `${formatShortDate(weekStart)} – ${formatShortDate(addDays(weekStart, 6))}`;
 
   q('scheduleHead').innerHTML = dates.map(date => {
     const d = new Date(date + 'T00:00:00');
-    const isToday = date === today;
+    const isToday = date === todayStr;
     return `<div class="schedule-head ${isToday ? 'is-today' : ''}">${d.toLocaleDateString('en-MY', { weekday: 'short' })} ${d.getDate()}</div>`;
   }).join('');
 
@@ -2310,17 +2127,20 @@ function renderWeeklySchedule(filter, range = dailyOverviewRange) {
   SCHEDULE_HOURS.forEach(hour => {
     bodyHtml += `<div class="schedule-time">${hour}</div>`;
     dates.forEach(date => {
-      const slotBookings = filterBookingsByService(filter).filter(b => b.date === date && slotForTime(b.time) === hour && b.status !== 'cancelled' && b.status !== 'no_show');
-      const isToday = date === today;
+      // Real bookings can have a missing/null time (e.g. daycare rows with
+      // no check_in_time yet) — guard slotForTime() against that rather
+      // than let toMinutes('') throw.
+      const slotBookings = filterRealBookingsByService(filter).filter(b => b.date === date && b.time && slotForTime(b.time) === hour && b.status !== 'cancelled' && b.status !== 'no_show');
+      const isToday = date === todayStr;
       if (slotBookings.length) {
         bodyHtml += `
-          <div class="schedule-cell has-bookings ${isToday ? 'is-today' : ''}" onclick="openDayDetail('${date}')">
+          <div class="schedule-cell has-bookings ${isToday ? 'is-today' : ''}" onclick="openRealDayDetail('${date}')">
             ${slotBookings.slice(0, 2).map(b => `<span class="schedule-chip">${b.petName}</span>`).join('')}
             ${slotBookings.length > 2 ? `<span class="schedule-more">+${slotBookings.length - 2}</span>` : ''}
           </div>
         `;
       } else {
-        bodyHtml += `<div class="schedule-cell ${isToday ? 'is-today' : ''}" onclick="openDayDetail('${date}')"></div>`;
+        bodyHtml += `<div class="schedule-cell ${isToday ? 'is-today' : ''}" onclick="openRealDayDetail('${date}')"></div>`;
       }
     });
   });
@@ -2399,6 +2219,9 @@ function buildActionQueue(filter, range = { start: today, end: today }) {
       });
     });
 
+  // Real redemption rows are created already-approved (see loyaltyDetailRow's
+  // comment), so this never actually matches anything — kept only so a
+  // demo/mock loyalty request with a genuine 'pending' status still renders.
   loyaltyRequests
     .filter(r => (filter === 'all' || r.relatedService === filter) && r.status === 'pending')
     .forEach(r => {
@@ -2406,8 +2229,8 @@ function buildActionQueue(filter, range = { start: today, end: today }) {
         date: today, time: r.requestedAt, typeIcon: 'loyalty-reward-gift.png', type: 'Loyalty Redemption',
         detail: `${r.customerName} — ${r.type} (${r.points} pts)`,
         statusKey: 'pending', statusLabel: 'Needs Approval',
-        sla: slaBadge('loyalty', r.requestedAt),
-        actionLabel: 'Approve', actionOnclick: `approveLoyalty('${r.id}')`,
+        sla: '',
+        actionLabel: null, actionOnclick: null,
         rowOnclick: `openQueueItemDetail('loyalty','${r.id}')`
       });
     });
@@ -2415,8 +2238,95 @@ function buildActionQueue(filter, range = { start: today, end: today }) {
   return rows.sort((a, b) => a.date === b.date ? a.time.localeCompare(b.time) : a.date.localeCompare(b.date));
 }
 
-function renderActionQueue(filter, range = dailyOverviewRange, period = dailyOverviewPeriod) {
-  const rows = buildActionQueue(filter, range);
+// Real-data counterpart of buildActionQueue() above (which dashboard.html's
+// not-yet-wired charts still call directly against the mock bookings/
+// enquiries/loyaltyRequests arrays — left untouched). Reads bookingRecords
+// (real) + enquiryRecords (real) + pendingPaymentRecords (real) instead.
+// Loyalty-redemption rows are replaced by payment-verification rows (see
+// the "Pending Loyalty Redemption has no real equivalent" note above
+// buildRealActionCards). Items with no real time value (payments, and any
+// booking missing a time) sort to the bottom via the '99:99' sentinel.
+function buildRealActionQueue(filter) {
+  const todayStr = dailyOverviewDate;
+  const rows = [];
+  const todaysBookings = filterRealBookingsByService(filter).filter(b => b.date === todayStr);
+
+  todaysBookings.forEach(b => {
+    if (b.status === 'pending') {
+      rows.push({
+        time: b.time || '99:99', typeIcon: 'list-view.png', type: 'Service Due',
+        detail: `${b.petName} (${b.customerName}) — ${b.serviceLabel}`,
+        statusKey: 'pending', statusLabel: 'Needs Action',
+        sla: b.time ? slaBadge('pendingService', b.time) : '',
+        actionLabel: 'Open Payment', actionOnclick: `markRealBookingDone('${b.id}')`,
+        rowOnclick: `openRealQueueItemDetail('booking','${b.id}')`
+      });
+    } else if (b.status === 'scheduled') {
+      rows.push({
+        time: b.time || '99:99', typeIcon: 'confirm-circle.png', type: 'Booking Confirmation',
+        detail: `${b.petName} (${b.customerName}) — ${b.serviceLabel}`,
+        statusKey: 'scheduled', statusLabel: 'Awaiting Confirmation',
+        sla: '',
+        actionLabel: 'Confirm Arrival', actionOnclick: `confirmRealBooking('${b.id}')`,
+        rowOnclick: `openRealQueueItemDetail('booking','${b.id}')`
+      });
+    }
+  });
+
+  if (filter !== 'grooming') {
+    filterRealBookingsByService(filter).forEach(b => {
+      if (b.checkInDate === todayStr && b.status !== 'done' && b.status !== 'no_show' && b.status !== 'cancelled') {
+        rows.push({
+          time: b.time || '99:99', typeIcon: 'login.png', type: 'Check-In Due',
+          detail: `${b.petName} (${b.customerName}) — ${b.serviceLabel}`,
+          statusKey: 'scheduled', statusLabel: 'Awaiting Check-In',
+          sla: '',
+          actionLabel: null, actionOnclick: null,
+          rowOnclick: `openRealQueueItemDetail('booking','${b.id}')`
+        });
+      }
+      if (b.checkOutDate === todayStr && b.status !== 'no_show' && b.status !== 'cancelled') {
+        rows.push({
+          time: b.time || '99:99', typeIcon: 'logout.png', type: 'Check-Out Due',
+          detail: `${b.petName} (${b.customerName}) — ${b.serviceLabel}`,
+          statusKey: 'scheduled', statusLabel: 'Awaiting Check-Out',
+          sla: '',
+          actionLabel: null, actionOnclick: null,
+          rowOnclick: `openRealQueueItemDetail('booking','${b.id}')`
+        });
+      }
+    });
+  }
+
+  enquiryRecords
+    .filter(e => e.senderType === 'customer' && e.status === 'pending' && e.receiveDate === todayStr)
+    .forEach(e => {
+      rows.push({
+        time: e.receiveTime || '99:99', typeIcon: 'chat-message.png', type: 'Enquiry',
+        detail: `${e.customerName} · WhatsApp — "${e.message}"`,
+        statusKey: 'pending', statusLabel: 'Needs Reply',
+        sla: e.receiveTime ? slaBadge('enquiry', e.receiveTime) : '',
+        actionLabel: 'Mark Replied', actionOnclick: `resolveRealEnquiry(${e.id})`,
+        rowOnclick: `openRealQueueItemDetail('enquiry',${e.id})`
+      });
+    });
+
+  pendingPaymentRecords.filter(p => String(p.date || "").slice(0, 10) === todayStr).forEach(p => {
+    rows.push({
+      time: '99:99', typeIcon: 'payment-card.png', type: 'Payment Verification',
+      detail: `PAY-${String(p.payment_id).padStart(4, '0')}${p.service ? ' — ' + p.service : ''} · RM ${Number(p.final_amount || 0).toFixed(2)}`,
+      statusKey: 'pending', statusLabel: 'Needs Verification',
+      sla: slaBadgeFromTimestamp('payment', p.created_at),
+      actionLabel: 'Open Payment', actionOnclick: `location.href='payment.html'`,
+      rowOnclick: `openRealQueueItemDetail('payment',${p.payment_id})`
+    });
+  });
+
+  return rows.sort((a, b) => a.time.localeCompare(b.time));
+}
+
+function renderRealActionQueue(filter) {
+  const rows = buildRealActionQueue(filter);
   q('queueCount').textContent = `${rows.length} item${rows.length === 1 ? '' : 's'}`;
 
   const tbody = q('actionQueueBody');
@@ -2432,7 +2342,7 @@ function renderActionQueue(filter, range = dailyOverviewRange, period = dailyOve
 
   tbody.innerHTML = rows.map(row => `
     <tr onclick="${row.rowOnclick}">
-      <td>${showDate ? `${formatShortDate(row.date)} ` : ''}${row.time}</td>
+      <td>${row.time === '99:99' ? '—' : row.time}</td>
       <td><span class="queue-type-cell"><img src="icon/${row.typeIcon}" alt="" class="row-icon">${row.type}</span></td>
       <td>${row.detail}</td>
       <td><span class="status-tag status-${row.statusKey}">${row.statusLabel}</span></td>
@@ -2508,177 +2418,255 @@ function enquiryDetailRow(e) {
   });
 }
 
+// No `sla` badge here: a redemption is created already-approved (see
+// verify_payment_function.sql), so create/approve happen at the same
+// instant — there's no pending gap on this record itself to measure. Any
+// wait the customer experienced is on the linked payment, tracked by
+// realPaymentDetailRow's payment SLA instead.
 function loyaltyDetailRow(r) {
+  const refunded = r.status === 'refunded';
+  const approvedAt = r.approvedDate ? ` · approved ${r.approvedDate}${r.approvedTime ? ' ' + r.approvedTime : ''}` : '';
   return renderDetailRow({
     title: `${r.customerName} — ${r.type}`,
-    sub: `${r.points} pts · requested ${r.requestedAt}`,
-    tag: r.status === 'pending' ? 'pending' : 'done',
-    tagLabel: r.status === 'pending' ? 'Needs Approval' : 'Approved',
-    sla: r.status === 'pending' ? slaBadge('loyalty', r.requestedAt) : '',
-    actionLabel: r.status === 'pending' ? 'Approve' : null,
-    actionOnclick: r.status === 'pending' ? `approveLoyalty('${r.id}')` : null
+    sub: `${r.points} pts · requested ${r.requestedAt}${approvedAt}`,
+    tag: r.status === 'approved' ? 'done' : r.status === 'rejected' || refunded ? 'no_show' : 'pending',
+    tagLabel: r.status === 'approved' ? 'Approved' : r.status === 'rejected' ? 'Rejected' : refunded ? 'Refunded' : 'Pending',
+    sla: '',
+    actionLabel: null,
+    actionOnclick: null
   });
 }
 
-function openCardDetail(cardKey) {
+// Real-data counterparts of bookingDetailRow/enquiryDetailRow/
+// loyaltyDetailRow above (which dashboard.html's not-yet-wired charts still
+// call directly against mock objects — left completely untouched).
+function realBookingDetailRow(b) {
+  const statusMeta = {
+    pending:   { tag: 'pending',   tagLabel: 'Needs Action', actionLabel: 'Open Payment',   actionOnclick: `markRealBookingDone('${b.id}')`, sla: b.time ? slaBadge('pendingService', b.time) : '' },
+    scheduled: { tag: 'scheduled', tagLabel: 'Scheduled',    actionLabel: 'Confirm Arrival', actionOnclick: `confirmRealBooking('${b.id}')` },
+    done:      { tag: 'done',      tagLabel: 'Done' },
+    no_show:   { tag: 'no_show',   tagLabel: 'No Show' },
+    cancelled: { tag: 'cancelled', tagLabel: 'Cancelled' }
+  }[b.status] || { tag: 'pending', tagLabel: b.status };
+
+  return renderDetailRow({
+    title: `${b.petName} (${b.customerName})`,
+    sub: `${b.serviceLabel} · ${b.date || '-'}${b.time ? ' ' + b.time : ''}`,
+    ...statusMeta
+  });
+}
+
+// No relatedService/priority field is fabricated here — see
+// computeRealEnquiryPriority below for how priority is derived from real
+// columns only (reply_date/receive_time SLA + intent_label + keyword scan).
+function realEnquiryDetailRow(e) {
+  const priority = computeRealEnquiryPriority(e);
+  return renderDetailRow({
+    title: `${e.customerName} · WhatsApp`,
+    sub: `"${e.message}"${e.intent ? ` (intent: ${e.intent})` : ''} — received ${e.receiveTime || e.receiveDate || '-'}${priority !== 'normal' ? ` · ${enquiryPriorityLabel(priority)} priority` : ''}`,
+    tag: e.status === 'pending' ? 'pending' : 'done',
+    tagLabel: e.status === 'pending' ? 'Needs Reply' : 'Replied',
+    sla: e.status === 'pending' && e.receiveTime ? slaBadge('enquiry', e.receiveTime) : '',
+    actionLabel: e.status === 'pending' ? 'Mark Replied' : null,
+    actionOnclick: e.status === 'pending' ? `resolveRealEnquiry(${e.id})` : null
+  });
+}
+
+// computeEnquiryPriority (shared, defined above) reads the mock's
+// `relatedService`/`receivedAt` fields, which don't exist on real chat
+// messages — this is the same logic ported onto the real normalized shape
+// instead of repointing the shared function.
+function computeRealEnquiryPriority(e) {
+  if (e.status === 'pending' && slaStatus('enquiry', e.receiveTime).breached) return 'urgent';
+  const msg = (e.message || '').toLowerCase();
+  if (e.intent === 'booking' || URGENT_KEYWORDS.some(k => msg.includes(k))) return 'high';
+  return 'normal';
+}
+
+// Real counterpart of the retired "Pending Loyalty Redemption" concept —
+// a pending `payment` row, exactly what payment.html's pending queue shows.
+// No inline verify action here (verifying needs coupon/staff selection),
+// so this just links out to payment.html to complete it.
+function realPaymentDetailRow(p) {
+  return renderDetailRow({
+    title: `PAY-${String(p.payment_id).padStart(4, '0')}${p.service ? ' — ' + p.service : ''}`,
+    sub: `RM ${Number(p.final_amount || 0).toFixed(2)}${p.date ? ' · ' + p.date : ''}`,
+    tag: 'pending',
+    tagLabel: 'Awaiting Verification',
+    sla: slaBadgeFromTimestamp('payment', p.created_at),
+    actionLabel: null,
+    actionOnclick: null
+  });
+}
+
+function openRealCardDetail(cardKey) {
   const filter = currentFilter;
-  const range = dailyOverviewRange;
-  const inRange = d => d >= range.start && d <= range.end;
-  const word = periodWord(dailyOverviewPeriod).toLowerCase();
-  const rangeBookings = filterBookingsByService(filter).filter(b => inRange(b.date));
-  const cta = CARD_CTA[cardKey];
+  const todayStr = dailyOverviewDate;
+  const todayBookings = filterRealBookingsByService(filter).filter(b => b.date === todayStr);
+  const cta = CARD_CTA_REAL[cardKey];
 
   if (cardKey === 'pendingGrooming') {
-    const items = bookings.filter(b => b.serviceType === 'grooming' && inRange(b.date) && b.status === 'pending');
-    openDetailModal('Pending Grooming', `${items.length} booking(s) need grooming service ${word}. SLA: start within 15 minutes.`, items.map(bookingDetailRow).join(''), cta);
+    const items = bookingRecords.filter(b => b.type === 'grooming' && b.date === todayStr && b.status === 'pending');
+    openDetailModal('Pending Grooming', `${items.length} booking(s) need grooming service on ${formatShortDate(todayStr)}. SLA: start within 15 minutes.`, items.map(realBookingDetailRow).join(''), cta);
   } else if (cardKey === 'pendingConfirmation') {
-    const items = rangeBookings.filter(b => b.status === 'scheduled');
-    openDetailModal('Pending Booking Confirmation', `${items.length} booking(s) scheduled ${word}, awaiting confirmation.`, items.map(bookingDetailRow).join(''), cta);
+    const items = todayBookings.filter(b => b.status === 'scheduled');
+    openDetailModal('Pending Booking Confirmation', `${items.length} booking(s) scheduled today, awaiting confirmation.`, items.map(realBookingDetailRow).join(''), cta);
   } else if (cardKey === 'pendingEnquiries') {
-    const items = enquiries.filter(e => (filter === 'all' || e.relatedService === filter) && e.status === 'pending');
-    openDetailModal('Pending Enquiries', `${items.length} enquiries awaiting a reply. SLA: reply within 3 hours.`, items.map(enquiryDetailRow).join(''), cta);
-  } else if (cardKey === 'pendingLoyalty') {
-    const items = loyaltyRequests.filter(r => (filter === 'all' || r.relatedService === filter) && r.status === 'pending');
-    openDetailModal('Pending Loyalty Redemption', `${items.length} redemption request(s) awaiting approval. SLA: approve within 2 hours.`, items.map(loyaltyDetailRow).join(''), cta);
+    const items = enquiryRecords.filter(e => e.senderType === 'customer' && e.status === 'pending' && e.receiveDate === todayStr);
+    openDetailModal('Pending Enquiries', `${items.length} enquiries awaiting a reply on ${formatShortDate(todayStr)}. SLA: reply within 3 hours.`, items.map(realEnquiryDetailRow).join(''), cta);
+  } else if (cardKey === 'pendingPaymentVerification') {
+    openDetailModal('Pending Payment Verification', `${pendingPaymentRecords.length} payment(s) awaiting staff verification.`, pendingPaymentRecords.map(realPaymentDetailRow).join(''), cta);
   } else if (cardKey === 'boardingCheckIn') {
-    const items = bookings.filter(b => b.serviceType === 'boarding' && inRange(b.checkInDate) && b.status !== 'done' && b.status !== 'no_show' && b.status !== 'cancelled');
-    openDetailModal('Boarding Check-In Due', `${items.length} arrival(s) to confirm.`, items.map(bookingDetailRow).join(''), cta);
+    const items = bookingRecords.filter(b => b.type === 'boarding' && b.checkInDate === todayStr && b.status !== 'done' && b.status !== 'no_show' && b.status !== 'cancelled');
+    openDetailModal('Boarding Check-In Due', `${items.length} arrival(s) to confirm.`, items.map(realBookingDetailRow).join(''), cta);
   } else if (cardKey === 'boardingCheckOut') {
-    const items = bookings.filter(b => b.serviceType === 'boarding' && inRange(b.checkOutDate) && b.status !== 'no_show' && b.status !== 'cancelled');
-    openDetailModal('Boarding Check-Out Due', `${items.length} departure(s) to confirm.`, items.map(bookingDetailRow).join(''), cta);
+    const items = bookingRecords.filter(b => b.type === 'boarding' && b.checkOutDate === todayStr && b.status !== 'no_show' && b.status !== 'cancelled');
+    openDetailModal('Boarding Check-Out Due', `${items.length} departure(s) to confirm.`, items.map(realBookingDetailRow).join(''), cta);
   } else if (cardKey === 'daycareCheckIn') {
-    const items = bookings.filter(b => b.serviceType === 'daycare' && inRange(b.date) && (b.status === 'pending' || b.status === 'scheduled'));
-    openDetailModal('Daycare Check-In Due', `${items.length} drop-off(s) to confirm.`, items.map(bookingDetailRow).join(''), cta);
+    const items = bookingRecords.filter(b => b.type === 'daycare' && b.date === todayStr && (b.status === 'pending' || b.status === 'scheduled'));
+    openDetailModal('Daycare Check-In Due', `${items.length} drop-off(s) to confirm.`, items.map(realBookingDetailRow).join(''), cta);
   } else if (cardKey === 'daycarePendingPickup') {
-    const items = bookings.filter(b => b.serviceType === 'daycare' && inRange(b.date) && b.status === 'done');
-    openDetailModal('Daycare Pending Pick-Up', `${items.length} pet(s) waiting for pickup.`, items.map(bookingDetailRow).join(''), cta);
+    const items = bookingRecords.filter(b => b.type === 'daycare' && b.date === todayStr && b.status === 'done');
+    openDetailModal('Daycare Pending Pick-Up', `${items.length} pet(s) waiting for pickup.`, items.map(realBookingDetailRow).join(''), cta);
   }
 }
 
-function openServiceLoadDetail(type) {
-  const range = dailyOverviewRange;
-  const items = bookings.filter(b => b.serviceType === type && b.date >= range.start && b.date <= range.end && b.status !== "cancelled" && b.status !== "no_show");
+function openRealServiceLoadDetail(type) {
+  const todayStr = dailyOverviewDate;
+  const items = bookingRecords.filter(b => b.type === type && b.date === todayStr && b.status !== "cancelled" && b.status !== "no_show");
   const label = type.charAt(0).toUpperCase() + type.slice(1);
-  openDetailModal(`${label} Bookings`, `${items.length} booking(s) ${periodWord(dailyOverviewPeriod).toLowerCase()}.`, items.map(bookingDetailRow).join(''), { label: 'Open Booking Dashboard', href: 'booking.html' });
+  openDetailModal(`${label} Bookings`, `${items.length} booking(s) on ${formatShortDate(todayStr)}.`, items.map(realBookingDetailRow).join(''), { label: 'Open Booking Dashboard', href: 'booking.html' });
 }
 
-function openServiceStatusDetail(statusKey) {
-  const range = dailyOverviewRange;
-  const items = filterBookingsByService(currentFilter).filter(b => b.date >= range.start && b.date <= range.end && b.status === statusKey);
+function openRealServiceStatusDetail(statusKey) {
+  const todayStr = dailyOverviewDate;
+  const items = filterRealBookingsByService(currentFilter).filter(b => b.date === todayStr && b.status === statusKey);
   const labelMap = { pending: 'Pending Service', scheduled: 'Scheduled', done: 'Done', no_show: 'No Show', cancelled: 'Cancelled' };
-  openDetailModal(`Bookings — ${labelMap[statusKey]}`, `${items.length} booking(s) ${periodWord(dailyOverviewPeriod).toLowerCase()}.`, items.map(bookingDetailRow).join(''), { label: 'Open Booking Dashboard', href: 'booking.html' });
+  openDetailModal(`Bookings — ${labelMap[statusKey]}`, `${items.length} booking(s) on ${formatShortDate(todayStr)}.`, items.map(realBookingDetailRow).join(''), { label: 'Open Booking Dashboard', href: 'booking.html' });
 }
 
-function openRoomDetail(roomLabel) {
-  const items = bookings.filter(b => b.bookingType === 'boarding' && b.roomLabel === roomLabel).sort((a, b) => a.date.localeCompare(b.date));
-  openDetailModal(`${roomLabel} — Bookings`, `${items.length} booking(s) using this room.`, items.map(bookingDetailRow).join(''), { label: 'Open Booking Dashboard', href: 'booking.html' });
-}
-
-function openDayDetail(date) {
-  const items = filterBookingsByService(currentFilter).filter(b => b.date === date);
+function openRealDayDetail(date) {
+  const items = filterRealBookingsByService(currentFilter).filter(b => b.date === date);
   const label = new Date(date + 'T00:00:00').toLocaleDateString('en-MY', { weekday: 'long', day: '2-digit', month: 'short', year: 'numeric' });
-  openDetailModal(label, `${items.length} booking(s) on this day.`, items.map(bookingDetailRow).join(''), { label: 'Open Booking Dashboard', href: 'booking.html' });
+  openDetailModal(label, `${items.length} booking(s) on this day.`, items.map(realBookingDetailRow).join(''), { label: 'Open Booking Dashboard', href: 'booking.html' });
 }
 
-function openQueueItemDetail(kind, id) {
+function openRealQueueItemDetail(kind, id) {
   if (kind === 'booking') {
-    const b = bookings.find(x => x.id === id);
-    if (b) openDetailModal('Booking Detail', `${b.petName} — ${bookingServiceLabel(b)}`, bookingDetailRow(b), { label: 'Open Booking Dashboard', href: 'booking.html' });
+    const b = bookingRecords.find(x => x.id === id);
+    if (b) openDetailModal('Booking Detail', `${b.petName} — ${b.serviceLabel}`, realBookingDetailRow(b), { label: 'Open Booking Dashboard', href: 'booking.html' });
   } else if (kind === 'enquiry') {
-    const e = enquiries.find(x => x.id === id);
-    if (e) openDetailModal('Enquiry Detail', `${e.customerName} via ${e.channel}`, enquiryDetailRow(e), { label: 'Open Enquiries', href: 'enquiries.html' });
-  } else if (kind === 'loyalty') {
-    const r = loyaltyRequests.find(x => x.id === id);
-    if (r) openDetailModal('Loyalty Redemption Detail', r.customerName, loyaltyDetailRow(r), { label: 'Open Loyalty', href: 'loyalty.html' });
+    const e = enquiryRecords.find(x => x.id === id);
+    if (e) openDetailModal('Enquiry Detail', `${e.customerName} via WhatsApp`, realEnquiryDetailRow(e), { label: 'Open Enquiries', href: 'enquiries.html' });
+  } else if (kind === 'payment') {
+    const p = pendingPaymentRecords.find(x => x.payment_id === id);
+    if (p) openDetailModal('Payment Verification Detail', `PAY-${String(p.payment_id).padStart(4, '0')}`, realPaymentDetailRow(p), { label: 'Open Payment', href: 'payment.html' });
   }
 }
 
 /* =========================
-   DAILY OVERVIEW MUTATIONS
+   DAILY OVERVIEW MUTATIONS (real backend)
 ========================= */
 
-function refreshCurrentDashboardView() {
-  persistBookings();
-  persistEnquiries();
-  persistLoyaltyRequests();
-  if (document.getElementById('actionCards')) renderDailyOverview();
-  else if (document.getElementById('kpiHeroGrid')) renderAnalyticsDashboard();
+async function fetchDailyOverviewData() {
+  // Reuses booking.html's real fetcher as-is (plain data fetch, not
+  // DOM-coupled) to populate bookingRecords/bookingPetOptions/
+  // bookingCustomerOptions/bookingStaffOptions for this page's own load.
+  await fetchBookingPageData();
+
+  const [messages, pendingPayments] = await Promise.all([
+    api.get('/chat-messages'),
+    api.get('/payments'),
+  ]);
+
+  enquiryRecords = messages.map(normalizeChatMessage);
+  pendingPaymentRecords = pendingPayments.filter(isPaymentAwaitingVerification);
 }
 
-async function markBookingDone(id) {
-  const booking = bookings.find(b => b.id === id);
-  if (booking) {
-    if (bookingsAreReal) {
-      if (!(await updateBookingStatus(booking, 'done'))) return;
-    } else {
-      booking.status = 'done';
-    }
+async function refreshDailyOverviewData() {
+  await fetchDailyOverviewData();
+  renderRealDailyOverview();
+}
+
+async function markRealBookingDone(id) {
+  const booking = bookingRecords.find(b => b.id === id);
+  if (!booking) return;
+  closeDetailModal();
+  location.href = 'payment.html';
+}
+
+async function confirmRealBooking(id) {
+  const booking = bookingRecords.find(b => b.id === id);
+  if (!booking) return;
+  try {
+    await api.updateBooking(booking.type, booking.rawId, { booking_status: denormalizeBookingStatus('pending') });
+    closeDetailModal();
+    await refreshDailyOverviewData();
+  } catch (error) {
+    alert(error.message || 'Failed to update booking.');
   }
-  closeDetailModal();
-  refreshCurrentDashboardView();
 }
 
-async function confirmBooking(id) {
-  const booking = bookings.find(b => b.id === id);
-  if (booking) {
-    if (bookingsAreReal) {
-      if (!(await updateBookingStatus(booking, 'pending'))) return;
-    } else {
-      booking.status = 'pending';
-    }
+async function resolveRealEnquiry(id) {
+  const enquiry = enquiryRecords.find(e => e.id === id);
+  if (!enquiry) return;
+  const stamp = todayStampLocal(); // reused from STAFF MANAGEMENT section (generic {date,time} helper)
+  try {
+    await api.patch(`/chat-messages/${id}`, { reply_date: stamp.date, reply_time: stamp.time });
+    closeDetailModal();
+    await refreshDailyOverviewData();
+  } catch (error) {
+    alert(error.message || 'Failed to update enquiry.');
   }
-  closeDetailModal();
-  refreshCurrentDashboardView();
-}
-
-function resolveEnquiry(id) {
-  const enquiry = enquiries.find(e => e.id === id);
-  if (enquiry) enquiry.status = 'resolved';
-  closeDetailModal();
-  refreshCurrentDashboardView();
-}
-
-function approveLoyalty(id) {
-  const request = loyaltyRequests.find(r => r.id === id);
-  if (request) request.status = 'approved';
-  closeDetailModal();
-  refreshCurrentDashboardView();
 }
 
 /* =========================
-   DAILY OVERVIEW INIT
+   DAILY OVERVIEW INIT (real backend)
 ========================= */
 
-function renderDailyOverview() {
-  const range = dailyOverviewRange;
-  const period = dailyOverviewPeriod;
-  q('actionCards').innerHTML = buildActionCards(currentFilter, range, period).map(renderActionCard).join('');
-  renderServiceLoadChart(range, period);
-  renderRoomStatus(currentFilter, range, period);
-  renderWeeklySchedule(currentFilter, range);
-  renderStatusDonut(currentFilter, range);
-  renderActionQueue(currentFilter, range, period);
+function renderRealDailyOverview() {
+  q('actionCards').innerHTML = buildRealActionCards(currentFilter).map(renderRealActionCard).join('');
+  renderRealServiceLoadChart();
+  renderRealRoomStatus();
+  renderRealWeeklySchedule(currentFilter);
+  renderRealStatusDonut(currentFilter);
+  renderRealActionQueue(currentFilter);
 }
 
-function setupDailyOverview() {
+async function initDailyOverviewReal() {
+  try {
+    await fetchDailyOverviewData();
+  } catch (error) {
+    alert(error.message || 'Failed to load daily overview data.');
+  }
+
   document.querySelectorAll('#overviewServiceFilterTabs .tab-btn').forEach(btn => {
     btn.addEventListener('click', () => {
       document.querySelectorAll('#overviewServiceFilterTabs .tab-btn').forEach(b => b.classList.remove('active'));
       btn.classList.add('active');
       currentFilter = btn.dataset.filter;
-      renderDailyOverview();
+      renderRealDailyOverview();
     });
   });
 
-  createDateRangeFilter('dailyOverview', (range, period) => {
-    dailyOverviewRange = range;
-    dailyOverviewPeriod = period;
-    renderDailyOverview();
-  }).init();
+  bindDateNavigator("dailyDate", {
+    getDate: () => dailyOverviewDate,
+    setDate: date => { dailyOverviewDate = date; },
+    onChange: date => {
+      weekAnchor = getStartOfWeek(date);
+      renderRealDailyOverview();
+    },
+  });
+
+  q('calPrevBtn').addEventListener('click', () => { weekAnchor = addDays(weekAnchor, -7); renderRealWeeklySchedule(currentFilter); });
+  q('calNextBtn').addEventListener('click', () => { weekAnchor = addDays(weekAnchor, 7); renderRealWeeklySchedule(currentFilter); });
+  q('calTodayBtn').addEventListener('click', () => { weekAnchor = getStartOfWeek(getToday()); renderRealWeeklySchedule(currentFilter); });
 
   q('detailModal').addEventListener('click', event => {
     if (event.target.id === 'detailModal') closeDetailModal();
   });
+
+  renderRealDailyOverview();
 }
 
 /* ==========================================================================
@@ -2798,9 +2786,9 @@ function persistPets() {
   localStorage.setItem(petsStorageKey(), JSON.stringify(pets));
 }
 
-let customers = loadCustomers(buildCrmCustomers());
-let pets = loadPets(buildCrmPets(customers));
-let crmBookings = buildCrmBookings(customers, pets);
+let customers = [];
+let pets = [];
+let crmBookings = [];
 
 /* =========================
    REAL CRM DATA (profile.html only)
@@ -2873,34 +2861,128 @@ const detailPage = document.getElementById("detailPage");
 const detailTitle = document.getElementById("detailTitle");
 const detailForm = document.getElementById("detailForm");
 
+// Real backend data for this page (separate from the mock `customers`/`pets`
+// arrays above, which dashboard.html still reads via getCustomerById() until
+// it's wired too). Real columns differ from the mock shape: `customer` has
+// no loyalty_id/photo_icon/notes, and `pet` has no weight/colour/
+// service_preference but does have height_cm/size/vaccination_status/
+// vaccination_expired_date/health_notes/service_notes.
+let customerRecords = [];
+let petRecords = [];
+let allBookingsFlat = [];
+
+async function fetchAllBookingsFlat() {
+  const [grooming, daycare, boarding] = await Promise.all([
+    api.get("/bookings/grooming"),
+    api.get("/bookings/daycare"),
+    api.get("/bookings/boarding"),
+  ]);
+  // Extra fields (type/serviceLabel/status/amount) beyond pet_id/date are
+  // for the customer detail page's "Recent Bookings" drill-down — kept
+  // here rather than pulling in booking.html's normalize*Booking()
+  // helpers, since those need bookingPetOptions/bookingStaffOptions that
+  // this page never loads.
+  return [
+    ...grooming.map(b => ({
+      type: "grooming", id: b.grooming_booking_id, pet_id: b.pet_id,
+      date: b.booking_date, time: b.booking_time ? b.booking_time.slice(0, 5) : "",
+      serviceLabel: b.service_name || "Grooming",
+      status: normalizeBookingStatus(b.booking_status),
+      amount: Number(b.price || 0) + Number(b.add_on_price || 0),
+    })),
+    ...daycare.map(b => ({
+      type: "daycare", id: b.daycare_booking_id, pet_id: b.pet_id,
+      date: b.booking_date, time: b.check_in_time ? b.check_in_time.slice(0, 5) : "",
+      serviceLabel: b.package_type || "Daycare",
+      status: normalizeBookingStatus(b.booking_status),
+      amount: Number(b.price || 0),
+    })),
+    ...boarding.map(b => ({
+      type: "boarding", id: b.boarding_booking_id, pet_id: b.pet_id,
+      date: b.check_in_date, time: b.check_in_time ? b.check_in_time.slice(0, 5) : "",
+      serviceLabel: b.room_type || "Boarding",
+      status: normalizeBookingStatus(b.booking_status),
+      amount: Number(b.total_price || 0),
+    })),
+  ];
+}
+
+function findCustomerRecord(customerId) {
+  return customerRecords.find(c => String(c.customer_id) === String(customerId));
+}
+
+function findPetRecord(petId) {
+  return petRecords.find(p => String(p.pet_id) === String(petId));
+}
+
+function getPetsForCustomer(customerId) {
+  return petRecords.filter(p => String(p.customer_id) === String(customerId));
+}
+
+function getBookingsForCustomerRecord(customerId) {
+  const petIds = getPetsForCustomer(customerId).map(p => String(p.pet_id));
+  return allBookingsFlat.filter(b => petIds.includes(String(b.pet_id)));
+}
+
+function getLastBookingForCustomerRecord(customerId) {
+  const customerBookings = getBookingsForCustomerRecord(customerId);
+  if (customerBookings.length === 0) return null;
+  return customerBookings.slice().sort((a, b) => new Date(b.date) - new Date(a.date))[0];
+}
+
+// Drill-down list for the customer detail page — most recent first. Not
+// capped: the list scrolls (see .crm-list-scroll in index.css) instead of
+// truncating, so a long-time customer's full history is still reachable.
+function getRecentBookingsForCustomer(customerId, limit = Infinity) {
+  return getBookingsForCustomerRecord(customerId)
+    .slice()
+    .sort((a, b) => `${b.date} ${b.time || ""}`.localeCompare(`${a.date} ${a.time || ""}`))
+    .slice(0, limit);
+}
+
 async function initCRM() {
-  await loadRealCrmData();
+  [customerRecords, petRecords, allBookingsFlat] = await Promise.all([
+    api.get("/customers"),
+    api.get("/pets"),
+    fetchAllBookingsFlat(),
+  ]);
 
   updateKPI();
   renderLists();
 
-  profileTypeFilter.addEventListener("change", renderLists);
-  searchInput.addEventListener("input", renderLists);
+  profileTypeFilter.addEventListener("change", () => { customerListPage = 1; petListPage = 1; renderLists(); });
+  searchInput.addEventListener("input", () => { customerListPage = 1; petListPage = 1; renderLists(); });
+}
+
+async function refreshCrmData() {
+  [customerRecords, petRecords, allBookingsFlat] = await Promise.all([
+    api.get("/customers"),
+    api.get("/pets"),
+    fetchAllBookingsFlat(),
+  ]);
+  updateKPI();
+  renderLists();
 }
 
 function updateKPI() {
-  document.getElementById("totalCustomers").textContent = customers.length;
-  document.getElementById("totalPets").textContent = pets.length;
+  document.getElementById("totalCustomers").textContent = customerRecords.length;
+  document.getElementById("totalPets").textContent = petRecords.length;
 
-  // "New" = first booking created within the last 30 days — your real
-  // `customer` table has no created_at column to measure this from
-  // directly, but every booking row does (created_date).
-  const thirtyDaysAgo = addDays(today, -30);
+  const maxCustomerId = customerRecords.reduce((max, c) => Math.max(max, Number(c.customer_id) || 0), 0);
   document.getElementById("newCustomers").textContent =
-    customers.filter(c => {
-      const firstDate = firstBookingCreatedDate(c.customer_id);
-      return firstDate && firstDate >= thirtyDaysAgo;
-    }).length;
+    customerRecords.filter(c => Number(c.customer_id) > maxCustomerId - 2).length;
 
   document.getElementById("attentionNeeded").textContent =
-    pets.filter(pet => pet.vaccination_status === "Not Vaccinated" ||
-      (pet.health_notes && pet.health_notes.trim() !== "" && pet.health_notes.trim() !== "-")).length;
+    petRecords.filter(pet => pet.health_notes && pet.health_notes.trim() !== "").length;
 }
+
+let customerListPage = 1;
+const CUSTOMER_PAGE_SIZE = 5;
+let lastFilteredCustomers = [];
+
+let petListPage = 1;
+const PET_PAGE_SIZE = 5;
+let lastFilteredPets = [];
 
 function renderLists() {
   const selectedType = profileTypeFilter.value;
@@ -2908,6 +2990,8 @@ function renderLists() {
 
   const filteredCustomers = filterCustomers(searchValue);
   const filteredPets = filterPets(searchValue);
+  lastFilteredCustomers = filteredCustomers;
+  lastFilteredPets = filteredPets;
 
   customerSection.classList.toggle("hidden", selectedType === "pet");
   petSection.classList.toggle("hidden", selectedType === "customer");
@@ -2917,8 +3001,8 @@ function renderLists() {
 }
 
 function filterCustomers(searchValue) {
-  return customers.filter(customer => {
-    const linkedPets = getPetsByCustomerId(customer.customer_id);
+  return customerRecords.filter(customer => {
+    const linkedPets = getPetsForCustomer(customer.customer_id);
     const linkedPetText = linkedPets
       .map(pet => `${pet.pet_name} ${pet.pet_id}`)
       .join(" ")
@@ -2927,20 +3011,20 @@ function filterCustomers(searchValue) {
     return (
       customer.full_name.toLowerCase().includes(searchValue) ||
       (customer.phone_number || "").toLowerCase().includes(searchValue) ||
-      String(customer.customer_id).toLowerCase().includes(searchValue) ||
+      String(customer.customer_id).includes(searchValue) ||
       linkedPetText.includes(searchValue)
     );
   });
 }
 
 function filterPets(searchValue) {
-  return pets.filter(pet => {
-    const owner = getCustomerById(pet.customer_id);
+  return petRecords.filter(pet => {
+    const owner = findCustomerRecord(pet.customer_id);
 
     return (
       pet.pet_name.toLowerCase().includes(searchValue) ||
-      String(pet.pet_id).toLowerCase().includes(searchValue) ||
-      String(pet.customer_id).toLowerCase().includes(searchValue) ||
+      String(pet.pet_id).includes(searchValue) ||
+      String(pet.customer_id).includes(searchValue) ||
       (pet.pet_type || "").toLowerCase().includes(searchValue) ||
       (pet.breed || "").toLowerCase().includes(searchValue) ||
       (pet.health_notes || "").toLowerCase().includes(searchValue) ||
@@ -2957,28 +3041,26 @@ function renderCustomerTable(data) {
   if (data.length === 0) {
     customerTableBody.innerHTML = `
       <tr>
-        <td colspan="7" class="empty-row">No customer record found.</td>
+        <td colspan="5" class="empty-row">No customer record found.</td>
       </tr>
     `;
+    renderCustomerPagination(0);
     return;
   }
 
-  data.forEach(customer => {
-    const linkedPets = getPetsByCustomerId(customer.customer_id);
-    const lastBooking = getLastBookingByCustomerId(customer.customer_id);
-    const member = loyaltyMemberByCustomerId.get(customer.customer_id);
-    const loyaltyLabel = member ? `${member.tier} · ${member.points_balance} pts` : "Not a loyalty member";
+  const totalPages = Math.max(1, Math.ceil(data.length / CUSTOMER_PAGE_SIZE));
+  customerListPage = Math.min(Math.max(customerListPage, 1), totalPages);
+  const start = (customerListPage - 1) * CUSTOMER_PAGE_SIZE;
+  const pageData = data.slice(start, start + CUSTOMER_PAGE_SIZE);
+
+  pageData.forEach((customer, i) => {
+    const lastBooking = getLastBookingForCustomerRecord(customer.customer_id);
 
     const row = document.createElement("tr");
 
     row.innerHTML = `
       <td>
-        <span class="profile-name">👤 ${customer.full_name}</span>
-        <span class="profile-sub">${loyaltyLabel}</span>
-      </td>
-
-      <td>
-        <span class="key-chip">PK: ${customer.customer_id}</span>
+        <span class="profile-name">${(start + i) % 2 === 0 ? "👨" : "👩"} ${customer.full_name}</span>
       </td>
 
       <td>${customer.phone_number || "—"}</td>
@@ -2991,25 +3073,115 @@ function renderCustomerTable(data) {
         }
       </td>
 
-      <td>
-        ${
-          linkedPets.length === 0
-            ? `<span class="profile-sub">No pet linked</span>`
-            : linkedPets.map(pet => `
-                <span class="key-chip">${pet.pet_name} · ${pet.pet_id}</span>
-              `).join("")
-        }
-      </td>
-
-      <td>${getBookingsByCustomerId(customer.customer_id).length}</td>
+      <td>${getBookingsForCustomerRecord(customer.customer_id).length}</td>
 
       <td>
-        <button class="action-btn" onclick="openCustomerForm('${customer.customer_id}')"><img src="icon/view.png" alt="" class="btn-icon">View</button>
+        <button class="action-btn" onclick="openCustomerForm(${customer.customer_id})"><img src="icon/view.png" alt="" class="btn-icon">View</button>
       </td>
     `;
 
     customerTableBody.appendChild(row);
   });
+
+  renderCustomerPagination(totalPages);
+}
+
+function buildPageNumbers(current, total) {
+  const pages = new Set([1, total, current - 1, current, current + 1]);
+  return [...pages].filter(p => p >= 1 && p <= total).sort((a, b) => a - b);
+}
+
+/* =========================
+   GENERIC LIST PAGINATION
+   Used by enquiries.html/payment.html/loyalty.html's tables (5 rows/page,
+   numbered controls bottom-left — see .table-pagination in index.css).
+   customer/pet on profile.html predate this and keep their own hand-rolled
+   version above; this generic version is for every table added since.
+========================= */
+
+const listPageState = {};
+const listRerenderers = {};
+
+// Called once per table at page-init, so goToListPage() knows how to
+// redraw after a click — the rerenderer is just "re-run the render
+// function for this tab", which already reads the current search/filter
+// state itself.
+function registerListRerenderer(key, rerenderFn) {
+  listRerenderers[key] = rerenderFn;
+}
+
+function resetListPage(key) {
+  listPageState[key] = 1;
+}
+
+// Clamps the stored page for `key` to fit `data`, renders the pagination
+// controls into #{key}Pagination, and returns just that page's slice —
+// callers render rows from the returned slice instead of the full `data`.
+function paginateList(key, data, pageSize = 5) {
+  const totalPages = Math.max(1, Math.ceil(data.length / pageSize));
+  const page = Math.min(Math.max(listPageState[key] || 1, 1), totalPages);
+  listPageState[key] = page;
+
+  renderListPagination(key, data.length ? totalPages : 0);
+
+  const start = (page - 1) * pageSize;
+  return data.slice(start, start + pageSize);
+}
+
+function renderListPagination(key, totalPages) {
+  const el = document.getElementById(`${key}Pagination`);
+  if (!el) return;
+  if (totalPages <= 1) {
+    el.innerHTML = "";
+    return;
+  }
+
+  const page = listPageState[key] || 1;
+  const pages = buildPageNumbers(page, totalPages);
+  let html = `<button class="page-btn" type="button" ${page === 1 ? "disabled" : ""} onclick="goToListPage('${key}', ${page - 1})">‹ Prev</button>`;
+  let prevPage = 0;
+  pages.forEach(p => {
+    if (p - prevPage > 1) html += `<span class="page-ellipsis">…</span>`;
+    html += `<button class="page-btn ${p === page ? "active" : ""}" type="button" onclick="goToListPage('${key}', ${p})">${p}</button>`;
+    prevPage = p;
+  });
+  html += `<button class="page-btn" type="button" ${page === totalPages ? "disabled" : ""} onclick="goToListPage('${key}', ${page + 1})">Next ›</button>`;
+
+  el.innerHTML = html;
+}
+
+function goToListPage(key, page) {
+  listPageState[key] = page;
+  listRerenderers[key]?.();
+}
+
+// Sits bottom-left under the table (see .table-pagination in index.css) —
+// only the current page's 5 rows are in the DOM, so paging just re-slices
+// the already-filtered `lastFilteredCustomers` instead of refetching.
+function renderCustomerPagination(totalPages) {
+  const el = document.getElementById("customerPagination");
+  if (!el) return;
+  if (totalPages <= 1) {
+    el.innerHTML = "";
+    return;
+  }
+
+  const pages = buildPageNumbers(customerListPage, totalPages);
+  let html = `<button class="page-btn" type="button" ${customerListPage === 1 ? "disabled" : ""} onclick="goToCustomerPage(${customerListPage - 1})">‹ Prev</button>`;
+  let prevPage = 0;
+  pages.forEach(p => {
+    if (p - prevPage > 1) html += `<span class="page-ellipsis">…</span>`;
+    html += `<button class="page-btn ${p === customerListPage ? "active" : ""}" type="button" onclick="goToCustomerPage(${p})">${p}</button>`;
+    prevPage = p;
+  });
+  html += `<button class="page-btn" type="button" ${customerListPage === totalPages ? "disabled" : ""} onclick="goToCustomerPage(${customerListPage + 1})">Next ›</button>`;
+
+  el.innerHTML = html;
+}
+
+function goToCustomerPage(page) {
+  customerListPage = page;
+  renderCustomerTable(lastFilteredCustomers);
 }
 
 function renderPetTable(data) {
@@ -3019,82 +3191,105 @@ function renderPetTable(data) {
   if (data.length === 0) {
     petTableBody.innerHTML = `
       <tr>
-        <td colspan="7" class="empty-row">No pet record found.</td>
+        <td colspan="5" class="empty-row">No pet record found.</td>
       </tr>
     `;
+    renderPetPagination(0);
     return;
   }
 
-  data.forEach(pet => {
-    const owner = getCustomerById(pet.customer_id);
-    const vaccinated = pet.vaccination_status === "Vaccinated";
+  const totalPages = Math.max(1, Math.ceil(data.length / PET_PAGE_SIZE));
+  petListPage = Math.min(Math.max(petListPage, 1), totalPages);
+  const start = (petListPage - 1) * PET_PAGE_SIZE;
+  const pageData = data.slice(start, start + PET_PAGE_SIZE);
+
+  pageData.forEach(pet => {
+    const owner = findCustomerRecord(pet.customer_id);
 
     const row = document.createElement("tr");
 
     row.innerHTML = `
       <td>
         <span class="profile-name">${getPetIcon(pet.pet_type)} ${pet.pet_name}</span>
-        <span class="profile-sub">${pet.pet_type} · ${pet.breed} · ${pet.height_cm}cm (${pet.size})</span>
+        <span class="profile-sub">${pet.pet_type || "—"} · ${pet.breed || "—"} · ${pet.size || "—"}</span>
       </td>
 
       <td>
-        <span class="key-chip">PK: ${pet.pet_id}</span>
-      </td>
-
-      <td>
-        <span class="key-chip">FK: ${pet.customer_id}</span>
-      </td>
-
-      <td>
-        ${owner?.full_name || "—"}
+        ${owner?.full_name || "Unknown"}
         <span class="profile-sub">${owner?.phone_number || "—"}</span>
       </td>
 
       <td>
-        <span class="badge ${vaccinated ? "green" : "red"}">${pet.vaccination_status}${pet.vaccination_expired_date ? " · exp " + pet.vaccination_expired_date : ""}</span>
+        <span class="badge blue">${pet.vaccination_status || "Unknown"}</span>
       </td>
 
       <td>
         ${
-          pet.health_notes && pet.health_notes !== "-"
+          pet.health_notes
             ? `<span class="key-chip">${pet.health_notes}</span>`
             : `<span class="profile-sub">No special care note</span>`
         }
       </td>
 
       <td>
-        <button class="action-btn" onclick="openPetForm('${pet.pet_id}')"><img src="icon/view.png" alt="" class="btn-icon">View</button>
+        <button class="action-btn" onclick="openPetForm(${pet.pet_id})"><img src="icon/view.png" alt="" class="btn-icon">View</button>
       </td>
     `;
 
     petTableBody.appendChild(row);
   });
+
+  renderPetPagination(totalPages);
+}
+
+// Mirrors renderCustomerPagination/goToCustomerPage above — see that
+// comment for why paging re-slices lastFilteredPets instead of refetching.
+function renderPetPagination(totalPages) {
+  const el = document.getElementById("petPagination");
+  if (!el) return;
+  if (totalPages <= 1) {
+    el.innerHTML = "";
+    return;
+  }
+
+  const pages = buildPageNumbers(petListPage, totalPages);
+  let html = `<button class="page-btn" type="button" ${petListPage === 1 ? "disabled" : ""} onclick="goToPetPage(${petListPage - 1})">‹ Prev</button>`;
+  let prevPage = 0;
+  pages.forEach(p => {
+    if (p - prevPage > 1) html += `<span class="page-ellipsis">…</span>`;
+    html += `<button class="page-btn ${p === petListPage ? "active" : ""}" type="button" onclick="goToPetPage(${p})">${p}</button>`;
+    prevPage = p;
+  });
+  html += `<button class="page-btn" type="button" ${petListPage === totalPages ? "disabled" : ""} onclick="goToPetPage(${petListPage + 1})">Next ›</button>`;
+
+  el.innerHTML = html;
+}
+
+function goToPetPage(page) {
+  petListPage = page;
+  renderPetTable(lastFilteredPets);
 }
 
 function openCustomerForm(customerId = null) {
-  const isEdit = Boolean(customerId);
+  const isEdit = customerId !== null && customerId !== undefined;
   const customer = isEdit
-    ? getCustomerById(customerId)
+    ? findCustomerRecord(customerId)
     : { customer_id: null, full_name: "", phone_number: "", address: "" };
+  if (isEdit && !customer) return;
 
-  const linkedPets = isEdit ? getPetsByCustomerId(customer.customer_id) : [];
-  const member = isEdit ? loyaltyMemberByCustomerId.get(customer.customer_id) : null;
+  const linkedPets = isEdit ? getPetsForCustomer(customer.customer_id) : [];
 
   detailPage.style.display = "flex";
   detailTitle.textContent = isEdit
-    ? `Customer Info · ${customer.customer_id}`
+    ? `Customer Info · CUST-${customer.customer_id}`
     : "New Customer";
 
   detailForm.innerHTML = `
+    ${isEdit ? `
     <div class="form-group">
       <label>Customer ID</label>
-      <input name="customer_id" value="${isEdit ? customer.customer_id : "Assigned on save"}" readonly />
-    </div>
-
-    <div class="form-group">
-      <label>Loyalty Status</label>
-      <input value="${member ? `${member.tier} · ${member.points_balance} pts` : "Not a loyalty member"}" readonly />
-    </div>
+      <input value="CUST-${customer.customer_id}" readonly />
+    </div>` : ""}
 
     <div class="form-group">
       <label>Name</label>
@@ -3108,7 +3303,7 @@ function openCustomerForm(customerId = null) {
 
     <div class="form-group full">
       <label>Address</label>
-      <input name="address" value="${customer.address || ""}" placeholder="Enter address" />
+      <input name="address" value="${customer.address || ""}" placeholder="Enter address" required />
     </div>
 
     ${isEdit ? `
@@ -3121,20 +3316,46 @@ function openCustomerForm(customerId = null) {
               <div class="crm-pet-card">
                 <div class="crm-pet-info">
                   <span class="profile-name">${getPetIcon(pet.pet_type)} ${pet.pet_name}</span>
-                  <span class="profile-sub">${pet.pet_type} · ${pet.breed} · ${pet.height_cm}cm (${pet.size})</span>
-                  <span class="profile-sub">Vaccination: ${pet.vaccination_status}${pet.health_notes && pet.health_notes !== "-" ? ` &nbsp;|&nbsp; Care: ${pet.health_notes}` : ""}</span>
+                  <span class="profile-sub">${pet.pet_type || "—"} · ${pet.breed || "—"} · ${pet.size || "—"}</span>
+                  <span class="profile-sub">Vaccination: ${pet.vaccination_status || "Unknown"}${pet.health_notes ? ` &nbsp;|&nbsp; Care: ${pet.health_notes}` : ""}</span>
                 </div>
-                <button type="button" class="action-btn" onclick="openPetForm('${pet.pet_id}')"><img src="icon/view.png" alt="" class="btn-icon">View</button>
+                <button type="button" class="action-btn" onclick="openPetForm(${pet.pet_id})"><img src="icon/view.png" alt="" class="btn-icon">View</button>
               </div>
             `).join("")
         }
+      </div>
+    </div>
+
+    <div class="form-group full">
+      <label>Recent Bookings</label>
+      <div class="crm-pet-list crm-list-scroll">
+        ${(() => {
+          const recentBookings = getRecentBookingsForCustomer(customer.customer_id);
+          if (recentBookings.length === 0) return `<p class="crm-pet-empty">No bookings yet.</p>`;
+          return recentBookings.map(b => {
+            const pet = findPetRecord(b.pet_id);
+            return `
+              <div class="crm-pet-card">
+                <div class="crm-pet-info">
+                  <span class="profile-name">${b.serviceLabel} <span class="profile-sub">(${b.type})</span></span>
+                  <span class="profile-sub">${pet?.pet_name || "Unknown pet"} · ${formatDate(b.date)}${b.time ? ` ${b.time}` : ""}</span>
+                </div>
+                <div style="display:flex;align-items:center;gap:10px;">
+                  <span class="profile-sub">RM ${b.amount.toFixed(2)}</span>
+                  ${renderStatusTag(b.status)}
+                  <button type="button" class="action-btn" onclick="openCustomerBookingDetail('${b.type}', ${b.id})"><img src="icon/view.png" alt="" class="btn-icon">View</button>
+                </div>
+              </div>
+            `;
+          }).join("");
+        })()}
       </div>
     </div>
     ` : ""}
 
     <div class="form-actions">
       <button type="button" class="cancel-btn" onclick="closeDetailPage()"><img src="icon/close-circle.png" alt="" class="btn-icon">Cancel</button>
-      ${isEdit ? `<button type="button" class="btn btn-secondary bk-danger-btn" onclick="removeCustomer('${customer.customer_id}')"><img src="icon/delete.png" alt="" class="btn-icon">Remove Customer</button>` : ""}
+      ${isEdit ? `<button type="button" class="btn btn-secondary bk-danger-btn" onclick="removeCustomer(${customer.customer_id})"><img src="icon/delete.png" alt="" class="btn-icon">Remove Customer</button>` : ""}
       <button type="submit" class="save-btn"><img src="icon/confirm-circle.png" alt="" class="btn-icon solid-btn-icon">${isEdit ? "Save Customer" : "Create Customer"}</button>
     </div>
   `;
@@ -3144,50 +3365,115 @@ function openCustomerForm(customerId = null) {
 
     const formData = new FormData(detailForm);
     const payload = {
-      full_name: formData.get("full_name"),
-      phone_number: formData.get("phone_number"),
-      address: formData.get("address"),
+      full_name: String(formData.get("full_name") || "").trim(),
+      phone_number: String(formData.get("phone_number") || "").trim(),
+      address: String(formData.get("address") || "").trim(),
     };
 
-    try {
-      if (isEdit) {
-        const updated = await api.updateCustomer(customer.customer_id, payload);
-        const index = customers.findIndex(item => item.customer_id === customer.customer_id);
-        customers[index] = updated;
-      } else {
-        const created = await api.createCustomer(payload);
-        customers.push(created);
-      }
-    } catch (err) {
-      alert(err.message);
+    if (!payload.full_name || !payload.phone_number || !payload.address) {
+      alert("Name, mobile number, and address are required.");
       return;
     }
 
-    updateKPI();
-    renderLists();
-    closeDetailPage();
+    const submitBtn = detailForm.querySelector(".save-btn");
+    if (submitBtn) submitBtn.disabled = true;
+
+    try {
+      if (isEdit) {
+        await api.patch(`/customers/${customer.customer_id}`, payload);
+      } else {
+        await api.post("/customers", payload);
+      }
+      closeDetailPage();
+      await refreshCrmData();
+    } catch (error) {
+      alert(error.message || "Failed to save customer record.");
+    } finally {
+      if (submitBtn) submitBtn.disabled = false;
+    }
   };
 }
 
+// Read-only drill-in from the "Recent Bookings" list on the customer detail
+// page. Fetches the single booking fresh (profile.html only carries the
+// slimmed-down allBookingsFlat shape) and reuses the shared #detailPage
+// modal, same as openPaymentDetail/openEnquiryDetailPage do elsewhere.
+async function openCustomerBookingDetail(type, id) {
+  const booking = await api.get(`/bookings/${type}/${id}`).catch(error => {
+    alert(error.message || "Failed to load booking.");
+    return null;
+  });
+  if (!booking) return;
+
+  const pet = findPetRecord(booking.pet_id);
+  const status = normalizeBookingStatus(booking.booking_status);
+  const note = value => (value && value !== "-" ? value : "—");
+
+  const typeFields = {
+    grooming: `
+      <div class="form-group"><label>Service</label><input value="${booking.service_name || "—"}" readonly /></div>
+      <div class="form-group"><label>Date</label><input value="${formatDate(booking.booking_date)}" readonly /></div>
+      <div class="form-group"><label>Time</label><input value="${booking.booking_time ? booking.booking_time.slice(0, 5) : "—"}" readonly /></div>
+      <div class="form-group"><label>Price</label><input value="RM ${Number(booking.price || 0).toFixed(2)}" readonly /></div>
+      <div class="form-group"><label>Add-on</label><input value="${booking.add_on && booking.add_on !== "-" ? `${booking.add_on} (+RM ${Number(booking.add_on_price || 0).toFixed(2)})` : "—"}" readonly /></div>
+      <div class="form-group full"><label>Notes</label><input value="${note(booking.notes)}" readonly /></div>
+    `,
+    daycare: `
+      <div class="form-group"><label>Package</label><input value="${booking.package_type || "—"}" readonly /></div>
+      <div class="form-group"><label>Date</label><input value="${formatDate(booking.booking_date)}" readonly /></div>
+      <div class="form-group"><label>Check-in / Check-out</label><input value="${(booking.check_in_time || "").slice(0, 5)} – ${(booking.check_out_time || "").slice(0, 5)}" readonly /></div>
+      <div class="form-group"><label>Price</label><input value="RM ${Number(booking.price || 0).toFixed(2)}" readonly /></div>
+      <div class="form-group full"><label>Special Instruction</label><input value="${note(booking.special_instruction)}" readonly /></div>
+    `,
+    boarding: `
+      <div class="form-group"><label>Room</label><input value="${booking.room_type || "—"}" readonly /></div>
+      <div class="form-group"><label>Check-in</label><input value="${formatDate(booking.check_in_date)} ${(booking.check_in_time || "").slice(0, 5)}" readonly /></div>
+      <div class="form-group"><label>Check-out</label><input value="${formatDate(booking.check_out_date)} ${(booking.check_out_time || "").slice(0, 5)}" readonly /></div>
+      <div class="form-group"><label>Price / Night</label><input value="RM ${Number(booking.price_per_night || 0).toFixed(2)}" readonly /></div>
+      <div class="form-group"><label>Total Price</label><input value="RM ${Number(booking.total_price || 0).toFixed(2)}" readonly /></div>
+      <div class="form-group full"><label>Feeding Instruction</label><input value="${note(booking.feeding_instruction)}" readonly /></div>
+      <div class="form-group full"><label>Medical Instruction</label><input value="${note(booking.medical_instruction)}" readonly /></div>
+    `,
+  }[type] || "";
+
+  detailPage.style.display = "flex";
+  detailTitle.textContent = `${type.charAt(0).toUpperCase()}${type.slice(1)} Booking · #${id}`;
+
+  detailForm.innerHTML = `
+    <div class="form-group"><label>Pet</label><input value="${pet?.pet_name || "Unknown pet"}" readonly /></div>
+    <div class="form-group"><label>Status</label><input value="${formatStatus(status)}" readonly /></div>
+    ${typeFields}
+    <div class="form-actions">
+      <button type="button" class="cancel-btn" onclick="closeDetailPage()"><img src="icon/close-circle.png" alt="" class="btn-icon">Close</button>
+    </div>
+  `;
+  detailForm.onsubmit = null;
+}
+
 function openPetForm(petId = null) {
-  const isEdit = Boolean(petId);
+  const isEdit = petId !== null && petId !== undefined;
+  if (!isEdit && customerRecords.length === 0) {
+    alert("Create a customer before adding a pet.");
+    return;
+  }
   const pet = isEdit
-    ? getPetById(petId)
+    ? findPetRecord(petId)
     : {
         pet_id: null,
-        customer_id: customers[0]?.customer_id || "",
+        customer_id: customerRecords[0]?.customer_id ?? "",
         pet_name: "",
         pet_type: "Cat",
         gender: "Male",
         date_of_birth: "",
         breed: "",
         height_cm: "",
-        size: "M",
+        size: "",
         vaccination_status: "Not Vaccinated",
         vaccination_expired_date: "",
         health_notes: "",
         service_notes: ""
       };
+  if (isEdit && !pet) return;
 
   detailPage.style.display = "flex";
   detailTitle.textContent = isEdit
@@ -3198,17 +3484,12 @@ function openPetForm(petId = null) {
     <div class="form-group full">
       <label>Owner</label>
       <select name="customer_id" required>
-        ${customers.map(customer => `
+        ${customerRecords.map(customer => `
           <option value="${customer.customer_id}" ${String(customer.customer_id) === String(pet.customer_id) ? "selected" : ""}>
-            ${customer.full_name} · ${customer.customer_id}
+            ${customer.full_name} · CUST-${customer.customer_id}
           </option>
         `).join("")}
       </select>
-    </div>
-
-    <div class="form-group">
-      <label>Pet ID</label>
-      <input value="${isEdit ? pet.pet_id : "Assigned on save"}" readonly />
     </div>
 
     <div class="form-group">
@@ -3221,6 +3502,7 @@ function openPetForm(petId = null) {
       <select name="pet_type">
         <option value="Cat" ${pet.pet_type === "Cat" ? "selected" : ""}>Cat</option>
         <option value="Dog" ${pet.pet_type === "Dog" ? "selected" : ""}>Dog</option>
+        <option value="Other" ${pet.pet_type === "Other" ? "selected" : ""}>Other</option>
       </select>
     </div>
 
@@ -3234,26 +3516,22 @@ function openPetForm(petId = null) {
 
     <div class="form-group">
       <label>Date of Birth</label>
-      <input type="date" name="date_of_birth" value="${parseDDMMYYYY(pet.date_of_birth)}" />
+      <input type="date" name="date_of_birth" max="${getToday()}" value="${String(pet.date_of_birth || "").slice(0, 10)}" />
     </div>
 
     <div class="form-group">
       <label>Breed</label>
-      <input name="breed" value="${pet.breed}" placeholder="Enter breed" />
+      <input name="breed" value="${pet.breed || ""}" placeholder="Enter breed" />
     </div>
 
     <div class="form-group">
       <label>Height (cm)</label>
-      <input type="number" name="height_cm" min="0" value="${pet.height_cm}" placeholder="e.g. 40" />
+      <input type="number" name="height_cm" min="0" step="0.1" value="${pet.height_cm ?? ""}" placeholder="e.g. 35" />
     </div>
 
     <div class="form-group">
       <label>Size</label>
-      <select name="size">
-        <option value="S" ${pet.size === "S" ? "selected" : ""}>Small</option>
-        <option value="M" ${pet.size === "M" ? "selected" : ""}>Medium</option>
-        <option value="L" ${pet.size === "L" ? "selected" : ""}>Large</option>
-      </select>
+      <input name="size" value="${pet.size || ""}" placeholder="S / M / L" />
     </div>
 
     <div class="form-group">
@@ -3261,27 +3539,28 @@ function openPetForm(petId = null) {
       <select name="vaccination_status">
         <option value="Vaccinated" ${pet.vaccination_status === "Vaccinated" ? "selected" : ""}>Vaccinated</option>
         <option value="Not Vaccinated" ${pet.vaccination_status === "Not Vaccinated" ? "selected" : ""}>Not Vaccinated</option>
+        <option value="Pending" ${pet.vaccination_status === "Pending" ? "selected" : ""}>Pending</option>
       </select>
     </div>
 
     <div class="form-group">
-      <label>Vaccination Expiry</label>
-      <input type="date" name="vaccination_expired_date" value="${parseDDMMYYYY(pet.vaccination_expired_date)}" />
+      <label>Vaccination Expiry Date</label>
+      <input type="date" name="vaccination_expired_date" value="${String(pet.vaccination_expired_date || "").slice(0, 10)}" />
     </div>
 
     <div class="form-group full">
-      <label>Special Care Note</label>
-      <input name="health_notes" value="${pet.health_notes && pet.health_notes !== "-" ? pet.health_notes : ""}" placeholder="e.g. Mild anxiety during grooming" />
+      <label>Health Notes</label>
+      <input name="health_notes" value="${pet.health_notes || ""}" placeholder="e.g. Mild food allergy" />
     </div>
 
     <div class="form-group full">
-      <label>Service Note</label>
-      <textarea name="service_notes" placeholder="Feeding instruction, room preference, grooming reminders">${pet.service_notes && pet.service_notes !== "-" ? pet.service_notes : ""}</textarea>
+      <label>Service Notes</label>
+      <textarea name="service_notes" placeholder="Feeding instruction, room preference, grooming reminders">${pet.service_notes || ""}</textarea>
     </div>
 
     <div class="form-actions">
       <button type="button" class="cancel-btn" onclick="closeDetailPage()"><img src="icon/close-circle.png" alt="" class="btn-icon">Cancel</button>
-      ${isEdit ? `<button type="button" class="btn btn-secondary bk-danger-btn" onclick="removePet('${pet.pet_id}')"><img src="icon/delete.png" alt="" class="btn-icon">Remove Pet</button>` : ""}
+      ${isEdit ? `<button type="button" class="btn btn-secondary bk-danger-btn" onclick="removePet(${pet.pet_id})"><img src="icon/delete.png" alt="" class="btn-icon">Remove Pet</button>` : ""}
       <button type="submit" class="save-btn"><img src="icon/confirm-circle.png" alt="" class="btn-icon solid-btn-icon">${isEdit ? "Save Pet" : "Create Pet"}</button>
     </div>
   `;
@@ -3292,36 +3571,44 @@ function openPetForm(petId = null) {
     const formData = new FormData(detailForm);
     const payload = {
       customer_id: Number(formData.get("customer_id")),
-      pet_name: formData.get("pet_name"),
+      pet_name: String(formData.get("pet_name") || "").trim(),
       pet_type: formData.get("pet_type"),
       gender: formData.get("gender"),
-      date_of_birth: formatDDMMYYYY(formData.get("date_of_birth")),
-      breed: formData.get("breed"),
-      height_cm: Number(formData.get("height_cm")) || 0,
-      size: formData.get("size"),
+      date_of_birth: formData.get("date_of_birth") || null,
+      breed: formData.get("breed") || null,
+      height_cm: formData.get("height_cm") ? Number(formData.get("height_cm")) : null,
+      size: formData.get("size") || null,
       vaccination_status: formData.get("vaccination_status"),
-      vaccination_expired_date: formatDDMMYYYY(formData.get("vaccination_expired_date")),
-      health_notes: formData.get("health_notes") || "-",
-      service_notes: formData.get("service_notes") || "-",
+      vaccination_expired_date: formData.get("vaccination_expired_date") || null,
+      health_notes: formData.get("health_notes") || null,
+      service_notes: formData.get("service_notes") || null,
     };
 
-    try {
-      if (isEdit) {
-        const updated = await api.updatePet(pet.pet_id, payload);
-        const index = pets.findIndex(item => item.pet_id === pet.pet_id);
-        pets[index] = updated;
-      } else {
-        const created = await api.createPet(payload);
-        pets.push(created);
-      }
-    } catch (err) {
-      alert(err.message);
+    if (!payload.customer_id || !payload.pet_name) {
+      alert("Owner and pet name are required.");
+      return;
+    }
+    if (payload.height_cm != null && payload.height_cm < 0) {
+      alert("Height cannot be negative.");
       return;
     }
 
-    updateKPI();
-    renderLists();
-    closeDetailPage();
+    const submitBtn = detailForm.querySelector(".save-btn");
+    if (submitBtn) submitBtn.disabled = true;
+
+    try {
+      if (isEdit) {
+        await api.patch(`/pets/${pet.pet_id}`, payload);
+      } else {
+        await api.post("/pets", payload);
+      }
+      closeDetailPage();
+      await refreshCrmData();
+    } catch (error) {
+      alert(error.message || "Failed to save pet record.");
+    } finally {
+      if (submitBtn) submitBtn.disabled = false;
+    }
   };
 }
 
@@ -3331,94 +3618,31 @@ function closeDetailPage() {
 }
 
 async function removeCustomer(customerId) {
-  if (!confirm(`Remove customer ${customerId} and all their linked pets? This cannot be undone.`)) return;
-
-  const linkedPetIds = pets
-    .filter(p => String(p.customer_id) === String(customerId))
-    .map(p => p.pet_id);
+  if (!confirm(`Remove customer CUST-${customerId} and all their linked pets? This cannot be undone.`)) return;
 
   try {
-    for (const petId of linkedPetIds) {
-      await api.deletePet(petId);
-    }
-    await api.deleteCustomer(customerId);
-  } catch (err) {
-    // Most likely a foreign-key constraint (existing bookings/payments still
-    // reference this customer's pet) — that's the database correctly
-    // refusing to orphan records, not a bug to work around.
-    alert(err.message);
-    return;
+    await api.del(`/customers/${customerId}/with-pets`);
+    closeDetailPage();
+    await refreshCrmData();
+  } catch (error) {
+    alert(error.message || "Failed to remove customer.");
   }
-
-  linkedPetIds.forEach(petId => {
-    const idx = pets.findIndex(p => p.pet_id === petId);
-    if (idx !== -1) pets.splice(idx, 1);
-  });
-
-  const customerIdx = customers.findIndex(c => String(c.customer_id) === String(customerId));
-  if (customerIdx !== -1) customers.splice(customerIdx, 1);
-
-  updateKPI();
-  renderLists();
-  closeDetailPage();
 }
 
 async function removePet(petId) {
-  if (!confirm(`Remove pet ${petId}? This cannot be undone.`)) return;
+  if (!confirm(`Remove pet PET-${petId}? This cannot be undone.`)) return;
 
   try {
-    await api.deletePet(petId);
-  } catch (err) {
-    alert(err.message);
-    return;
+    await api.del(`/pets/${petId}`);
+    closeDetailPage();
+    await refreshCrmData();
+  } catch (error) {
+    alert(error.message || "Failed to remove pet.");
   }
-
-  const idx = pets.findIndex(p => String(p.pet_id) === String(petId));
-  if (idx !== -1) pets.splice(idx, 1);
-
-  updateKPI();
-  renderLists();
-  closeDetailPage();
 }
 
-function getCustomerById(customerId) {
-  // String() comparison: mock customer_id is "CUST-0001" (string), real is
-  // an integer — this matches either, since onclick handlers always pass
-  // the id back as a string literal regardless of its original type.
-  return customers.find(customer => String(customer.customer_id) === String(customerId));
-}
-
-function getPetById(petId) {
-  return pets.find(pet => String(pet.pet_id) === String(petId));
-}
-
-function getPetsByCustomerId(customerId) {
-  return pets.filter(pet => String(pet.customer_id) === String(customerId));
-}
-
-function getBookingsByCustomerId(customerId) {
-  if (crmDataIsReal) {
-    const petIds = petIdsForCustomer(customerId);
-    return bookings.filter(b => petIds.has(b.petId));
-  }
-  return crmBookings.filter(booking => booking.customer_id === customerId);
-}
-
-function getLastBookingByCustomerId(customerId) {
-  const customerBookings = getBookingsByCustomerId(customerId);
-
-  if (customerBookings.length === 0) {
-    return null;
-  }
-
-  const dateField = crmDataIsReal ? "date" : "booking_date";
-  return customerBookings.sort((a, b) => {
-    return new Date(b[dateField]) - new Date(a[dateField]);
-  })[0];
-}
-
-function getPetIcon(species) {
-  return species === "Cat" ? "🐱" : "🐶";
+function getPetIcon(petType) {
+  return petType === "Cat" ? "🐱" : petType === "Dog" ? "🐶" : "🐾";
 }
 
 function formatDate(dateString) {
@@ -3452,12 +3676,7 @@ function persistLoyaltyMemberRequests() {
   localStorage.setItem(loyaltyMemberRequestsStorageKey(), JSON.stringify(loyaltyMemberRequests));
 }
 
-const SEED_LOYALTY_MEMBER_REQUESTS = [
-  { id: 'LOYREG001', customerName: 'Nabila Hassan', phone: '+60 12-345 9901', requestedAt: '09:10', status: 'pending' },
-  { id: 'LOYREG002', customerName: 'Kelvin Ooi',     phone: '+60 12-345 9902', requestedAt: '10:35', status: 'pending' }
-];
-
-let loyaltyMemberRequests = loadLoyaltyMemberRequests(SEED_LOYALTY_MEMBER_REQUESTS);
+let loyaltyMemberRequests = [];
 
 const LOYALTY_TIERS = [
   { min: 1200, name: 'Platinum' },
@@ -3470,86 +3689,18 @@ function getLoyaltyTier(points) {
   return LOYALTY_TIERS.find(tier => points >= tier.min).name;
 }
 
-function getMemberPoints(customerId) {
-  const n = parseInt(customerId.replace('CUST-', ''), 10) || 1;
-  return (n * 137 + 220) % 1800 + 50;
-}
-
-// Real loyalty data (loyalty.html only) — same pattern as loadRealBookingData()
-// etc: `loyaltyDataIsReal` lets buildLoyaltyMembers()/countApprovedRedemptions()
-// stay dual-shape-safe, since dashboard.html still calls both against the
-// mock arrays (not converted yet) on its own page load.
-let loyaltyDataIsReal = false;
-let realMembers = [];
-let realCoupons = [];
-let realRedemptions = [];
-
-async function loadRealLoyaltyData() {
-  const [membersRes, customersRes, couponsRes, redemptionsRes, paymentsRes] = await Promise.all([
-    api.listMembers({ limit: 1000 }),
-    api.listCustomers({ limit: 1000 }),
-    api.listCoupons(),
-    api.listRedemptions({ limit: 500 }),
-    api.listPayments({ limit: 2000 }),
-  ]);
-  await loadRealBookingData(); // for the member-detail modal's "Linked Bookings"
-
-  const customerById = new Map(customersRes.map(c => [c.customer_id, c]));
-  realMembers = membersRes.map(m => ({
-    ...m,
-    customerName: customerById.get(m.customer_id)?.full_name || "—",
-    phone: customerById.get(m.customer_id)?.phone_number || "—",
-  }));
-
-  realCoupons = couponsRes;
-  const couponById = new Map(realCoupons.map(c => [c.coupon_id, c]));
-  const memberByLoyaltyId = new Map(realMembers.map(m => [m.loyalty_id, m]));
-  // redemption has no timestamp of its own — it's linked from the payment
-  // that created it (payment.redemption_id), so we borrow that payment's
-  // date to let the KPI date-filter scope redemption events by period.
-  const paymentByRedemptionId = new Map(paymentsRes.filter(p => p.redemption_id).map(p => [p.redemption_id, p]));
-  realRedemptions = redemptionsRes.map(r => ({
-    ...r,
-    memberName: memberByLoyaltyId.get(r.loyalty_id)?.customerName || "—",
-    couponName: r.coupon_id ? (couponById.get(r.coupon_id)?.reward_name || "—") : null,
-    date: paymentByRedemptionId.get(r.redemption_id)?.date || null,
-  }));
-
-  loyaltyDataIsReal = true;
-}
-
 function buildLoyaltyMembers() {
-  if (loyaltyDataIsReal) {
-    return realMembers.map(m => ({
-      member_id: m.loyalty_id,
-      customer_id: m.customer_id,
-      full_name: m.customerName,
-      phone: m.phone,
-      photo_icon: "👤",
-      points: m.points_balance,
-      tier: m.tier,
-    }));
-  }
-
-  const fromCrm = customers.map(c => ({
-    member_id: c.loyalty_id,
-    full_name: c.full_name,
-    phone: c.phone,
-    photo_icon: c.photo_icon,
-    points: getMemberPoints(c.customer_id)
-  }));
-
-  const fromApprovedRegs = loyaltyMemberRequests
-    .filter(r => r.status === 'approved')
-    .map(r => ({
-      member_id: r.id.replace('LOYREG', 'LOY-N'),
-      full_name: r.customerName,
-      phone: r.phone,
-      photo_icon: '👤',
-      points: 100
-    }));
-
-  return [...fromCrm, ...fromApprovedRegs].map(m => ({ ...m, tier: getLoyaltyTier(m.points) }));
+  return loyaltyMemberRecords.map(member => {
+    const customer = getCustomerById(member.customer_id);
+    const points = Number(member.points_balance || 0);
+    return {
+      member_id: `LOY-${member.loyalty_id}`,
+      full_name: customer?.full_name || "Unknown customer",
+      phone: customer?.phone_number || "—",
+      points,
+      tier: member.tier || getLoyaltyTier(points),
+    };
+  });
 }
 
 function countApprovedRedemptions(fullName) {
@@ -3566,14 +3717,24 @@ const loyaltyMemberBody = document.getElementById("loyaltyMemberBody");
 const loyaltyPendingRecordCount = document.getElementById("loyaltyPendingRecordCount");
 const loyaltyMemberRecordCount = document.getElementById("loyaltyMemberRecordCount");
 
-// Total Members / Gold Count are current-state snapshots (no signup date in
-// the schema to scope them by), so only the redemption-event cards below
-// react to the date filter.
-let loyaltyMetricsRange = { start: getToday(), end: getToday() };
+// Real backend data. NOTE: "Pending Approvals" has no real analog for
+// redemptions — a redemption is created atomically when staff verifies a
+// payment (payment.html, already wired), there's no separate approval
+// queue. This tab is repurposed as "customers not yet enrolled" (real:
+// customers with no loyaltymember row), with a direct Enroll action
+// (POST /api/member-info, built for this) — a more honest translation of
+// "something pending on the loyalty side" than a fabricated queue.
+let loyaltyMemberRecords = [];
+let unenrolledCustomers = [];
+let loyaltyCouponRecords = [];
+let loyaltyRedemptionRecords = [];
+let loyaltyEarnRate = null;
+let loyaltyDateFilter = getToday();
 
 async function initLoyaltyPage() {
-  await loadRealLoyaltyData();
-
+  if (!isManager(getCurrentAccount())) {
+    document.querySelector('#loyaltyTabs [data-panel="rules"]')?.remove();
+  }
   document.querySelectorAll("#loyaltyTabs .tab-btn").forEach(btn => {
     btn.addEventListener("click", () => {
       document.querySelectorAll("#loyaltyTabs .tab-btn").forEach(b => b.classList.remove("active"));
@@ -3584,7 +3745,49 @@ async function initLoyaltyPage() {
     });
   });
 
-  loyaltySearchInput.addEventListener("input", renderLoyaltyLists);
+  loyaltySearchInput.addEventListener("input", () => {
+    resetListPage("loyaltyPending");
+    resetListPage("loyaltyMembers");
+    renderLoyaltyLists();
+  });
+
+  registerListRerenderer("loyaltyPending", renderLoyaltyLists);
+  registerListRerenderer("loyaltyMembers", renderLoyaltyLists);
+
+  bindDateNavigator("loyaltyDate", {
+    getDate: () => loyaltyDateFilter,
+    setDate: date => { loyaltyDateFilter = date; },
+    onChange: () => {
+      resetListPage("loyaltyMembers");
+      updateLoyaltyKPI();
+      renderLoyaltyLists();
+    },
+  });
+
+  await refreshLoyaltyPageData();
+}
+
+async function refreshLoyaltyPageData() {
+  try {
+    const [members, customersList, coupons, redemptions, company] = await Promise.all([
+      api.get("/member-info"),
+      api.get("/customers"),
+      api.get("/coupons"),
+      api.get("/redemptions"),
+      api.get("/companies/me"),
+    ]);
+
+    loyaltyMemberRecords = members;
+    loyaltyCouponRecords = coupons;
+    loyaltyRedemptionRecords = redemptions;
+    loyaltyEarnRate = company.settings_json?.loyalty_earn_rate ?? null;
+    bookingCustomerOptions = customersList; // populates findBookingCustomer() used below
+
+    const enrolledCustomerIds = new Set(members.map(m => String(m.customer_id)));
+    unenrolledCustomers = customersList.filter(c => !enrolledCustomerIds.has(String(c.customer_id)));
+  } catch (error) {
+    alert(error.message || "Failed to load loyalty data.");
+  }
 
   createDateRangeFilter("loyaltyMetrics", (range) => {
     loyaltyMetricsRange = range;
@@ -3597,20 +3800,18 @@ async function initLoyaltyPage() {
 }
 
 function updateLoyaltyKPI() {
-  const members = buildLoyaltyMembers();
+  const datedRedemptions = filterRecordsByDateIfPresent(loyaltyRedemptionRecords, loyaltyDateFilter, ["create_date", "created_at"]);
+  const datedMembers = filterRecordsByDateIfPresent(loyaltyMemberRecords, loyaltyDateFilter, ["create_date", "created_at", "join_date"]);
+  const pointsRedeemed = datedRedemptions
+    .filter(r => String(r.status || "").toLowerCase() !== "refunded")
+    .reduce((sum, r) => sum + (Number(r.loyalty_spend) || 0), 0);
 
-  // Your real `redemption` ledger has no pending/approval workflow — rows
-  // are only ever written by verify_payment() as a completed transaction.
-  // "Total Redemptions" replaces the mock's "Pending Approvals" with a real,
-  // non-fabricated count instead, scoped to the selected date range via the
-  // linked payment's date (see loadRealLoyaltyData).
-  const rangedRedemptions = realRedemptions.filter(r => r.date && r.date >= loyaltyMetricsRange.start && r.date <= loyaltyMetricsRange.end);
-  const totalRedemptionEvents = rangedRedemptions.filter(r => r.loyalty_spend > 0).length;
-  const pointsRedeemed = rangedRedemptions.reduce((sum, r) => sum + (Number(r.loyalty_spend) || 0), 0);
-
-  document.getElementById("loyaltyTotalMembers").textContent = members.length;
-  document.getElementById("loyaltyPendingCount").textContent = totalRedemptionEvents;
-  document.getElementById("loyaltyGoldCount").textContent = members.filter(m => m.tier === "Gold" || m.tier === "Platinum").length;
+  document.getElementById("loyaltyTotalMembers").textContent = datedMembers.length;
+  // Matches the Pending Approvals table below: not scoped to the date
+  // filter — "unenrolled" is a standing state, not something that happened
+  // on a particular day, so every candidate should keep showing up.
+  document.getElementById("loyaltyPendingCount").textContent = unenrolledCustomers.length;
+  document.getElementById("loyaltyGoldCount").textContent = datedMembers.filter(m => m.tier === "Gold" || m.tier === "Platinum").length;
   document.getElementById("loyaltyPointsRedeemed").textContent = pointsRedeemed.toLocaleString();
 }
 
@@ -3620,86 +3821,112 @@ function renderLoyaltyLists() {
   renderLoyaltyMemberTable(searchValue);
 }
 
-function renderLoyaltyHistoryTable(searchValue) {
-  const filtered = realRedemptions
-    .filter(r => r.memberName.toLowerCase().includes(searchValue) || (r.couponName || "").toLowerCase().includes(searchValue))
-    .sort((a, b) => b.redemption_id - a.redemption_id);
+function renderLoyaltyPendingTable(searchValue) {
+  // Not scoped to loyaltyDateFilter — "unenrolled" is a standing state, not
+  // something that happened on a particular day.
+  const candidates = unenrolledCustomers.filter(c =>
+    c.full_name.toLowerCase().includes(searchValue) ||
+    (c.phone_number || "").toLowerCase().includes(searchValue)
+  );
 
-  loyaltyPendingRecordCount.textContent = `${filtered.length} records`;
+  loyaltyPendingRecordCount.textContent = `${candidates.length} to enroll`;
 
-  if (filtered.length === 0) {
-    loyaltyPendingBody.innerHTML = `<tr><td colspan="5" class="empty-row">No redemption history found.</td></tr>`;
+  if (candidates.length === 0) {
+    loyaltyPendingBody.innerHTML = `<tr><td colspan="6" class="empty-row">Every customer is already enrolled.</td></tr>`;
+    renderListPagination("loyaltyPending", 0);
     return;
   }
 
-  loyaltyPendingBody.innerHTML = filtered.map(r => `
+  const candidatesPage = paginateList("loyaltyPending", candidates, 5);
+
+  loyaltyPendingBody.innerHTML = candidatesPage.map(c => `
     <tr>
-      <td><span class="key-chip">RDM-${String(r.redemption_id).padStart(4, "0")}</span></td>
-      <td><span class="profile-name">${r.memberName}</span></td>
-      <td>${r.loyalty_earn > 0 ? `+${r.loyalty_earn} pts earned` : "—"}</td>
-      <td>${r.loyalty_spend > 0 ? `−${r.loyalty_spend} pts spent` : "—"}</td>
-      <td>${r.couponName || "—"}</td>
+      <td><span class="key-chip">CUST-${c.customer_id}</span></td>
+      <td><span class="profile-name">${c.full_name}</span></td>
+      <td>Not enrolled</td>
+      <td>${c.phone_number || "—"}</td>
+      <td>—</td>
+      <td>
+        <button class="action-btn" onclick="enrollLoyaltyMember(${c.customer_id})"><img src="icon/confirm-circle.png" alt="" class="btn-icon">Enroll</button>
+      </td>
     </tr>
   `).join("");
 }
 
 function renderLoyaltyMemberTable(searchValue) {
-  const members = buildLoyaltyMembers().filter(m =>
-    m.full_name.toLowerCase().includes(searchValue) ||
-    m.phone.toLowerCase().includes(searchValue) ||
-    String(m.member_id || "").toLowerCase().includes(searchValue)
-  );
+  const datedMembers = filterRecordsByDateIfPresent(loyaltyMemberRecords, loyaltyDateFilter, ["create_date", "created_at", "join_date"]);
+  const members = datedMembers.filter(m => {
+    const customer = findBookingCustomer(m.customer_id);
+    return (customer?.full_name || "").toLowerCase().includes(searchValue) ||
+      (customer?.phone_number || "").toLowerCase().includes(searchValue) ||
+      String(m.loyalty_id).includes(searchValue);
+  });
 
   loyaltyMemberRecordCount.textContent = `${members.length} members`;
 
   if (members.length === 0) {
     loyaltyMemberBody.innerHTML = `<tr><td colspan="6" class="empty-row">No member record found.</td></tr>`;
+    renderListPagination("loyaltyMembers", 0);
     return;
   }
 
-  loyaltyMemberBody.innerHTML = members
-    .sort((a, b) => b.points - a.points)
-    .map(m => `
+  const sortedMembers = members.slice().sort((a, b) => b.points_balance - a.points_balance);
+  const membersPage = paginateList("loyaltyMembers", sortedMembers, 5);
+
+  loyaltyMemberBody.innerHTML = membersPage
+    .map(m => {
+      const customer = findBookingCustomer(m.customer_id);
+      return `
       <tr>
         <td>
-          <span class="profile-name">${m.photo_icon || "👤"} ${m.full_name}</span>
-          <span class="profile-sub">${m.phone}</span>
+          <span class="profile-name">👤 ${customer?.full_name || "Unknown"}</span>
+          <span class="profile-sub">${customer?.phone_number || "—"}</span>
         </td>
-        <td><span class="key-chip">${m.member_id}</span></td>
+        <td><span class="key-chip">LOY-${m.loyalty_id}</span></td>
         <td><span class="status-tag status-${m.tier.toLowerCase()}">${m.tier}</span></td>
-        <td>${m.points.toLocaleString()} pts</td>
-        <td>${countApprovedRedemptions(m.full_name)}</td>
-        <td><button class="action-btn" onclick="openLoyaltyMemberDetail('${m.member_id}')"><img src="icon/view.png" alt="" class="btn-icon">View</button></td>
+        <td>${Number(m.points_balance).toLocaleString()} pts</td>
+        <td>${m.redemption_made}</td>
+        <td><button class="action-btn" onclick="openLoyaltyMemberDetail(${m.loyalty_id})"><img src="icon/view.png" alt="" class="btn-icon">View</button></td>
       </tr>
-    `).join("");
+    `;
+    }).join("");
 }
 
+async function enrollLoyaltyMember(customerId) {
+  try {
+    await api.post("/member-info", { customer_id: customerId });
+    await refreshLoyaltyPageData();
+  } catch (error) {
+    alert(error.message || "Failed to enroll member.");
+  }
+}
 
-function openLoyaltyMemberDetail(memberId) {
-  const member = buildLoyaltyMembers().find(m => String(m.member_id) === String(memberId));
+function openLoyaltyMemberDetail(loyaltyId) {
+  const member = loyaltyMemberRecords.find(m => m.loyalty_id === loyaltyId);
   if (!member) return;
+  const customer = findBookingCustomer(member.customer_id);
 
-  const memberBookings = bookings
-    .filter(b => b.customerName === member.full_name)
-    .sort((a, b) => new Date(b.date) - new Date(a.date));
+  const memberRedemptions = loyaltyRedemptionRecords
+    .filter(r => r.loyalty_id === loyaltyId)
+    .sort((a, b) => (b.create_date || "").localeCompare(a.create_date || ""));
 
   detailPage.style.display = "flex";
-  detailTitle.textContent = `Member Info · ${member.member_id}`;
+  detailTitle.textContent = `Member Info · LOY-${member.loyalty_id}`;
 
   detailForm.innerHTML = `
     <div class="form-group">
       <label>Loyalty ID</label>
-      <input value="${member.member_id}" readonly />
+      <input value="LOY-${member.loyalty_id}" readonly />
     </div>
 
     <div class="form-group">
       <label>Name</label>
-      <input value="${member.full_name}" readonly />
+      <input value="${customer?.full_name || "Unknown"}" readonly />
     </div>
 
     <div class="form-group">
       <label>Phone</label>
-      <input value="${member.phone}" readonly />
+      <input value="${customer?.phone_number || "—"}" readonly />
     </div>
 
     <div class="form-group">
@@ -3709,26 +3936,26 @@ function openLoyaltyMemberDetail(memberId) {
 
     <div class="form-group">
       <label>Points Balance</label>
-      <input value="${member.points.toLocaleString()} pts" readonly />
+      <input value="${Number(member.points_balance).toLocaleString()} pts" readonly />
     </div>
 
     <div class="form-group">
       <label>Redemptions Made</label>
-      <input value="${countApprovedRedemptions(member.full_name)}" readonly />
+      <input value="${member.redemption_made}" readonly />
     </div>
 
     <div class="form-group full">
-      <label>Linked Bookings</label>
+      <label>Redemption Ledger</label>
       <div class="crm-pet-list">
-        ${memberBookings.length === 0
-          ? `<p class="crm-pet-empty">No bookings linked to this member.</p>`
-          : memberBookings.map(b => `
+        ${memberRedemptions.length === 0
+          ? `<p class="crm-pet-empty">No redemptions on record for this member.</p>`
+          : memberRedemptions.map(r => `
               <div class="crm-pet-card">
                 <div class="crm-pet-info">
-                  <span class="profile-name">${b.petName} · ${b.serviceType.charAt(0).toUpperCase()}${b.serviceType.slice(1)}</span>
-                  <span class="profile-sub">${formatDate(b.date)} · RM ${b.amount}</span>
+                  <span class="profile-name">Redemption REDM-${r.redemption_id}</span>
+                  <span class="profile-sub">Earned ${r.loyalty_earn} pts · Spent ${r.loyalty_spend} pts · ${r.create_date || "-"}</span>
+                  <span class="status-tag status-${String(r.status).toLowerCase() === "refunded" ? "cancelled" : "done"}">${r.status || "Approved"}</span>
                 </div>
-                <span class="status-tag status-${b.status}">${b.status.replace("_", " ")}</span>
               </div>
             `).join("")
         }
@@ -3737,7 +3964,7 @@ function openLoyaltyMemberDetail(memberId) {
 
     <div class="form-actions">
       <button type="button" class="cancel-btn" onclick="closeDetailPage()"><img src="icon/close-circle.png" alt="" class="btn-icon">Close</button>
-      <a class="btn btn-secondary" href="booking.html"><img src="icon/calendar-simple.png" alt="" class="btn-icon">Open Booking Dashboard</a>
+      <a class="btn btn-secondary" href="payment.html"><img src="icon/payment-card.png" alt="" class="btn-icon">Open Payment</a>
     </div>
   `;
 }
@@ -3749,66 +3976,56 @@ function openLoyaltyMemberDetail(memberId) {
    over across sessions the same way business settings do.
    ========================================================================== */
 
-const LOYALTY_RULES_DEFAULTS = {
-  earnRate: 1,
-  redemptionRules: [
-    { id: "RULE1", points: 200, reward: "RM10 Voucher", type: "discount", value: 10 },
-    { id: "RULE2", points: 400, reward: "RM20 Voucher", type: "discount", value: 20 },
-    { id: "RULE3", points: 800, reward: "Free Grooming Session", type: "free", value: 0 },
-    { id: "RULE4", points: 1200, reward: "Free Boarding Night", type: "free", value: 0 }
-  ]
-};
-
-function loyaltyRulesStorageKey() {
-  const account = getCurrentAccount();
-  return "pawfect_loyalty_rules_" + (account?.businessKey || "default");
-}
-
-function loadLoyaltyRules() {
-  try {
-    const raw = localStorage.getItem(loyaltyRulesStorageKey());
-    return raw ? { ...LOYALTY_RULES_DEFAULTS, ...JSON.parse(raw) } : { ...LOYALTY_RULES_DEFAULTS };
-  } catch (e) {
-    return { ...LOYALTY_RULES_DEFAULTS };
-  }
-}
-
-function persistLoyaltyRules(rules) {
-  localStorage.setItem(loyaltyRulesStorageKey(), JSON.stringify(rules));
-}
-
+// Real backend: redemption rules map directly onto the `coupon` table
+// (already wired for other CRUD elsewhere in this file) via /api/coupons.
+// The earn rate is stored in companies.settings_json.loyalty_earn_rate (see
+// backend/src/routes/companies.js) — falls back to the backend's
+// LOYALTY_EARN_RATE env default (shown as blank here) until a company sets
+// its own.
 function renderLoyaltyRulesPanel() {
-  document.getElementById("loyaltyRulesBody").innerHTML = realCoupons.map(r => `
+  const earnRateInput = document.getElementById("loyaltyEarnRateInput");
+  if (earnRateInput) earnRateInput.value = loyaltyEarnRate ?? "";
+
+  document.getElementById("loyaltyRulesBody").innerHTML = loyaltyCouponRecords.map(c => `
     <tr>
-      <td>${Number(r.points_required).toLocaleString()} pts</td>
-      <td>${r.reward_name}</td>
-      <td>${r.reward_type === "Free service" ? "Free Service" : `Discount (RM ${r["discount_value (RM)"]})`}</td>
+      <td>${Number(c.points_required).toLocaleString()} pts</td>
+      <td>${c.reward_name}</td>
+      <td>${c.reward_type === "Discount (RM value)" ? `Discount (RM ${c["discount_value (RM)"]})` : "Free Service"}</td>
       <td>
-        <button class="edit-btn" onclick="openRuleForm(${r.coupon_id})">Edit</button>
+        <button class="edit-btn" onclick="openRuleForm(${c.coupon_id})">Edit</button>
       </td>
     </tr>
   `).join("");
 }
 
+async function saveLoyaltyEarnRate() {
+  const rate = Number(document.getElementById("loyaltyEarnRateInput").value);
+  if (Number.isNaN(rate) || rate < 0) { alert("Please enter a valid earn rate."); return; }
+
+  try {
+    await api.patch("/companies/me", { settings: { loyalty_earn_rate: rate } });
+    await refreshLoyaltyPageData();
+  } catch (error) {
+    alert(error.message || "Failed to save earn rate.");
+  }
+}
+
 async function removeLoyaltyRule(couponId) {
   if (!confirm("Remove this redemption rule? This cannot be undone.")) return;
   try {
-    await api.deleteCoupon(couponId);
-  } catch (err) {
-    alert(err.message);
-    return;
+    await api.del(`/coupons/${couponId}`);
+    closeDetailPage();
+    await refreshLoyaltyPageData();
+  } catch (error) {
+    alert(error.message || "Failed to remove rule.");
   }
-  const idx = realCoupons.findIndex(r => r.coupon_id === couponId);
-  if (idx !== -1) realCoupons.splice(idx, 1);
-  renderLoyaltyRulesPanel();
-  closeDetailPage();
 }
 
 function openRuleForm(couponId = null) {
-  const isEdit = Boolean(couponId);
+  const isEdit = couponId !== null && couponId !== undefined;
   const rule = isEdit
-    ? realCoupons.find(r => r.coupon_id === couponId)
-    : { coupon_id: null, points_required: "", reward_name: "", reward_type: "Discount (RM value)", "discount_value (RM)": "" };
+    ? loyaltyCouponRecords.find(c => c.coupon_id === couponId)
+    : { coupon_id: null, points_required: "", reward_name: "", reward_type: "Discount (RM value)", "discount_value (RM)": "", expiry_date: "" };
   if (isEdit && !rule) return;
 
   detailPage.style.display = "flex";
@@ -3833,9 +4050,14 @@ function openRuleForm(couponId = null) {
       </select>
     </div>
 
-    <div class="form-group" id="ruleValueGroup" ${rule.reward_type === "Free service" ? 'class="hidden"' : ""}>
+    <div class="form-group ${rule.reward_type !== "Discount (RM value)" ? "hidden" : ""}" id="ruleValueGroup">
       <label>Discount Value (RM)</label>
-      <input type="number" name="discount_value" min="0" placeholder="e.g. 10" value="${rule["discount_value (RM)"] && rule["discount_value (RM)"] !== "-" ? rule["discount_value (RM)"] : ""}" />
+      <input type="number" name="discount_value" min="0" placeholder="e.g. 10" value="${rule["discount_value (RM)"] || ""}" />
+    </div>
+
+    <div class="form-group">
+      <label>Expiry Date</label>
+      <input type="date" name="expiry_date" value="${rule.expiry_date || ""}" />
     </div>
 
     <div class="form-actions">
@@ -3854,25 +4076,26 @@ function openRuleForm(couponId = null) {
       points_required: Number(formData.get("points_required")) || 0,
       reward_name: formData.get("reward_name"),
       reward_type: rewardType,
-      "discount_value (RM)": rewardType === "Discount (RM value)" ? String(Number(formData.get("discount_value")) || 0) : "-",
+      "discount_value (RM)": rewardType === "Discount (RM value)" ? String(Number(formData.get("discount_value")) || 0) : "0",
+      expiry_date: formData.get("expiry_date") || null,
     };
+
+    const submitBtn = detailForm.querySelector(".save-btn");
+    if (submitBtn) submitBtn.disabled = true;
 
     try {
       if (isEdit) {
-        const updated = await api.updateCoupon(rule.coupon_id, payload);
-        const index = realCoupons.findIndex(r => r.coupon_id === rule.coupon_id);
-        realCoupons[index] = updated;
+        await api.patch(`/coupons/${rule.coupon_id}`, payload);
       } else {
-        const created = await api.createCoupon(payload);
-        realCoupons.push(created);
+        await api.post("/coupons", payload);
       }
-    } catch (err) {
-      alert(err.message);
-      return;
+      closeDetailPage();
+      await refreshLoyaltyPageData();
+    } catch (error) {
+      alert(error.message || "Failed to save rule.");
+    } finally {
+      if (submitBtn) submitBtn.disabled = false;
     }
-
-    renderLoyaltyRulesPanel();
-    closeDetailPage();
   };
 }
 
@@ -3884,121 +4107,31 @@ function openRuleForm(couponId = null) {
    approved loyalty redemption is applied to at most one matching booking.
    ========================================================================== */
 
-const SERVICE_ADDONS = {
-  grooming: [
-    { id: "AO1", name: "Nail Trimming", price: 15 },
-    { id: "AO2", name: "Teeth Brushing", price: 20 },
-    { id: "AO3", name: "De-shedding Treatment", price: 30 }
-  ],
-  boarding: [
-    { id: "AO4", name: "Extra Playtime", price: 25 },
-    { id: "AO5", name: "Medication Administration", price: 15 }
-  ],
-  daycare: [
-    { id: "AO6", name: "Extra Meal", price: 10 },
-    { id: "AO7", name: "Photo Update Package", price: 12 }
-  ]
-};
+// Real backend data for this page (separate from the mock `paymentRecords`
+// array above, which dashboard.html still reads until it's wired too).
+// `payment` rows aren't joined to a customer/pet by the list endpoint (only
+// GET /api/payments/:id joins through booking -> pet -> loyaltymember), and
+// `redemption` rows have no payment_id/booking link at all — so the
+// "Loyalty Discounts Given" KPI below is a company-wide best-effort total,
+// not an exact sum over the payments currently shown.
+let paymentRows = [];
+let couponsCache = [];
+let customersCacheForPayments = [];
+let petsCacheForPayments = [];
+let paymentCompanySettings = {};
+let paymentDateFilter = getToday();
+let paymentAccountRole = null;
 
-const PAYMENT_METHODS = ["Cash", "Card", "QR Pay", "Bank Transfer"];
-
-function getBookingAddons(booking, index) {
-  const pool = SERVICE_ADDONS[booking.serviceType] || [];
-  return pool.slice(0, index % (pool.length + 1));
+function parseAddOnPriceFromText(addOnsText) {
+  const match = String(addOnsText || "").match(/\(\+RM([\d.]+)\)/);
+  return match ? Number(match[1]) : 0;
 }
-
-function parseVoucherRM(type) {
-  return parseInt(type.match(/RM(\d+)/)?.[1] || "0", 10);
-}
-
-function buildPaymentRecords() {
-  const consumedRedemptions = new Set();
-  const earnRate = loadLoyaltyRules().earnRate;
-
-  return bookings.map((b, i) => {
-    const addons = getBookingAddons(b, i);
-    const addonsTotal = addons.reduce((sum, a) => sum + a.price, 0);
-
-    const redemption = loyaltyRequests.find(r =>
-      r.status === "approved" &&
-      !consumedRedemptions.has(r.id) &&
-      r.customerName === b.customerName &&
-      r.relatedService === b.serviceType
-    );
-
-    let loyaltyDiscount = 0;
-    let loyaltyNote = "";
-    let loyaltyPointsSpent = 0;
-    if (redemption) {
-      consumedRedemptions.add(redemption.id);
-      loyaltyDiscount = redemption.type.startsWith("Free") ? b.amount : parseVoucherRM(redemption.type);
-      loyaltyNote = redemption.type;
-      loyaltyPointsSpent = redemption.points;
-    }
-
-    const finalAmount = Math.max(0, b.amount + addonsTotal - loyaltyDiscount);
-
-    return {
-      payment_id: `PAY-${String(i + 1).padStart(4, "0")}`,
-      booking_id: b.id,
-      customerName: b.customerName,
-      petName: b.petName,
-      serviceType: b.serviceType,
-      serviceName: services.find(s => s.id === b.serviceId)?.name || b.serviceType,
-      date: b.date,
-      basePrice: b.amount,
-      addons,
-      addonsTotal,
-      loyaltyDiscount,
-      loyaltyNote,
-      loyaltyPointsSpent,
-      loyaltyPointsEarned: Math.round(finalAmount * earnRate),
-      finalAmount,
-      method: PAYMENT_METHODS[i % PAYMENT_METHODS.length],
-      status: i % 3 === 0 ? "pending" : "verified"
-    };
-  });
-}
-
-function paymentRecordsStorageKey() {
-  const account = getCurrentAccount();
-  return "pawfect_payment_records_" + (account?.businessKey || "default");
-}
-function loadPaymentRecords(seedRecords) {
-  try {
-    const raw = localStorage.getItem(paymentRecordsStorageKey());
-    return raw ? JSON.parse(raw) : seedRecords;
-  } catch (e) {
-    return seedRecords;
-  }
-}
-function persistPaymentRecords() {
-  localStorage.setItem(paymentRecordsStorageKey(), JSON.stringify(paymentRecords));
-}
-
-let paymentRecords = loadPaymentRecords(buildPaymentRecords());
 
 const paymentSearchInput = document.getElementById("paymentSearchInput");
 const paymentPendingBody = document.getElementById("paymentPendingBody");
 const paymentHistoryBody = document.getElementById("paymentHistoryBody");
 const paymentPendingRecordCount = document.getElementById("paymentPendingRecordCount");
 const paymentHistoryRecordCount = document.getElementById("paymentHistoryRecordCount");
-
-// ── Real-data payment page (payment.html only — dashboard.html's System
-// panel still reads the mock `paymentRecords` array above; that's a
-// separate, not-yet-converted page). Requires supabase-config.js +
-// api-client.js loaded before this file. ──────────────────────────────────
-let _couponsCache = null;
-async function getCouponsCached() {
-  if (!_couponsCache) _couponsCache = await api.listCoupons();
-  return _couponsCache;
-}
-
-// Cached full list + the KPI cards' selected date range (tables below stay
-// unfiltered/full — only the 4 KPI cards react to this, per the date-filter
-// feature request). Defaults to today.
-let paymentRowsCache = [];
-let paymentMetricsRange = { start: getToday(), end: getToday() };
 
 async function initPaymentPage() {
   document.querySelectorAll("#paymentTabs .tab-btn").forEach(btn => {
@@ -4010,159 +4143,262 @@ async function initPaymentPage() {
     });
   });
 
-  paymentSearchInput.addEventListener("input", renderPaymentLists);
+  paymentSearchInput.addEventListener("input", () => {
+    resetListPage("paymentPending");
+    resetListPage("paymentHistory");
+    renderPaymentLists();
+  });
 
-  createDateRangeFilter("paymentMetrics", (range) => {
-    paymentMetricsRange = range;
-    updatePaymentKPI();
-  }).init();
+  registerListRerenderer("paymentPending", renderPaymentLists);
+  registerListRerenderer("paymentHistory", renderPaymentLists);
 
+  bindDateNavigator("paymentDate", {
+    getDate: () => paymentDateFilter,
+    setDate: date => { paymentDateFilter = date; },
+    onChange: async () => {
+      resetListPage("paymentHistory");
+      await updatePaymentKPI();
+      await renderPaymentLists();
+    },
+  });
+
+  await refreshPaymentPageData();
+}
+
+async function refreshPaymentPageData() {
+  const [payments, coupons, customersList, petsList, company, me] = await Promise.all([
+    api.get("/payments"),
+    api.get("/coupons"),
+    api.get("/customers"),
+    api.get("/pets"),
+    api.get("/companies/me"),
+    api.get("/accounts/me"),
+  ]);
+  paymentRows = payments;
+  couponsCache = coupons;
+  customersCacheForPayments = customersList;
+  petsCacheForPayments = petsList;
+  paymentCompanySettings = company.settings_json || {};
+  paymentAccountRole = me.role;
+
+  await updatePaymentKPI();
   await renderPaymentLists();
+}
+
+function isPaymentAwaitingVerification(payment) {
+  return payment?.status === "Pending" || payment?.status === "Unpaid";
+}
+
+async function updatePaymentKPI() {
+  const selectedRows = paymentRows.filter(p => recordDateValue(p, ["date", "paid_at", "created_at"]) === paymentDateFilter);
+  // Matches the Pending Verification table below: not scoped to the date
+  // filter, since an unverified payment stays actionable regardless of
+  // which day it happened to be created on.
+  const pending = paymentRows.filter(isPaymentAwaitingVerification);
+  const paid = selectedRows.filter(p => p.status === "Paid");
+  const totalRevenue = paid.reduce((sum, p) => sum + Number(p.final_amount || 0), 0);
+  document.getElementById("paymentTotalRevenue").textContent = `RM ${totalRevenue.toLocaleString()}`;
+  document.getElementById("paymentPendingCount").textContent = pending.length;
+  document.getElementById("paymentTotalCount").textContent = selectedRows.length;
+
+  try {
+    const redemptions = await api.get("/redemptions");
+    const datedRedemptions = filterRecordsByDateIfPresent(redemptions, paymentDateFilter, ["create_date", "created_at"]);
+    const discountTotal = datedRedemptions.reduce((sum, r) => {
+      if (!r.coupon_id || String(r.status || "").toLowerCase() === "refunded") return sum;
+      const coupon = couponsCache.find(c => c.coupon_id === r.coupon_id);
+      if (!coupon || coupon.reward_type !== "Discount (RM value)") return sum;
+      return sum + (Number(coupon["discount_value (RM)"]) || 0);
+    }, 0);
+    document.getElementById("paymentLoyaltyDiscount").textContent = `RM ${discountTotal.toLocaleString()}`;
+  } catch (error) {
+    console.error(error);
+    document.getElementById("paymentLoyaltyDiscount").textContent = "RM —";
+  }
+}
+
+function filterPaymentRows(records, searchValue) {
+  if (!searchValue) return records;
+  return records.filter(p =>
+    (p.service || "").toLowerCase().includes(searchValue) ||
+    (p.customer_name || "").toLowerCase().includes(searchValue) ||
+    (p.pet_name || "").toLowerCase().includes(searchValue) ||
+    String(p.payment_id).includes(searchValue)
+  );
 }
 
 async function renderPaymentLists() {
   const searchValue = paymentSearchInput.value.toLowerCase().trim();
+  // Pending Verification isn't scoped to the date filter — a payment can
+  // sit unverified for days (that's the whole point of its SLA), so it
+  // needs to keep showing up until someone actually verifies it, not just
+  // on whichever single day the top filter happens to land on.
+  const pending = filterPaymentRows(paymentRows.filter(isPaymentAwaitingVerification), searchValue)
+    .sort((a, b) => new Date(a.created_at || a.date) - new Date(b.created_at || b.date));
+  const selectedRows = paymentRows.filter(p => recordDateValue(p, ["date", "paid_at", "created_at"]) === paymentDateFilter);
+  const history = filterPaymentRows(selectedRows.filter(p => !isPaymentAwaitingVerification(p)), searchValue)
+    .sort((a, b) => new Date(b.date) - new Date(a.date));
 
-  // One bulk-enriched call (petName/customerName already joined server-side
-  // via findNamesForPayments) instead of a per-row detail fetch — real data
-  // is 500+ rows, so an N+1 pattern here would mean hundreds of round trips.
-  paymentRowsCache = await api.listPayments({ limit: 1000 });
-
-  const pendingRows = paymentRowsCache.filter(p => p.status === "Pending");
-  // Real payment.status has 4 values (Paid/Unpaid/Pending/Refunded); history
-  // shows everything that isn't awaiting verification.
-  const historyRows = paymentRowsCache.filter(p => p.status !== "Pending");
-
-  updatePaymentKPI();
-  renderPaymentPendingTable(pendingRows, searchValue);
-  renderPaymentHistoryTable(historyRows, searchValue);
+  await renderPaymentPendingTable(pending);
+  renderPaymentHistoryTable(history);
 }
 
-function updatePaymentKPI() {
-  const rows = paymentRowsCache.filter(p => p.date >= paymentMetricsRange.start && p.date <= paymentMetricsRange.end);
-  const paid = rows.filter(p => p.status === "Paid");
-  const pendingCount = rows.filter(p => p.status === "Pending").length;
+// Customer and pet labels are batch-resolved by GET /payments, avoiding a
+// per-row request pattern as payment volume grows.
+async function renderPaymentPendingTable(pending) {
+  paymentPendingRecordCount.textContent = `${pending.length} pending`;
 
-  const totalRevenue = paid.reduce((sum, p) => sum + Number(p.final_amount || 0), 0);
-  const loyaltyDiscountTotal = paid.reduce((sum, p) => sum + Math.max(0, Number(p.base_price || 0) - Number(p.final_amount || 0)), 0);
-
-  document.getElementById("paymentTotalRevenue").textContent = `RM ${totalRevenue.toLocaleString()}`;
-  document.getElementById("paymentPendingCount").textContent = pendingCount;
-  document.getElementById("paymentTotalCount").textContent = rows.length;
-  document.getElementById("paymentLoyaltyDiscount").textContent = `RM ${loyaltyDiscountTotal.toLocaleString()}`;
-}
-
-function matchesSearch(row, searchValue) {
-  if (!searchValue) return true;
-  const haystack = `${row.customerName || ""} ${row.petName || ""} ${row.payment_id}`.toLowerCase();
-  return haystack.includes(searchValue);
-}
-
-const PAYMENT_STATUS_TAG = {
-  Paid: "status-done",
-  Pending: "status-pending",
-  Unpaid: "status-no_show",
-  Refunded: "status-cancelled",
-};
-
-function renderPaymentPendingTable(rows, searchValue) {
-  const filtered = rows.filter(r => matchesSearch(r, searchValue));
-
-  paymentPendingRecordCount.textContent = `${filtered.length} pending`;
-
-  if (filtered.length === 0) {
-    paymentPendingBody.innerHTML = `<tr><td colspan="7" class="empty-row">No payments awaiting verification.</td></tr>`;
+  if (pending.length === 0) {
+    paymentPendingBody.innerHTML = `<tr><td colspan="8" class="empty-row">No payments awaiting verification.</td></tr>`;
+    renderListPagination("paymentPending", 0);
     return;
   }
 
-  paymentPendingBody.innerHTML = filtered.map(payment => `
+  const pendingPage = paginateList("paymentPending", pending, 5);
+
+  const rows = pendingPage.map(p => ({
+    payment: p,
+    customerName: p.customer_name || "Unknown",
+    petName: p.pet_name || "—",
+  }));
+
+  paymentPendingBody.innerHTML = rows.map(({ payment: p, customerName, petName }) => `
     <tr>
-      <td><span class="key-chip">PAY-${String(payment.payment_id).padStart(4, "0")}</span></td>
+      <td><span class="key-chip">PAY-${String(p.payment_id).padStart(4, "0")}</span></td>
       <td>
-        <span class="profile-name">${payment.customerName || "—"}</span>
-        <span class="profile-sub">${payment.petName || "—"}</span>
+        <span class="profile-name">${customerName}</span>
+        <span class="profile-sub">${petName}</span>
       </td>
-      <td>${payment.service}</td>
-      <td>RM ${Number(payment.final_amount).toLocaleString()}</td>
-      <td>${payment.payment_method || "—"}</td>
-      <td>${formatDate(payment.date)}</td>
+      <td>${p.service || "—"}</td>
+      <td>RM ${Number(p.final_amount || 0).toLocaleString()}</td>
+      <td>${p.payment_method || "—"}</td>
+      <td>${formatDate(p.date)}</td>
+      <td>${slaBadgeFromTimestamp('payment', p.created_at)}</td>
       <td>
-        <button class="action-btn" onclick="openPaymentDetail(${payment.payment_id})"><img src="icon/view.png" alt="" class="btn-icon">View</button>
+        <button class="action-btn" onclick="openPaymentDetail(${p.payment_id})"><img src="icon/view.png" alt="" class="btn-icon">View</button>
       </td>
     </tr>
   `).join("");
 }
 
-function renderPaymentHistoryTable(rows, searchValue) {
-  const filtered = rows
-    .filter(r => matchesSearch(r, searchValue))
-    .slice()
-    .sort((a, b) => new Date(b.date) - new Date(a.date));
-
-  paymentHistoryRecordCount.textContent = `${filtered.length} records`;
+function renderPaymentHistoryTable(history) {
+  paymentHistoryRecordCount.textContent = `${history.length} records`;
 
   if (filtered.length === 0) {
     paymentHistoryBody.innerHTML = `<tr><td colspan="13" class="empty-row">No transaction record found.</td></tr>`;
+    renderListPagination("paymentHistory", 0);
     return;
   }
 
-  paymentHistoryBody.innerHTML = filtered.map(payment => {
-    const discount = Math.max(0, Number(payment.base_price || 0) - Number(payment.final_amount || 0));
-    const statusClass = PAYMENT_STATUS_TAG[payment.status] || "status-pending";
+  const historyPage = paginateList("paymentHistory", history, 5);
+
+  paymentHistoryBody.innerHTML = historyPage.map(p => {
+    const addOnPrice = parseAddOnPriceFromText(p.add_ons);
+    const discount = Math.max(0, Number(p.base_price || 0) + addOnPrice - Number(p.final_amount || 0));
     return `
     <tr>
-      <td><span class="key-chip">PAY-${String(payment.payment_id).padStart(4, "0")}</span></td>
-      <td>
-        <span class="profile-name">${payment.customerName || "—"}</span>
-        <span class="profile-sub">${payment.petName || "—"}</span>
-      </td>
-      <td>${payment.service}</td>
-      <td>RM ${Number(payment.base_price).toLocaleString()}</td>
-      <td>${payment.add_ons || "—"}</td>
+      <td><span class="key-chip">PAY-${String(p.payment_id).padStart(4, "0")}</span></td>
+      <td><span class="profile-name">${escapeUiText(p.customer_name || "Unknown")}</span><br><span class="profile-sub">${escapeUiText(p.pet_name || "—")}</span></td>
+      <td>${p.service || "—"}</td>
+      <td>RM ${Number(p.base_price || 0).toLocaleString()}</td>
+      <td>${p.add_ons ? `<span class="key-chip">${p.add_ons}</span>` : `<span class="profile-sub">No add-on</span>`}</td>
       <td>${discount > 0 ? `− RM ${discount.toLocaleString()}` : "—"}</td>
-      <td><strong>RM ${Number(payment.final_amount).toLocaleString()}</strong></td>
+      <td><strong>RM ${Number(p.final_amount || 0).toLocaleString()}</strong></td>
       <td>—</td>
       <td>—</td>
-      <td>${payment.payment_method || "—"}</td>
-      <td><span class="status-tag ${statusClass}">${payment.status}</span></td>
-      <td>${formatDate(payment.date)}</td>
-      <td><button class="action-btn" onclick="openPaymentDetail(${payment.payment_id})"><img src="icon/view.png" alt="" class="btn-icon">View</button></td>
+      <td>${p.payment_method || "—"}</td>
+      <td><span class="status-tag status-${p.status === "Paid" ? "done" : "cancelled"}">${p.status}</span></td>
+      <td>${p.refunded_at ? new Date(p.refunded_at).toLocaleDateString("en-MY") : p.paid_at ? new Date(p.paid_at).toLocaleDateString("en-MY") : formatDate(p.date)}</td>
+      <td><button class="action-btn" onclick="openPaymentDetail(${p.payment_id})"><img src="icon/view.png" alt="" class="btn-icon">View</button></td>
     </tr>
   `;
   }).join("");
 }
 
-async function verifyPayment(paymentId, couponId) {
-  try {
-    await api.verifyPayment(paymentId, { couponId });
-  } catch (err) {
-    alert(err.message);
+async function confirmVerifyPayment(paymentId) {
+  const couponSelect = document.getElementById("verifyCouponSelect");
+  const couponId = couponSelect?.value ? Number(couponSelect.value) : undefined;
+  const paymentMethod = document.getElementById("verifyPaymentMethod")?.value;
+  const note = document.getElementById("verifyVoucherNote");
+
+  if (!paymentMethod) {
+    if (note) {
+      note.style.color = "#DC2626";
+      note.textContent = "Select a payment method.";
+    }
     return;
   }
-  closeDetailPage();
-  await renderPaymentLists();
+
+  try {
+    await api.verifyPayment(paymentId, { couponId, paymentMethod });
+    closeDetailPage();
+    await refreshPaymentPageData();
+  } catch (error) {
+    if (note) {
+      note.style.color = "#DC2626";
+      note.textContent = error.message || "Failed to verify payment.";
+    } else {
+      alert(error.message || "Failed to verify payment.");
+    }
+  }
+}
+
+async function confirmRefundPayment(paymentId) {
+  const reason = q("refundReason")?.value.trim();
+  const note = q("refundNote");
+  if (!reason) {
+    if (note) {
+      note.style.color = "#DC2626";
+      note.textContent = "Enter a refund reason.";
+    }
+    return;
+  }
+  if (!confirm(`Refund PAY-${String(paymentId).padStart(4, "0")}? Revenue and linked loyalty points will be reversed.`)) return;
+
+  try {
+    await api.refundPayment(paymentId, reason);
+    closeDetailPage();
+    await refreshPaymentPageData();
+  } catch (error) {
+    if (note) {
+      note.style.color = "#DC2626";
+      note.textContent = error.message || "Failed to refund payment.";
+    } else {
+      alert(error.message || "Failed to refund payment.");
+    }
+  }
 }
 
 async function openPaymentDetail(paymentId) {
-  const { payment, pet, customer, member } = await api.getPaymentDetail(paymentId);
-  const coupons = payment.status === "Pending" ? await getCouponsCached() : [];
+  const detail = await api.getPaymentDetail(paymentId).catch(error => {
+    alert(error.message || "Failed to load payment.");
+    return null;
+  });
+  if (!detail) return;
+
+  const p = detail.payment;
+  const pet = detail.booking ? petsCacheForPayments.find(x => String(x.pet_id) === String(detail.booking.pet_id)) : null;
+  const customer = customersCacheForPayments.find(c => String(c.customer_id) === String(detail.customerId));
+  const enabledPaymentMethods = Object.entries({ Cash: "cash", Card: "card", "E-Wallet": "qr", "Bank Transfer": "online" })
+    .filter(([, key]) => paymentCompanySettings.payment_methods?.[key] !== false)
+    .map(([label]) => label);
+  const awaitingVerification = isPaymentAwaitingVerification(p);
+  const canRefund = p.status === "Paid" && paymentAccountRole === "manager";
+  const today = getToday();
+  const availableCoupons = couponsCache.filter(c => !c.expiry_date || String(c.expiry_date).slice(0, 10) >= today);
 
   detailPage.style.display = "flex";
-  detailTitle.textContent = `Payment Detail · PAY-${String(payment.payment_id).padStart(4, "0")}`;
-
-  const memberLine = member
-    ? `${member.tier} member · ${member.points_balance.toLocaleString()} points`
-    : "No loyalty member on file";
+  detailTitle.textContent = `Payment Detail · PAY-${String(p.payment_id).padStart(4, "0")}`;
 
   detailForm.innerHTML = `
     <div class="form-group">
       <label>Payment ID</label>
-      <input value="PAY-${String(payment.payment_id).padStart(4, "0")}" readonly />
+      <input value="PAY-${String(p.payment_id).padStart(4, "0")}" readonly />
     </div>
 
     <div class="form-group">
       <label>Customer</label>
-      <input value="${customer?.full_name || "—"}" readonly />
+      <input value="${customer?.full_name || "Unknown"}" readonly />
     </div>
 
     <div class="form-group">
@@ -4172,32 +4408,32 @@ async function openPaymentDetail(paymentId) {
 
     <div class="form-group">
       <label>Service</label>
-      <input value="${payment.service}" readonly />
+      <input value="${p.service || "—"}" readonly />
     </div>
 
     <div class="form-group">
       <label>Base Price</label>
-      <input value="RM ${Number(payment.base_price).toLocaleString()}" readonly />
+      <input value="RM ${Number(p.base_price || 0).toLocaleString()}" readonly />
     </div>
 
     <div class="form-group">
       <label>Add-ons</label>
-      <input value="${payment.add_ons || "None"}" readonly />
+      <input value="${p.add_ons || "None"}" readonly />
     </div>
 
     <div class="form-group">
       <label>Final Amount</label>
-      <input id="verifyCurrentTotal" value="RM ${Number(payment.final_amount).toLocaleString()}" readonly />
+      <input value="RM ${Number(p.final_amount || 0).toLocaleString()}" readonly />
     </div>
 
-    <div class="form-group full">
+    <div class="form-group">
       <label>Loyalty Member</label>
-      <input value="${memberLine}" readonly />
+      <input value="${detail.member ? `${detail.member.tier} · ${detail.member.points_balance} points` : "No loyalty member on file"}" readonly />
     </div>
 
     <div class="form-group">
       <label>Payment Method</label>
-      <input value="${payment.payment_method || "—"}" readonly />
+      <input value="${p.payment_method || "Not set"}" readonly />
     </div>
 
     <div class="form-group">
@@ -4207,15 +4443,32 @@ async function openPaymentDetail(paymentId) {
 
     <div class="form-group">
       <label>Status</label>
-      <input value="${payment.status}" readonly />
+      <input value="${p.status}" readonly />
     </div>
 
-    ${payment.status === "Pending" ? `
+    ${p.status === "Refunded" ? `
+    <div class="form-group full">
+      <label>Refund Details</label>
+      <div class="reply-preview" style="background:#FEF2F2;border-color:#FECACA;">
+        ${escapeUiText(p.refund_reason || "No reason recorded")}
+        ${p.refunded_at ? `<br><span class="profile-sub">Refunded ${new Date(p.refunded_at).toLocaleString("en-MY")}</span>` : ""}
+      </div>
+    </div>
+    ` : ""}
+
+    ${awaitingVerification ? `
+    <div class="form-group full">
+      <label>Payment Method</label>
+      <select id="verifyPaymentMethod" required>
+        <option value="">Select payment method</option>
+        ${enabledPaymentMethods.map(method => `<option value="${method}">${method}</option>`).join("")}
+      </select>
+    </div>
     <div class="form-group full">
       <label>Apply Voucher (optional)</label>
       <select id="verifyCouponSelect">
         <option value="">No voucher</option>
-        ${coupons.map(c => `<option value="${c.coupon_id}">${c.reward_name} (${c.points_required} pts)</option>`).join("")}
+        ${availableCoupons.map(c => `<option value="${c.coupon_id}">${c.reward_name} (${c.points_required} pts)</option>`).join("")}
       </select>
     </div>
     <div class="form-group full">
@@ -4223,32 +4476,37 @@ async function openPaymentDetail(paymentId) {
     </div>
     ` : ""}
 
+    ${canRefund ? `
+    <div class="form-group full">
+      <label for="refundReason">Refund Reason <span class="req">*</span></label>
+      <textarea id="refundReason" maxlength="500" placeholder="Explain why this paid transaction is being refunded…"></textarea>
+      <p id="refundNote" style="font-size:0.8rem;color:var(--text-muted);"></p>
+    </div>
+    ` : ""}
+
     <div class="form-actions">
       <button type="button" class="cancel-btn" onclick="closeDetailPage()"><img src="icon/close-circle.png" alt="" class="btn-icon">Close</button>
-      ${payment.status === "Pending" ? `<button type="button" class="save-btn" id="verifyConfirmBtn"><img src="icon/confirm-circle.png" alt="" class="btn-icon solid-btn-icon">Verify</button>` : ""}
+      ${awaitingVerification ? `<button type="button" class="save-btn" id="verifyConfirmBtn"><img src="icon/confirm-circle.png" alt="" class="btn-icon solid-btn-icon">Verify Payment &amp; Redemption</button>` : ""}
+      ${canRefund ? `<button type="button" class="btn btn-secondary bk-danger-btn" onclick="confirmRefundPayment(${p.payment_id})">Refund Payment</button>` : ""}
     </div>
   `;
 
-  if (payment.status !== "Pending") return;
-
-  const couponSelect = document.getElementById("verifyCouponSelect");
-  const note = document.getElementById("verifyVoucherNote");
-
-  couponSelect.addEventListener("change", async () => {
-    if (!couponSelect.value) { note.textContent = ""; return; }
-    try {
-      const quote = await api.quoteVoucher(payment.payment_id, Number(couponSelect.value));
-      note.style.color = "";
-      note.textContent = `New total: RM ${quote.finalAmount} (discount RM ${quote.discountApplied})`;
-    } catch (err) {
-      note.style.color = "#DC2626";
-      note.textContent = err.message;
-    }
-  });
-
-  document.getElementById("verifyConfirmBtn").addEventListener("click", () => {
-    verifyPayment(payment.payment_id, couponSelect.value ? Number(couponSelect.value) : undefined);
-  });
+  if (awaitingVerification) {
+    const couponSelect = document.getElementById("verifyCouponSelect");
+    const note = document.getElementById("verifyVoucherNote");
+    couponSelect.addEventListener("change", async () => {
+      if (!couponSelect.value) { note.textContent = ""; return; }
+      try {
+        const quote = await api.quoteVoucher(p.payment_id, Number(couponSelect.value));
+        note.style.color = "";
+        note.textContent = `New total: RM ${quote.finalAmount} (discount RM ${quote.discountApplied})`;
+      } catch (error) {
+        note.style.color = "#DC2626";
+        note.textContent = error.message;
+      }
+    });
+    document.getElementById("verifyConfirmBtn").addEventListener("click", () => confirmVerifyPayment(p.payment_id));
+  }
 }
 
 /* ==========================================================================
@@ -4266,34 +4524,27 @@ function getWhatsAppLink(phone) {
 const enquirySearchInput = document.getElementById("enquirySearchInput");
 const enquiryPendingBody = document.getElementById("enquiryPendingBody");
 const enquiryPendingRecordCount = document.getElementById("enquiryPendingRecordCount");
+const enquiryHistoryBody = document.getElementById("enquiryHistoryBody");
+const enquiryHistoryRecordCount = document.getElementById("enquiryHistoryRecordCount");
+let currentEnquiryAccountRole = null;
 
-// Real data (enquiries.html only). Your real `messages` table is a plain
-// inbound-message log (sender_type/sender_id/message_text/intent_label/
-// receive_date/receive_time) — no status, handled-by, channel, or reply
-// tracking at all, so the mock's Pending/Resolved/SLA/AI-vs-human workflow
-// has no real backing. This page is rebuilt as a read-only message log
-// filterable by intent_label (booking/policy/loyalty) instead.
-let realMessages = [];
-let currentEnquiryFilter = "all";
-
-async function loadRealEnquiryData() {
-  const [messagesRes, customersRes] = await Promise.all([
-    api.listChatMessages({ limit: 1000 }),
-    api.listCustomers({ limit: 1000 }),
-  ]);
-  const customerById = new Map(customersRes.map(c => [c.customer_id, c]));
-  realMessages = messagesRes.map(m => ({
-    ...m,
-    customerName: customerById.get(m.sender_id)?.full_name || "—",
-    phone: customerById.get(m.sender_id)?.phone_number || "",
-  }));
+function escapeUiText(value) {
+  return String(value ?? "").replace(/[&<>"']/g, character => ({
+    "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#039;"
+  })[character]);
 }
 
-let enquiryMetricsRange = { start: getToday(), end: getToday() };
+// Real backend wiring. Reuses enquiryRecords/normalizeChatMessage/
+// realEnquiryDetailRow/computeRealEnquiryPriority/resolveRealEnquiry, all
+// already built for dailyoverview.html's real rewrite (plain top-level
+// functions, no page-DOM coupling) — see "DAILY OVERVIEW" section above.
+// The mock's "channel"/"relatedService"/"handledBy" fields have no real
+// column (messages has no channel — this product is WhatsApp-only in
+// practice — no service tag, and no human-vs-AI flag), so HITL Rate has no
+// real source and is shown as "Not available" rather than a fabricated %.
+const PRIORITY_RANK = { urgent: 0, high: 1, normal: 2 };
 
 async function initEnquiriesPage() {
-  await loadRealEnquiryData();
-
   document.querySelectorAll("#enquiryTabs .tab-btn").forEach(btn => {
     btn.addEventListener("click", () => {
       document.querySelectorAll("#enquiryTabs .tab-btn").forEach(b => b.classList.remove("active"));
@@ -4303,7 +4554,33 @@ async function initEnquiriesPage() {
     });
   });
 
-  enquirySearchInput.addEventListener("input", renderEnquiryLists);
+  enquirySearchInput.addEventListener("input", () => {
+    resetListPage("enquiryPending");
+    resetListPage("enquiryHistory");
+    renderEnquiryLists();
+  });
+
+  registerListRerenderer("enquiryPending", renderEnquiryLists);
+  registerListRerenderer("enquiryHistory", renderEnquiryLists);
+
+  await refreshEnquiryPageData();
+}
+
+async function refreshEnquiryPageData() {
+  try {
+    const [messages, customers, staffList, me] = await Promise.all([
+      api.get("/chat-messages"),
+      api.get("/customers"),
+      api.get("/staff"),
+      api.get("/accounts/me"),
+    ]);
+    bookingCustomerOptions = customers; // populates findBookingCustomer() used by normalizeChatMessage
+    bookingStaffOptions = staffList;
+    currentEnquiryAccountRole = me.role;
+    enquiryRecords = messages.map(normalizeChatMessage);
+  } catch (error) {
+    alert(error.message || "Failed to load enquiries.");
+  }
 
   createDateRangeFilter("enquiryMetrics", (range) => {
     enquiryMetricsRange = range;
@@ -4314,88 +4591,310 @@ async function initEnquiriesPage() {
   renderEnquiryLists();
 }
 
+// All-time, not scoped to any single day — test/seed data in particular
+// tends to be spread across many receive_dates, and a KPI that silently
+// shows 0 whenever "today" happens to have no messages reads as broken.
 function updateEnquiryKPI() {
-  const rows = realMessages.filter(m => m.receive_date >= enquiryMetricsRange.start && m.receive_date <= enquiryMetricsRange.end);
-  document.getElementById("enquiryTotalCount").textContent = rows.length;
-  document.getElementById("enquiryBookingCount").textContent = rows.filter(m => m.intent_label === "booking").length;
-  document.getElementById("enquiryPolicyCount").textContent = rows.filter(m => m.intent_label === "policy").length;
-  document.getElementById("enquiryLoyaltyCount").textContent = rows.filter(m => m.intent_label === "loyalty").length;
+  const total = enquiryRecords.length;
+  const pending = enquiryRecords.filter(e => e.status === "pending").length;
+  const resolved = enquiryRecords.filter(e => e.status === "replied");
+
+  document.getElementById("enquiryTotalCount").textContent = total;
+  document.getElementById("enquiryPendingCount").textContent = pending;
+  document.getElementById("enquiryResolutionRate").textContent = `${total ? Math.round((resolved.length / total) * 100) : 0}%`;
+}
+
+function filterEnquiries(list, searchValue) {
+  if (!searchValue) return list;
+  return list.filter(e =>
+    e.customerName.toLowerCase().includes(searchValue) ||
+    e.phone.toLowerCase().includes(searchValue) ||
+    e.message.toLowerCase().includes(searchValue)
+  );
 }
 
 function renderEnquiryLists() {
   const searchValue = enquirySearchInput.value.toLowerCase().trim();
+  renderEnquiryPendingTable(searchValue);
+  renderEnquiryHistoryTable(searchValue);
+}
 
-  const filtered = realMessages
-    .filter(m => currentEnquiryFilter === "all" || m.intent_label === currentEnquiryFilter)
-    .filter(m =>
-      m.customerName.toLowerCase().includes(searchValue) ||
-      (m.phone || "").toLowerCase().includes(searchValue) ||
-      m.message_text.toLowerCase().includes(searchValue)
-    )
-    .sort((a, b) => `${b.receive_date} ${b.receive_time}`.localeCompare(`${a.receive_date} ${a.receive_time}`));
+function enquiryTimeSortKey(e) {
+  return `${e.receiveDate || ""} ${e.receiveTime || ""}`;
+}
 
-  enquiryPendingRecordCount.textContent = `${filtered.length} records`;
+function renderEnquiryPendingTable(searchValue) {
+  // All-time — see updateEnquiryKPI() above: an unreplied enquiry from an
+  // earlier day still needs a reply, so it should keep showing up.
+  const pending = filterEnquiries(enquiryRecords.filter(e => e.status === "pending"), searchValue)
+    .sort((a, b) => PRIORITY_RANK[computeRealEnquiryPriority(a)] - PRIORITY_RANK[computeRealEnquiryPriority(b)] || enquiryTimeSortKey(a).localeCompare(enquiryTimeSortKey(b)));
 
-  if (filtered.length === 0) {
-    enquiryPendingBody.innerHTML = `<tr><td colspan="6" class="empty-row">No messages found.</td></tr>`;
+  enquiryPendingRecordCount.textContent = `${pending.length} pending`;
+
+  if (pending.length === 0) {
+    enquiryPendingBody.innerHTML = `<tr><td colspan="6" class="empty-row">No pending enquiries.</td></tr>`;
+    renderListPagination("enquiryPending", 0);
     return;
   }
 
-  enquiryPendingBody.innerHTML = filtered.map(m => `
+  const pendingPage = paginateList("enquiryPending", pending, 5);
+
+  enquiryPendingBody.innerHTML = pendingPage.map(e => {
+    const priority = computeRealEnquiryPriority(e);
+    const priorityBadge = priority === "urgent"
+      ? `<span class="status-tag status-no_show">Urgent</span>`
+      : priority === "high"
+        ? `<span class="status-tag status-pending">High</span>`
+        : `<span class="status-tag status-off">Normal</span>`;
+
+    return `
     <tr>
-      <td><span class="key-chip">MSG-${String(m.message_id).padStart(4, "0")}</span></td>
+      <td><span class="key-chip">ENQ-${String(e.id).padStart(4, "0")}</span></td>
       <td>
-        <span class="profile-name">${m.customerName}</span>
-        <span class="profile-sub">${m.phone || "—"}</span>
+        <span class="profile-name">${escapeUiText(e.customerName)}</span><br>
+        ${priorityBadge}
       </td>
-      <td>${m.message_text}</td>
-      <td><span class="badge blue">${m.intent_label}</span></td>
-      <td>${formatDate(m.receive_date)} ${(m.receive_time || "").slice(0, 5)}</td>
+      <td>${escapeUiText(e.message)}</td>
+      <td>${e.receiveDate || "-"} ${e.receiveTime || ""}</td>
+      <td>${e.receiveTime ? slaBadge("enquiry", e.receiveTime) : ""}</td>
       <td>
-        <button class="action-btn" onclick="openEnquiryDetailPage(${m.message_id})"><img src="icon/view.png" alt="" class="btn-icon">View</button>
+        <button class="action-btn" onclick="openEnquiryDetailPage(${e.id})"><img src="icon/view.png" alt="" class="btn-icon">View</button>
       </td>
+    </tr>
+  `;
+  }).join("");
+}
+
+function renderEnquiryHistoryTable(searchValue) {
+  // All-time, not scoped to a single day — see updateEnquiryKPI() above for
+  // why (test data especially tends to span many different receive_dates).
+  const history = filterEnquiries(enquiryRecords, searchValue)
+    .sort((a, b) => enquiryTimeSortKey(b).localeCompare(enquiryTimeSortKey(a)));
+
+  enquiryHistoryRecordCount.textContent = `${history.length} records`;
+
+  if (history.length === 0) {
+    enquiryHistoryBody.innerHTML = `<tr><td colspan="7" class="empty-row">No enquiries found.</td></tr>`;
+    renderListPagination("enquiryHistory", 0);
+    return;
+  }
+
+  const historyPage = paginateList("enquiryHistory", history, 5);
+
+  enquiryHistoryBody.innerHTML = historyPage.map(e => `
+    <tr>
+      <td><span class="key-chip">ENQ-${String(e.id).padStart(4, "0")}</span></td>
+      <td><span class="profile-name">${escapeUiText(e.customerName)}</span></td>
+      <td>${escapeUiText(e.message)}</td>
+      <td>${e.receiveDate || "-"} ${e.receiveTime || ""}</td>
+      <td>${escapeUiText(findBookingStaffMember(e.repliedByStaffId)?.staff_name || "—")}</td>
+      <td><span class="status-tag status-${e.status === "replied" ? "done" : "pending"}">${e.status === "replied" ? "Replied" : "Pending"}</span></td>
+      <td><button class="action-btn" onclick="openEnquiryDetailPage(${e.id})"><img src="icon/view.png" alt="" class="btn-icon">View</button></td>
     </tr>
   `).join("");
 }
 
+// Every customer message is its own row (a reply lives on that same row —
+// there's no separate "staff message" row), so "linking" an enquiry to the
+// chat just means surfacing this customer's other messages alongside it.
+function getRelatedEnquiriesForCustomer(customerId, excludeId) {
+  return enquiryRecords
+    .filter(other => other.id !== excludeId && other.customerId != null && String(other.customerId) === String(customerId))
+    .slice()
+    .sort((a, b) => enquiryTimeSortKey(b).localeCompare(enquiryTimeSortKey(a)));
+}
+
 function openEnquiryDetailPage(id) {
-  const m = realMessages.find(x => x.message_id === id);
-  if (!m) return;
+  const e = enquiryRecords.find(x => x.id === id);
+  if (!e) return;
+
+  const isPending = e.status === "pending";
+  const relatedEnquiries = e.customerId != null ? getRelatedEnquiriesForCustomer(e.customerId, e.id) : [];
 
   detailPage.style.display = "flex";
-  detailTitle.textContent = `Message Detail · MSG-${String(m.message_id).padStart(4, "0")}`;
+  detailTitle.textContent = `Enquiry Detail · ENQ-${String(e.id).padStart(4, "0")}`;
 
   detailForm.innerHTML = `
     <div class="form-group">
       <label>Customer</label>
-      <input value="${m.customerName}" readonly />
+      <input value="${escapeUiText(e.customerName)}" readonly />
     </div>
 
     <div class="form-group">
       <label>Phone</label>
-      <input value="${m.phone || "—"}" readonly />
+      <input value="${escapeUiText(e.phone || "—")}" readonly />
+    </div>
+
+    <div class="form-group">
+      <label>Channel</label>
+      <input value="WhatsApp" readonly />
     </div>
 
     <div class="form-group">
       <label>Intent</label>
-      <input value="${m.intent_label}" readonly />
+      <input value="${escapeUiText(e.intent || "—")}" readonly />
+    </div>
+
+    <div class="form-group">
+      <label>Priority</label>
+      <input value="${enquiryPriorityLabel(computeRealEnquiryPriority(e))}" readonly />
     </div>
 
     <div class="form-group">
       <label>Received At</label>
-      <input value="${formatDate(m.receive_date)} ${(m.receive_time || "").slice(0, 5)}" readonly />
+      <input value="${e.receiveDate || "-"} ${e.receiveTime || ""}" readonly />
     </div>
 
     <div class="form-group full">
       <label>Message</label>
-      <textarea readonly>${m.message_text}</textarea>
+      <textarea readonly>${escapeUiText(e.message)}</textarea>
+    </div>
+
+    <div class="form-group">
+      <label>Status</label>
+      <input value="${isPending ? "Pending" : "Replied"}" readonly />
+    </div>
+
+    ${!isPending ? `
+    <div class="form-group">
+      <label>Replied At</label>
+      <input value="${e.replyDate || "-"} ${e.replyTime || ""}" readonly />
+    </div>
+    <div class="form-group full">
+      <label>Saved Reply</label>
+      <div class="reply-preview">${escapeUiText(e.replyText || "No reply text was recorded for this legacy enquiry.")}</div>
+    </div>
+    ` : `
+    <div class="form-group full">
+      <label for="enquiryReplyText">Reply <span class="req">*</span></label>
+      <textarea id="enquiryReplyText" maxlength="2000" placeholder="Write the reply sent to the customer…" required></textarea>
+      <small class="profile-sub">This records the staff reply. Use Open WhatsApp to send it to the customer.</small>
+    </div>
+    `}
+
+    <div class="form-group full">
+      <label>Conversation History <span class="profile-sub">(${relatedEnquiries.length} other message${relatedEnquiries.length === 1 ? "" : "s"} from this customer)</span></label>
+      <div class="crm-pet-list crm-list-scroll">
+        ${relatedEnquiries.length === 0
+          ? `<p class="crm-pet-empty">No other messages from this customer.</p>`
+          : relatedEnquiries.map(other => `
+              <div class="crm-pet-card">
+                <div class="crm-pet-info">
+                  <span class="profile-name">${other.receiveDate || "-"} ${other.receiveTime || ""}</span>
+                  <span class="profile-sub">${escapeUiText(other.message)}</span>
+                </div>
+                <div style="display:flex;align-items:center;gap:10px;">
+                  <span class="status-tag status-${other.status === "replied" ? "done" : "pending"}">${other.status === "replied" ? "Replied" : "Pending"}</span>
+                  <button type="button" class="action-btn" onclick="openEnquiryDetailPage(${other.id})"><img src="icon/view.png" alt="" class="btn-icon">View</button>
+                </div>
+              </div>
+            `).join("")
+        }
+      </div>
     </div>
 
     <div class="form-actions">
+      ${e.phone ? `<a class="cancel-btn" href="${getWhatsAppLink(e.phone)}" target="_blank" rel="noopener">Open WhatsApp</a>` : ""}
+      ${currentEnquiryAccountRole === "manager" ? `<button type="button" class="btn btn-secondary bk-danger-btn" onclick="deleteEnquiry(${e.id})">Delete</button>` : ""}
       <button type="button" class="cancel-btn" onclick="closeDetailPage()"><img src="icon/close-circle.png" alt="" class="btn-icon">Close</button>
-      ${m.phone ? `<a class="btn btn-secondary" href="${getWhatsAppLink(m.phone)}" target="_blank" rel="noopener"><img src="icon/chat-message.png" alt="" class="btn-icon">Open WhatsApp</a>` : ""}
+      ${isPending ? `<button type="button" class="save-btn" onclick="saveEnquiryReply(${e.id})"><img src="icon/confirm-circle.png" alt="" class="btn-icon solid-btn-icon">Save Reply</button>` : ""}
     </div>
   `;
+}
+
+function openNewEnquiryForm() {
+  detailPage.style.display = "flex";
+  detailTitle.textContent = "Log Enquiry";
+  detailForm.innerHTML = `
+    <div class="form-group full">
+      <label for="newEnquiryCustomer">Customer <span class="req">*</span></label>
+      <select id="newEnquiryCustomer" required>
+        <option value="">Select customer</option>
+        ${bookingCustomerOptions.map(customer => `<option value="${customer.customer_id}">${escapeUiText(customer.full_name)} · ${escapeUiText(customer.phone_number || "No phone")}</option>`).join("")}
+      </select>
+    </div>
+    <div class="form-group full">
+      <label for="newEnquiryIntent">Intent</label>
+      <select id="newEnquiryIntent">
+        <option>General</option><option>Booking</option><option>Service</option>
+        <option>Payment</option><option>Loyalty</option><option>Policy</option>
+      </select>
+    </div>
+    <div class="form-group full">
+      <label for="newEnquiryMessage">Message <span class="req">*</span></label>
+      <textarea id="newEnquiryMessage" maxlength="2000" placeholder="Enter the customer's WhatsApp enquiry…" required></textarea>
+    </div>
+    <div class="form-actions">
+      <button type="button" class="cancel-btn" onclick="closeDetailPage()">Cancel</button>
+      <button type="submit" class="save-btn">Log Enquiry</button>
+    </div>
+  `;
+  detailForm.onsubmit = async event => {
+    event.preventDefault();
+    const customerId = Number(q("newEnquiryCustomer").value);
+    const message = q("newEnquiryMessage").value.trim();
+    if (!customerId || !message) return;
+    const stamp = todayStampLocal();
+    try {
+      await api.post("/chat-messages", {
+        sender_id: customerId,
+        message_text: message,
+        intent_label: q("newEnquiryIntent").value,
+        receive_date: stamp.date,
+        receive_time: stamp.time,
+      });
+      closeDetailPage();
+      await refreshEnquiryPageData();
+    } catch (error) {
+      alert(error.message || "Failed to log enquiry.");
+    }
+  };
+}
+
+async function saveEnquiryReply(id) {
+  const replyText = q("enquiryReplyText")?.value.trim();
+  if (!replyText) {
+    alert("Enter the reply text before saving.");
+    return;
+  }
+  const stamp = todayStampLocal();
+  try {
+    await api.patch(`/chat-messages/${id}`, {
+      reply_text: replyText,
+      reply_date: stamp.date,
+      reply_time: stamp.time,
+    });
+    closeDetailPage();
+    await refreshEnquiryPageData();
+  } catch (error) {
+    alert(error.message || "Failed to save reply.");
+  }
+}
+
+async function deleteEnquiry(id) {
+  if (!confirm(`Delete ENQ-${String(id).padStart(4, "0")}? This cannot be undone.`)) return;
+  try {
+    await api.del(`/chat-messages/${id}`);
+    closeDetailPage();
+    await refreshEnquiryPageData();
+  } catch (error) {
+    alert(error.message || "Failed to delete enquiry.");
+  }
+}
+
+async function resolveEnquiryAndRefresh(id) {
+  // NOTE: deliberately not reusing resolveRealEnquiry() (built for
+  // dailyoverview.html) — it calls closeDetailModal()/renderRealDailyOverview(),
+  // which target #detailModal/#actionCards etc., elements that don't exist
+  // on this page (enquiries.html uses #detailPage/closeDetailPage()).
+  const stamp = todayStampLocal();
+  try {
+    await api.patch(`/chat-messages/${id}`, { reply_date: stamp.date, reply_time: stamp.time });
+    closeDetailPage();
+    await refreshEnquiryPageData();
+  } catch (error) {
+    alert(error.message || "Failed to update enquiry.");
+  }
 }
 
 /* ==========================================================================
@@ -4473,23 +4972,13 @@ async function loadRealStaffPageData() {
   leaveDataIsReal = true;
 }
 
-async function decideLeaveRequest(id, decision) {
-  const lv = leaveRequests.find(r => r.id === id);
-  if (!lv) return;
-  try {
-    await api.decideLeaveRequest(lv.id, decision, null);
-  } catch (err) {
-    alert(err.message);
-    return;
-  }
-  lv.status = decision.toLowerCase();
-  updateStaffKPI();
-  renderPendingLeaveTable();
-  renderLeaveHistoryTable();
-  renderDutyCalendar();
-  renderStaffListTable();
-}
-
+// Real backend data for this page (separate from the mock `staff`/
+// `leaveRequests` arrays above, which booking.html/dashboard.html still read
+// until they're wired too — see backend/DEVELOPER_GUIDE.md §3 for the
+// staff vs. accounts distinction: staff are scheduling rows, not logins).
+let staffRecords = [];
+let leaveRecords = [];
+let staffBookingCountsCache = {};
 let staffDutyWeekAnchor = getStartOfWeek(getToday());
 
 const staffSearchInput = document.getElementById("staffSearchInput");
@@ -4498,9 +4987,63 @@ const staffListRecordCount = document.getElementById("staffListRecordCount");
 const staffLeavePendingBody = document.getElementById("staffLeavePendingBody");
 const staffLeavePendingCount = document.getElementById("staffLeavePendingCount");
 
-async function initStaffPage() {
-  await loadRealStaffPageData();
+function findStaffRecord(staffId) {
+  return staffRecords.find(s => String(s.staff_id) === String(staffId));
+}
 
+function isStaffRecordOnLeave(staffId, dateStr) {
+  return leaveRecords.some(lv =>
+    String(lv.staff_id) === String(staffId) && lv.status === "Approved" &&
+    dateStr >= lv.start_date && dateStr <= lv.end_date
+  );
+}
+
+function getStaffRecordDutyStatus(staffId, dateStr) {
+  if (isStaffRecordOnLeave(staffId, dateStr)) return "leave";
+  const member = findStaffRecord(staffId);
+  if (!member) return "off";
+  const dayName = new Date(dateStr + "T00:00:00").toLocaleDateString("en-US", { weekday: "long" });
+  return (member.off_days_json || []).includes(dayName) ? "off" : "duty";
+}
+
+function isStaffRecordOnDuty(staffId, dateStr) {
+  return getStaffRecordDutyStatus(staffId, dateStr) === "duty";
+}
+
+// Boarding has no single "booking_date" column (check_in_date/check_out_date
+// span multiple days), so it can't be filtered by the generic ?column=value
+// query params the way grooming/daycare can — fetch it unfiltered and check
+// the date range client-side instead.
+async function getTodayBookingCountsByStaff() {
+  const todayDate = getToday();
+  const counts = {};
+  const add = (staffId) => { counts[staffId] = (counts[staffId] || 0) + 1; };
+
+  const [grooming, daycare, boarding] = await Promise.all([
+    api.get(`/bookings/grooming?booking_date=${todayDate}`),
+    api.get(`/bookings/daycare?booking_date=${todayDate}`),
+    api.get(`/bookings/boarding`),
+  ]);
+
+  grooming.forEach(b => add(b.staff_id));
+  daycare.forEach(b => add(b.staff_id));
+  boarding
+    .filter(b => b.check_in_date <= todayDate && todayDate <= b.check_out_date)
+    .forEach(b => add(b.staff_id));
+
+  return counts;
+}
+
+function todayStampLocal() {
+  const d = new Date();
+  const pad = (n) => String(n).padStart(2, "0");
+  return {
+    date: `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`,
+    time: d.toTimeString().slice(0, 8),
+  };
+}
+
+async function initStaffPage() {
   if (!isManager(getCurrentAccount())) {
     document.getElementById("addStaffBtn")?.remove();
   }
@@ -4521,19 +5064,34 @@ async function initStaffPage() {
   document.getElementById("dutyCalNextBtn").addEventListener("click", () => { staffDutyWeekAnchor = addDays(staffDutyWeekAnchor, 7); renderDutyCalendar(); });
   document.getElementById("dutyCalTodayBtn").addEventListener("click", () => { staffDutyWeekAnchor = getStartOfWeek(getToday()); renderDutyCalendar(); });
 
-  updateStaffKPI();
+  await refreshStaffPageData();
+}
+
+async function refreshStaffPageData() {
+  [staffRecords, leaveRecords] = await Promise.all([
+    api.get("/staff"),
+    api.get("/leave-requests"),
+  ]);
+
+  await updateStaffKPI();
   renderStaffListTable();
   renderPendingLeaveTable();
   renderLeaveHistoryTable();
   renderDutyCalendar();
 }
 
-function updateStaffKPI() {
+async function updateStaffKPI() {
   const todayDate = getToday();
-  document.getElementById("staffTotalCount").textContent = staff.length;
-  document.getElementById("staffOnDutyCount").textContent = staff.filter(s => isStaffOnDuty(s.staff_id, todayDate)).length;
-  document.getElementById("staffOnLeaveCount").textContent = staff.filter(s => isStaffOnLeave(s.staff_id, todayDate)).length;
-  document.getElementById("staffBookingVolume").textContent = getActiveStaffBookingVolume(todayDate);
+  staffBookingCountsCache = await getTodayBookingCountsByStaff();
+
+  const onDutyVolume = staffRecords
+    .filter(s => isStaffRecordOnDuty(s.staff_id, todayDate))
+    .reduce((sum, s) => sum + (staffBookingCountsCache[s.staff_id] || 0), 0);
+
+  document.getElementById("staffTotalCount").textContent = staffRecords.length;
+  document.getElementById("staffOnDutyCount").textContent = staffRecords.filter(s => isStaffRecordOnDuty(s.staff_id, todayDate)).length;
+  document.getElementById("staffOnLeaveCount").textContent = staffRecords.filter(s => isStaffRecordOnLeave(s.staff_id, todayDate)).length;
+  document.getElementById("staffBookingVolume").textContent = onDutyVolume;
 }
 
 function renderStaffListTable() {
@@ -4541,7 +5099,7 @@ function renderStaffListTable() {
   const manager = isManager(getCurrentAccount());
   const todayDate = getToday();
 
-  const filtered = staff.filter(s =>
+  const filtered = staffRecords.filter(s =>
     s.staff_name.toLowerCase().includes(searchValue) ||
     s.role.toLowerCase().includes(searchValue) ||
     (s.email || "").toLowerCase().includes(searchValue)
@@ -4555,7 +5113,7 @@ function renderStaffListTable() {
   }
 
   staffListBody.innerHTML = filtered.map(s => {
-    const status = getStaffDutyStatus(s.staff_id, todayDate);
+    const status = getStaffRecordDutyStatus(s.staff_id, todayDate);
     const statusLabel = status === "duty" ? "On Duty" : status === "leave" ? "On Leave" : "Off Today";
     const statusClass = status === "duty" ? "done" : status === "leave" ? "no_show" : "off";
 
@@ -4563,7 +5121,7 @@ function renderStaffListTable() {
       <tr>
         <td>
           <span class="profile-name"><img src="icon/team.png" alt="" class="row-icon">${s.staff_name}</span>
-          <span class="profile-sub">${s.staff_id}</span>
+          <span class="profile-sub">STF-${String(s.staff_id).padStart(3, "0")}</span>
         </td>
         <td>${s.role}</td>
         <td>
@@ -4571,10 +5129,10 @@ function renderStaffListTable() {
           <span class="profile-sub">${s.phone || "—"}</span>
         </td>
         <td>${(s.off_days_json || []).join(", ") || "—"}</td>
-        <td>${countBookingsForStaffToday(s.staff_id)}</td>
+        <td>${staffBookingCountsCache[s.staff_id] || 0}</td>
         <td><span class="status-tag status-${statusClass}">${statusLabel}</span></td>
         <td>
-          <button class="${manager ? "edit-btn" : "action-btn"}" onclick="openStaffForm('${s.staff_id}')">${manager ? "Edit" : "View"}</button>
+          <button class="${manager ? "edit-btn" : "action-btn"}" onclick="openStaffForm(${s.staff_id})">${manager ? "Edit" : "View"}</button>
         </td>
       </tr>
     `;
@@ -4583,23 +5141,24 @@ function renderStaffListTable() {
 
 function openStaffForm(staffId = null) {
   const manager = isManager(getCurrentAccount());
-  const isEdit = Boolean(staffId);
+  const isEdit = staffId !== null && staffId !== undefined;
   const member = isEdit
-    ? findRealStaff(staffId)
-    : { staff_id: null, staff_name: "", role: "Staff", email: "", phone: "", off_days_json: ["Sunday"], status: "active" };
+    ? findStaffRecord(staffId)
+    : { staff_id: null, staff_name: "", role: "Groomer", email: "", phone: "", off_days_json: [] };
   if (isEdit && !member) return;
 
   const readonly = !manager;
   const dayOptions = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
 
   detailPage.style.display = "flex";
-  detailTitle.textContent = isEdit ? `Staff Info · ${member.staff_id}` : "Add Staff";
+  detailTitle.textContent = isEdit ? `Staff Info · STF-${String(member.staff_id).padStart(3, "0")}` : "Add Staff";
 
   detailForm.innerHTML = `
+    ${isEdit ? `
     <div class="form-group">
       <label>Staff ID</label>
-      <input value="${isEdit ? member.staff_id : "Assigned on save"}" readonly />
-    </div>
+      <input value="STF-${String(member.staff_id).padStart(3, "0")}" readonly />
+    </div>` : ""}
 
     <div class="form-group">
       <label>Name</label>
@@ -4645,7 +5204,7 @@ function openStaffForm(staffId = null) {
         : `<div style="display:flex;flex-wrap:wrap;gap:14px;padding:10px 0;">
             ${dayOptions.map(d => `
               <label style="display:inline-flex;align-items:center;gap:6px;font-weight:500;font-size:0.85rem;color:var(--text-charcoal);">
-                <input type="checkbox" name="off_days_json" value="${d}" ${(member.off_days_json || []).includes(d) ? "checked" : ""} />
+                <input type="checkbox" name="offDays" value="${d}" ${(member.off_days_json || []).includes(d) ? "checked" : ""} />
                 ${d}
               </label>
             `).join("")}
@@ -4655,7 +5214,7 @@ function openStaffForm(staffId = null) {
 
     <div class="form-actions">
       <button type="button" class="cancel-btn" onclick="closeDetailPage()">${manager ? "Cancel" : "Close"}</button>
-      ${manager && isEdit ? `<button type="button" class="btn btn-secondary bk-danger-btn" onclick="removeStaffMember('${member.staff_id}')">Remove Staff</button>` : ""}
+      ${manager && isEdit ? `<button type="button" class="btn btn-secondary bk-danger-btn" onclick="removeStaffMember(${member.staff_id})">Remove Staff</button>` : ""}
       ${manager ? `<button type="submit" class="save-btn">${isEdit ? "Save Staff" : "Add Staff"}</button>` : ""}
     </div>
   `;
@@ -4668,30 +5227,27 @@ function openStaffForm(staffId = null) {
     const payload = {
       staff_name: formData.get("staff_name"),
       role: formData.get("role"),
-      email: formData.get("email"),
-      phone: formData.get("phone"),
-      status: formData.get("status") || "active",
-      off_days_json: formData.getAll("off_days_json"),
+      email: formData.get("email") || null,
+      phone: formData.get("phone") || null,
+      off_days_json: formData.getAll("offDays"),
     };
+
+    const submitBtn = detailForm.querySelector(".save-btn");
+    if (submitBtn) submitBtn.disabled = true;
 
     try {
       if (isEdit) {
-        const updated = await api.updateStaff(member.staff_id, payload);
-        const index = staff.findIndex(s => s.staff_id === member.staff_id);
-        staff[index] = updated;
+        await api.patch(`/staff/${member.staff_id}`, payload);
       } else {
-        const created = await api.createStaff(payload);
-        staff.push(created);
+        await api.post("/staff", { ...payload, status: "active" });
       }
-    } catch (err) {
-      alert(err.message);
-      return;
+      closeDetailPage();
+      await refreshStaffPageData();
+    } catch (error) {
+      alert(error.message || "Failed to save staff record.");
+    } finally {
+      if (submitBtn) submitBtn.disabled = false;
     }
-
-    updateStaffKPI();
-    renderStaffListTable();
-    renderDutyCalendar();
-    closeDetailPage();
   };
 }
 
@@ -4699,26 +5255,17 @@ async function removeStaffMember(staffId) {
   if (!confirm("Remove this staff member? This cannot be undone.")) return;
 
   try {
-    await api.deleteStaff(staffId);
-  } catch (err) {
-    // Likely a foreign-key constraint — this staff member still has
-    // bookings/leave records referencing them.
-    alert(err.message);
-    return;
+    await api.del(`/staff/${staffId}`);
+    closeDetailPage();
+    await refreshStaffPageData();
+  } catch (error) {
+    alert(error.message || "Failed to remove staff member.");
   }
-
-  const index = staff.findIndex(s => String(s.staff_id) === String(staffId));
-  if (index >= 0) staff.splice(index, 1);
-
-  updateStaffKPI();
-  renderStaffListTable();
-  renderDutyCalendar();
-  closeDetailPage();
 }
 
 function renderPendingLeaveTable() {
   const manager = isManager(getCurrentAccount());
-  const pending = leaveRequests.filter(lv => lv.status === "pending");
+  const pending = leaveRecords.filter(lv => lv.status === "Pending");
 
   staffLeavePendingCount.textContent = `${pending.length} pending`;
 
@@ -4727,25 +5274,37 @@ function renderPendingLeaveTable() {
     return;
   }
 
-  staffLeavePendingBody.innerHTML = pending.map(lv => `
+  staffLeavePendingBody.innerHTML = pending.map(lv => {
+    const member = findStaffRecord(lv.staff_id);
+    return `
     <tr>
-      <td><span class="profile-name">${lv.staffName}</span></td>
-      <td>${lv.startDate === lv.endDate ? formatDate(lv.startDate) : `${formatDate(lv.startDate)} – ${formatDate(lv.endDate)}`}</td>
+      <td><span class="profile-name">${member?.staff_name || "Unknown"}</span></td>
+      <td>${lv.start_date === lv.end_date ? formatDate(lv.start_date) : `${formatDate(lv.start_date)} – ${formatDate(lv.end_date)}`}</td>
       <td>${lv.reason}</td>
-      <td>${lv.appliedAt}</td>
-      <td>${manager
-        ? `<button class="edit-btn" onclick="decideLeaveRequest(${lv.id}, 'Approved')">Approve</button>
-           <button class="action-btn" onclick="decideLeaveRequest(${lv.id}, 'Rejected')">Reject</button>`
-        : `<span class="profile-sub">Awaiting manager</span>`}</td>
+      <td>${lv.applied_time ? lv.applied_time.slice(0, 5) : "—"}</td>
+      <td>${manager ? `
+        <button class="edit-btn" onclick="decideLeaveRequest(${lv.leave_id}, 'Approved')">Approve</button>
+        <button class="action-btn" onclick="decideLeaveRequest(${lv.leave_id}, 'Rejected')">Reject</button>
+      ` : `<span class="profile-sub">Awaiting manager</span>`}</td>
     </tr>
-  `).join("");
+  `;
+  }).join("");
+}
+
+async function decideLeaveRequest(leaveId, status) {
+  try {
+    await api.post(`/leave-requests/${leaveId}/decision`, { status });
+    await refreshStaffPageData();
+  } catch (error) {
+    alert(error.message || "Failed to update leave request.");
+  }
 }
 
 function renderLeaveHistoryTable() {
   const manager = isManager(getCurrentAccount());
-  const history = leaveRequests
+  const history = leaveRecords
     .slice()
-    .sort((a, b) => new Date(b.startDate) - new Date(a.startDate));
+    .sort((a, b) => new Date(b.start_date) - new Date(a.start_date));
 
   document.getElementById("staffLeaveHistoryCount").textContent = `${history.length} records`;
 
@@ -4754,44 +5313,61 @@ function renderLeaveHistoryTable() {
     return;
   }
 
-  const STATUS_TAG = { pending: "pending", approved: "done", rejected: "no_show" };
-  const STATUS_LABEL = { pending: "Pending", approved: "Approved", rejected: "Rejected" };
-
-  document.getElementById("staffLeaveHistoryBody").innerHTML = history.map(lv => `
+  document.getElementById("staffLeaveHistoryBody").innerHTML = history.map(lv => {
+    const member = findStaffRecord(lv.staff_id);
+    const statusClass = lv.status === "Approved" ? "done" : lv.status === "Rejected" ? "no_show" : "pending";
+    return `
     <tr>
-      <td><span class="key-chip">LV-${String(lv.id).padStart(4, "0")}</span></td>
-      <td><span class="profile-name">${lv.staffName}</span></td>
-      <td>${lv.startDate === lv.endDate ? formatDate(lv.startDate) : `${formatDate(lv.startDate)} – ${formatDate(lv.endDate)}`}</td>
+      <td><span class="key-chip">LV-${String(lv.leave_id).padStart(3, "0")}</span></td>
+      <td><span class="profile-name">${member?.staff_name || "Unknown"}</span></td>
+      <td>${lv.start_date === lv.end_date ? formatDate(lv.start_date) : `${formatDate(lv.start_date)} – ${formatDate(lv.end_date)}`}</td>
       <td>${lv.reason}</td>
-      <td>${lv.appliedAt}</td>
-      <td><span class="status-tag status-${STATUS_TAG[lv.status] || "pending"}">${STATUS_LABEL[lv.status] || lv.status}</span></td>
-      <td>${manager && lv.status === "pending"
-        ? `<button class="edit-btn" onclick="decideLeaveRequest(${lv.id}, 'Approved')">Approve</button>`
-        : "—"}</td>
+      <td>${lv.applied_time ? lv.applied_time.slice(0, 5) : "—"}</td>
+      <td><span class="status-tag status-${statusClass}">${lv.status}</span></td>
+      <td>${manager && lv.status === "Pending" ? `
+        <button class="edit-btn" onclick="decideLeaveRequest(${lv.leave_id}, 'Approved')">Approve</button>
+        <button class="action-btn" onclick="decideLeaveRequest(${lv.leave_id}, 'Rejected')">Reject</button>
+      ` : "—"}</td>
     </tr>
-  `).join("");
+  `;
+  }).join("");
 }
 
 function openApplyLeaveForm() {
+  const manager = isManager(getCurrentAccount());
+  const loginEmail = String(getCurrentAccount()?.email || "").trim().toLowerCase();
+  const currentStaff = manager
+    ? null
+    : staffRecords.find(s => String(s.email || "").trim().toLowerCase() === loginEmail);
+  if (!manager && !currentStaff) {
+    alert("Your login email is not linked to a staff record. Ask a manager to update the staff email first.");
+    return;
+  }
+
   detailPage.style.display = "flex";
   detailTitle.textContent = "Apply Leave";
 
   detailForm.innerHTML = `
     <div class="form-group full">
       <label>Staff</label>
-      <select name="staffId" required>
-        ${staff.map(s => `<option value="${s.staff_id}">${s.staff_name} (${s.role})</option>`).join("")}
-      </select>
+      ${manager ? `
+        <select name="staff_id" required>
+          ${staffRecords.map(s => `<option value="${s.staff_id}">${s.staff_name} (${s.role})</option>`).join("")}
+        </select>
+      ` : `
+        <input value="${currentStaff.staff_name} (${currentStaff.role})" readonly />
+        <input type="hidden" name="staff_id" value="${currentStaff.staff_id}" />
+      `}
     </div>
 
     <div class="form-group">
       <label>Start Date</label>
-      <input type="date" name="startDate" value="${getToday()}" required />
+      <input type="date" name="start_date" value="${getToday()}" required />
     </div>
 
     <div class="form-group">
       <label>End Date</label>
-      <input type="date" name="endDate" value="${getToday()}" required />
+      <input type="date" name="end_date" value="${getToday()}" required />
     </div>
 
     <div class="form-group full">
@@ -4808,30 +5384,32 @@ function openApplyLeaveForm() {
   detailForm.onsubmit = async function(event) {
     event.preventDefault();
     const formData = new FormData(detailForm);
-    const selectedStaffId = Number(formData.get("staffId"));
-    const member = findRealStaff(selectedStaffId);
-
-    const payload = {
-      staff_id: selectedStaffId,
-      start_date: formData.get("startDate"),
-      end_date: formData.get("endDate"),
-      reason: formData.get("reason"),
-      status: "Pending",
-    };
-
-    try {
-      const created = await api.createLeaveRequest(payload);
-      leaveRequests.push(mapLeaveRequest(created));
-    } catch (err) {
-      alert(err.message);
+    const { date: appliedDate, time: appliedTime } = todayStampLocal();
+    if (formData.get("end_date") < formData.get("start_date")) {
+      alert("End date cannot be before start date.");
       return;
     }
 
-    updateStaffKPI();
-    renderPendingLeaveTable();
-    renderLeaveHistoryTable();
-    renderDutyCalendar();
-    closeDetailPage();
+    const submitBtn = detailForm.querySelector(".save-btn");
+    if (submitBtn) submitBtn.disabled = true;
+
+    try {
+      await api.post("/leave-requests", {
+        staff_id: Number(formData.get("staff_id")),
+        start_date: formData.get("start_date"),
+        end_date: formData.get("end_date"),
+        reason: formData.get("reason"),
+        status: "Pending",
+        applied_date: appliedDate,
+        applied_time: appliedTime,
+      });
+      closeDetailPage();
+      await refreshStaffPageData();
+    } catch (error) {
+      alert(error.message || "Failed to submit leave application.");
+    } finally {
+      if (submitBtn) submitBtn.disabled = false;
+    }
   };
 }
 
@@ -4850,14 +5428,14 @@ function renderDutyCalendar() {
     }).join("")}
   `;
 
-  document.getElementById("dutyCalendarBody").innerHTML = staff.map(s => `
+  document.getElementById("dutyCalendarBody").innerHTML = staffRecords.map(s => `
     <tr>
       <td>
         <span class="profile-name">${s.staff_name}</span>
         <span class="profile-sub">${s.role}</span>
       </td>
       ${dates.map(d => {
-        const status = getStaffDutyStatus(s.staff_id, d);
+        const status = getStaffRecordDutyStatus(s.staff_id, d);
         const label = status === "duty" ? "Duty" : status === "leave" ? "Leave" : "Off";
         const cls = status === "duty" ? "done" : status === "leave" ? "no_show" : "off";
         const isLeave = status === "leave";
@@ -4868,24 +5446,25 @@ function renderDutyCalendar() {
 }
 
 function openLeaveCellDetail(staffId, dateStr) {
-  const lv = leaveRequests.find(r =>
-    String(r.staffId) === String(staffId) && r.status === "approved" &&
-    dateStr >= r.startDate && dateStr <= r.endDate
+  const lv = leaveRecords.find(r =>
+    String(r.staff_id) === String(staffId) && r.status === "Approved" &&
+    dateStr >= r.start_date && dateStr <= r.end_date
   );
   if (!lv) return;
+  const member = findStaffRecord(staffId);
 
   detailPage.style.display = "flex";
-  detailTitle.textContent = `Leave Detail · ${lv.staffName}`;
+  detailTitle.textContent = `Leave Detail · ${member?.staff_name || ""}`;
 
   detailForm.innerHTML = `
     <div class="form-group">
       <label>Staff</label>
-      <input value="${lv.staffName}" readonly />
+      <input value="${member?.staff_name || ""}" readonly />
     </div>
 
     <div class="form-group">
       <label>Leave Dates</label>
-      <input value="${lv.startDate === lv.endDate ? formatDate(lv.startDate) : `${formatDate(lv.startDate)} – ${formatDate(lv.endDate)}`}" readonly />
+      <input value="${lv.start_date === lv.end_date ? formatDate(lv.start_date) : `${formatDate(lv.start_date)} – ${formatDate(lv.end_date)}`}" readonly />
     </div>
 
     <div class="form-group full">
@@ -4964,16 +5543,131 @@ async function loadRealDashboardData() {
 const SERVICE_MIX_COLORS = { grooming: "#3B82F6", boarding: "#10B981", daycare: "#F59E0B" };
 
 const KPI_DEFS = [
-  { key: "revenue",   icon: "payment-card.png",      label: "Total Revenue",               deltaPct: 12.4, onClick: "openKpiDetail('revenue')" },
-  { key: "bookings",  icon: "calendar-simple.png",    label: "Total Bookings",               deltaPct: 8.7,  onClick: "openKpiDetail('bookings')" },
-  { key: "repeat",    icon: "users.png",              label: "Repeat Customer Rate",          deltaPct: 5.3,  onClick: "openKpiDetail('repeat')" },
-  { key: "occupancy", icon: "line-chart.png",        label: "Occupancy / Slot Utilisation",  deltaPct: 6.1,  onClick: "openKpiDetail('occupancy')" }
+  { key: "revenue",   icon: "payment-card.png",      label: "Total Revenue",              onClick: "openKpiDetail('revenue')" },
+  { key: "bookings",  icon: "calendar-simple.png",   label: "Total Bookings",             onClick: "openKpiDetail('bookings')" },
+  { key: "repeat",    icon: "users.png",             label: "Repeat Customer Rate",       onClick: "openKpiDetail('repeat')" },
+  { key: "occupancy", icon: "line-chart.png",        label: "Occupancy / Slot Utilisation", onClick: "openKpiDetail('occupancy')" }
 ];
 
 let currentDashboardPeriod = "weekly";
 let dashboardAnchorDate = today;
 let dashboardRange = null;
 let dashboardTrendBuckets = [];
+let dashboardCompanySettings = {};
+let dashboardLastLoadedAt = null;
+
+async function loadAnalyticsDashboardData() {
+  await fetchBookingPageData();
+
+  const [messages, members, coupons, redemptions, payments, leaves, company] = await Promise.all([
+    api.get("/chat-messages"),
+    api.get("/member-info"),
+    api.get("/coupons"),
+    api.get("/redemptions"),
+    api.get("/payments"),
+    api.get("/leave-requests"),
+    api.get("/companies/me"),
+  ]);
+
+  const paymentById = new Map(payments.map(p => [String(p.payment_id), p]));
+  bookings = bookingRecords.map(record => {
+    const linkedPayment = paymentById.get(String(record.raw?.payment_id));
+    const serviceId = `${record.type}:${record.serviceLabel}`;
+    return {
+      ...record,
+      serviceType: record.type,
+      serviceId,
+      amount: linkedPayment?.status === "Paid" ? Number(linkedPayment.final_amount || 0) : 0,
+      roomId: record.type === "boarding" ? record.serviceLabel : null,
+    };
+  });
+
+  const uniqueServices = new Map();
+  bookings.forEach(booking => {
+    if (!uniqueServices.has(booking.serviceId)) {
+      uniqueServices.set(booking.serviceId, {
+        id: booking.serviceId,
+        name: booking.serviceLabel,
+        type: booking.serviceType,
+      });
+    }
+  });
+  services.splice(0, services.length, ...uniqueServices.values());
+
+  customers = bookingCustomerOptions.map(customer => ({
+    ...customer,
+    phone: customer.phone_number || "—",
+  }));
+  pets = bookingPetOptions.map(pet => ({
+    ...pet,
+    species: pet.pet_type || "Pet",
+  }));
+  staff = bookingStaffOptions.map(member => ({
+    ...member,
+    id: member.staff_id,
+    name: member.staff_name,
+    offDays: member.off_days_json || [],
+  }));
+  leaveRequests = leaves.map(leave => ({
+    ...leave,
+    staffId: leave.staff_id,
+    staffName: staff.find(member => String(member.id) === String(leave.staff_id))?.name || "Unknown",
+    startDate: leave.start_date,
+    endDate: leave.end_date,
+    status: String(leave.status || "pending").toLowerCase(),
+  }));
+
+  enquiries = messages
+    .filter(message => message.sender_type === "customer")
+    .map(message => {
+      const customer = customers.find(item => String(item.customer_id) === String(message.sender_id));
+      return {
+        id: message.message_id,
+        customerName: customer?.full_name || "Unknown customer",
+        channel: "WhatsApp",
+        message: message.message_text || "",
+        relatedService: message.intent_label || "",
+        receivedAt: message.receive_time ? message.receive_time.slice(0, 5) : "00:00",
+        time: message.receive_time ? message.receive_time.slice(0, 5) : "00:00",
+        receiveDate: message.receive_date,
+        date: message.receive_date,
+        handledBy: message.reply_date ? "human" : null,
+        status: message.reply_date ? "resolved" : "pending",
+      };
+    });
+
+  const memberById = new Map(members.map(member => [String(member.loyalty_id), member]));
+  const couponById = new Map(coupons.map(coupon => [String(coupon.coupon_id), coupon]));
+  loyaltyRequests = redemptions.map(redemption => {
+    const member = memberById.get(String(redemption.loyalty_id));
+    const customer = customers.find(item => String(item.customer_id) === String(member?.customer_id));
+    const coupon = couponById.get(String(redemption.coupon_id));
+    return {
+      id: `REDM-${redemption.redemption_id}`,
+      customerName: customer?.full_name || "Unknown customer",
+      type: coupon?.reward_name || "Loyalty transaction",
+      points: Number(redemption.loyalty_spend || 0),
+      requestedAt: redemption.create_time ? String(redemption.create_time).slice(0, 5) : "00:00",
+      date: redemption.create_date,
+      approvedDate: redemption.approved_date || null,
+      approvedTime: redemption.approved_time ? String(redemption.approved_time).slice(0, 5) : null,
+      status: String(redemption.status || "Approved").toLowerCase(),
+    };
+  });
+  loyaltyMemberRecords = members;
+
+  const bookingByPaymentId = new Map(bookings.map(booking => [String(booking.raw?.payment_id), booking]));
+  paymentRecords = payments.map(payment => ({
+    ...payment,
+    customerName: bookingByPaymentId.get(String(payment.payment_id))?.customerName || "Unknown customer",
+    finalAmount: Number(payment.final_amount || 0),
+    rawStatus: payment.status,
+    status: payment.status === "Paid" ? "verified" : isPaymentAwaitingVerification(payment) ? "pending" : "closed",
+  }));
+
+  dashboardCompanySettings = company.settings_json || {};
+  dashboardLastLoadedAt = new Date();
+}
 
 function shiftDashboardAnchor(step) {
   if (currentDashboardPeriod === "daily") dashboardAnchorDate = addDays(dashboardAnchorDate, step);
@@ -5026,11 +5720,17 @@ function isRoomLabelOccupiedOnDate(roomLabel, date) {
 }
 
 function computeOccupancyRate(range) {
-  const roomLabels = getActiveRoomLabels();
-  if (!roomLabels.length) return 0;
   const days = getDateRange(range.start, range.end);
   if (!days.length) return 0;
-  const dailyRates = days.map(d => roomLabels.filter(label => isRoomLabelOccupiedOnDate(label, d)).length / roomLabels.length);
+  if (!rooms.length) {
+    const activeBookings = bookings.filter(booking =>
+      booking.date >= range.start && booking.date <= range.end &&
+      booking.status !== "cancelled" && booking.status !== "no_show"
+    ).length;
+    const availableSlots = days.length * CALENDAR_HOURS.length * 3;
+    return availableSlots ? Math.min(100, (activeBookings / availableSlots) * 100) : 0;
+  }
+  const dailyRates = days.map(d => rooms.filter(r => isRoomOccupiedOnDate(r.id, d)).length / rooms.length);
   return (dailyRates.reduce((a, b) => a + b, 0) / dailyRates.length) * 100;
 }
 
@@ -5048,13 +5748,20 @@ function computeRealSlaCompliance() {
 
 function computeRepeatCustomerRate(periodBookings) {
   const lifetimeCountByCustomer = {};
-  bookings.forEach(b => { lifetimeCountByCustomer[b.customerName] = (lifetimeCountByCustomer[b.customerName] || 0) + 1; });
+  bookings.forEach(b => {
+    const key = bookingCustomerKey(b);
+    lifetimeCountByCustomer[key] = (lifetimeCountByCustomer[key] || 0) + 1;
+  });
 
-  const periodCustomers = [...new Set(periodBookings.map(b => b.customerName))];
+  const periodCustomers = [...new Set(periodBookings.map(bookingCustomerKey))];
   if (!periodCustomers.length) return 0;
 
   const repeatCount = periodCustomers.filter(name => lifetimeCountByCustomer[name] > 1).length;
   return (repeatCount / periodCustomers.length) * 100;
+}
+
+function bookingCustomerKey(booking) {
+  return booking.customerId == null ? `name:${booking.customerName}` : `id:${booking.customerId}`;
 }
 
 function computeDashboardMetrics(period) {
@@ -5099,6 +5806,10 @@ function computeDashboardMetrics(period) {
   };
 }
 
+function getCustomerById(customerId) {
+  return customers.find(customer => String(customer.customer_id) === String(customerId));
+}
+
 function renderKpiHeroGrid(metrics) {
   const values = {
     revenue: formatCurrency(metrics.totalRevenue),
@@ -5108,10 +5819,6 @@ function renderKpiHeroGrid(metrics) {
   };
 
   q("kpiHeroGrid").innerHTML = KPI_DEFS.map(def => {
-    const deltaLabel = def.deltaAbs != null
-      ? `▲ ${def.deltaAbs} vs last period`
-      : `▲ ${def.deltaPct}% vs last period`;
-
     return `
       <div class="kpi-hero-card ${def.onClick ? "clickable" : ""}" ${def.onClick ? `onclick="${def.onClick}"` : ""}>
         <div class="kpi-hero-top">
@@ -5121,10 +5828,76 @@ function renderKpiHeroGrid(metrics) {
             <div class="kpi-hero-value">${values[def.key]}</div>
           </div>
         </div>
-        <div class="kpi-hero-delta up">${deltaLabel}</div>
       </div>
     `;
   }).join("");
+}
+
+// Patches the KPI hero grid (rendered above from mock `bookings`) with real
+// numbers from /api/dashboard/summary + /api/dashboard/revenue. The backend
+// only exposes current-period totals (no historical prev/next navigation,
+// no itemized per-transaction breakdown), so — unlike the mock version —
+// these cards aren't clickable and Repeat Customer Rate / Occupancy have no
+// real source at all, so they're shown as "Not available" rather than a
+// fabricated percentage.
+async function loadRealOperationKpis(period) {
+  const apiPeriod = period === "daily" ? "today" : period === "monthly" ? "month" : "week";
+  const periodNote = dashboardRange ? periodRangeLabel(period, dashboardRange) : formatShortDate(dashboardAnchorDate);
+
+  try {
+    const [summary, revenue] = await Promise.all([
+      api.get(`/dashboard/summary?date=${dashboardAnchorDate}`),
+      api.get(`/dashboard/revenue?period=${apiPeriod}&anchor=${dashboardAnchorDate}`),
+    ]);
+
+    const grid = q("kpiHeroGrid");
+    if (!grid) return;
+
+    grid.innerHTML = `
+      <div class="kpi-hero-card">
+        <div class="kpi-hero-top">
+          <div class="kpi-hero-icon"><img src="icon/payment-card.png" alt="" class="kpi-icon-img"></div>
+          <div>
+            <div class="kpi-hero-label">Total Revenue</div>
+            <div class="kpi-hero-value">${formatCurrency(revenue.totalRevenue)}</div>
+          </div>
+        </div>
+        <div class="kpi-hero-delta">${revenue.paymentCount} payment(s) · ${periodNote}</div>
+      </div>
+      <div class="kpi-hero-card">
+        <div class="kpi-hero-top">
+          <div class="kpi-hero-icon"><img src="icon/calendar-simple.png" alt="" class="kpi-icon-img"></div>
+          <div>
+            <div class="kpi-hero-label">Bookings on ${formatShortDate(summary.date)}</div>
+            <div class="kpi-hero-value">${summary.todayBookingsTotal.toLocaleString("en-MY")}</div>
+          </div>
+        </div>
+        <div class="kpi-hero-delta">Across grooming, boarding &amp; daycare</div>
+      </div>
+      <div class="kpi-hero-card">
+        <div class="kpi-hero-top">
+          <div class="kpi-hero-icon"><img src="icon/users.png" alt="" class="kpi-icon-img"></div>
+          <div>
+            <div class="kpi-hero-label">Repeat Customer Rate</div>
+            <div class="kpi-hero-value">—</div>
+          </div>
+        </div>
+        <div class="kpi-hero-delta">Not available yet</div>
+      </div>
+      <div class="kpi-hero-card">
+        <div class="kpi-hero-top">
+          <div class="kpi-hero-icon"><img src="icon/line-chart.png" alt="" class="kpi-icon-img"></div>
+          <div>
+            <div class="kpi-hero-label">Occupancy / Slot Utilisation</div>
+            <div class="kpi-hero-value">—</div>
+          </div>
+        </div>
+        <div class="kpi-hero-delta">Not available yet</div>
+      </div>
+    `;
+  } catch (error) {
+    console.error(error);
+  }
 }
 
 function openKpiDetail(key) {
@@ -5139,19 +5912,22 @@ function openKpiDetail(key) {
     openDetailModal("Total Bookings", `${items.length} booking(s) · ${label}`, items.map(bookingDetailRow).join(""), { label: "Open Booking Dashboard", href: "booking.html" });
   } else if (key === "occupancy") {
     const days = getDateRange(metrics.range.start, metrics.range.end);
-    const roomLabels = getActiveRoomLabels();
-    const rows = roomLabels.map(roomLabel => {
-      const occupiedDays = days.filter(d => isRoomLabelOccupiedOnDate(roomLabel, d)).length;
-      const pct = days.length ? Math.round((occupiedDays / days.length) * 100) : 0;
-      return renderDetailRow({ title: roomLabel, sub: "Boarding room", tag: pct >= 50 ? "scheduled" : "done", tagLabel: `${occupiedDays}/${days.length} day(s) · ${pct}%` });
+    const rows = days.map(date => {
+      const booked = bookings.filter(booking => booking.date === date && booking.status !== "cancelled" && booking.status !== "no_show").length;
+      const capacity = CALENDAR_HOURS.length * 3;
+      const pct = capacity ? Math.round((booked / capacity) * 100) : 0;
+      return renderDetailRow({ title: formatShortDate(date), sub: `${booked} active booking(s) · ${capacity} available slots`, tag: pct >= 50 ? "scheduled" : "done", tagLabel: `${pct}% used` });
     }).join("");
-    openDetailModal("Room Occupancy", `Average ${Math.round(metrics.occupancyRate)}% occupancy · ${label}`, rows, { label: "Open Booking Dashboard", href: "booking.html" });
+    openDetailModal("Slot Utilisation", `Average ${Math.round(metrics.occupancyRate)}% utilisation · ${label}`, rows, { label: "Open Booking Dashboard", href: "booking.html" });
   } else if (key === "repeat") {
     const lifetimeCountByCustomer = {};
-    bookings.forEach(b => { lifetimeCountByCustomer[b.customerName] = (lifetimeCountByCustomer[b.customerName] || 0) + 1; });
-    const periodCustomers = [...new Set(metrics.periodBookings.map(b => b.customerName))];
-    const rows = periodCustomers.map(name => {
-      const lifetimeCount = lifetimeCountByCustomer[name];
+    bookings.forEach(b => {
+      const customerKey = bookingCustomerKey(b);
+      lifetimeCountByCustomer[customerKey] = (lifetimeCountByCustomer[customerKey] || 0) + 1;
+    });
+    const periodCustomers = [...new Map(metrics.periodBookings.map(b => [bookingCustomerKey(b), b.customerName])).entries()];
+    const rows = periodCustomers.map(([customerKey, name]) => {
+      const lifetimeCount = lifetimeCountByCustomer[customerKey];
       const isRepeat = lifetimeCount > 1;
       return renderDetailRow({ title: name, sub: `${lifetimeCount} lifetime booking(s)`, tag: isRepeat ? "scheduled" : "done", tagLabel: isRepeat ? "Repeat Customer" : "New Customer" });
     }).join("");
@@ -5187,7 +5963,8 @@ function buildTrendBuckets(period, range) {
 function firstBookingDateByCustomer() {
   const map = {};
   bookings.forEach(b => {
-    if (!map[b.customerName] || b.date < map[b.customerName]) map[b.customerName] = b.date;
+    const key = bookingCustomerKey(b);
+    if (!map[key] || b.date < map[key]) map[key] = b.date;
   });
   return map;
 }
@@ -5201,7 +5978,8 @@ function computeTrendSeries(period, range) {
     const revenue = items.reduce((sum, b) => sum + b.amount, 0);
     const newSet = new Set(), returningSet = new Set();
     items.forEach(b => {
-      (firstDate[b.customerName] === b.date ? newSet : returningSet).add(b.customerName);
+      const key = bookingCustomerKey(b);
+      (firstDate[key] === b.date ? newSet : returningSet).add(key);
     });
     return { label: bucket.label, revenue, newCustomers: newSet.size, returningCustomers: returningSet.size };
   });
@@ -5508,11 +6286,11 @@ function openOpsHighlightDetail(key) {
   if (key === "pendingTasks") return openPendingTasksDetail();
 
   if (key === "slaCompliance") {
-    // Only grooming-service SLA is real — your messages/loyalty tables have
-    // no pending/SLA concept at all (see enquiries.html/loyalty.html).
-    const pendingGrooming = bookings.filter(b => b.bookingType === "grooming" && b.date === today && b.status === "pending");
-    const rows = pendingGrooming.map(bookingDetailRow).join("");
-    openDetailModal("SLA Compliance", `${pendingGrooming.length} item(s) currently tracked against SLA.`, rows, { label: "Open Daily Overview", href: "dailyoverview.html" });
+    const pendingGrooming = bookings.filter(b => b.serviceType === "grooming" && b.date === today && b.status === "pending");
+    const pendingEnquiries = enquiries.filter(e => e.status === "pending");
+    const rows = [...pendingGrooming.map(bookingDetailRow), ...pendingEnquiries.map(enquiryDetailRow), ...pendingPaymentRecords.map(realPaymentDetailRow)].join("");
+    const total = pendingGrooming.length + pendingEnquiries.length + pendingPaymentRecords.length;
+    openDetailModal("SLA Compliance", `${total} item(s) currently tracked against SLA.`, rows, { label: "Open Daily Overview", href: "dailyoverview.html" });
     return;
   }
 
@@ -5565,11 +6343,13 @@ function openSnapshotDetail(key) {
 }
 
 function renderSnapshot() {
+  const weekdayKey = new Date(today + "T00:00:00").toLocaleDateString("en-US", { weekday: "short" });
+  const operatingHours = dashboardCompanySettings.business_hours?.[weekdayKey] || "Not configured";
   const rows = [
     { key: "members", icon: "users.png", label: "Active Members", value: customers.length.toLocaleString("en-MY") },
     { key: "pets", icon: "paw-print.png", label: "Total Pets", value: pets.length.toLocaleString("en-MY") },
-    { key: "staff", icon: "team.png", label: "Staff On Duty Today", value: staff.filter(s => isStaffOnDuty(s.staff_id, today)).length },
-    { key: null, icon: "time.png", label: "Operating Hours", value: "8:00 AM – 8:00 PM" }
+    { key: "staff", icon: "team.png", label: "Staff On Duty Today", value: staff.filter(s => isStaffOnDuty(s.id, today)).length },
+    { key: null, icon: "time.png", label: "Operating Hours", value: operatingHours }
   ];
 
   q("snapshotList").innerHTML = rows.map(r => `
@@ -5627,6 +6407,8 @@ function renderAnalyticsDashboard() {
 
   const weekChip = q("dashboardWeekChip");
   if (weekChip) weekChip.innerHTML = formatPeriodChip(metrics.period, metrics.range);
+  const weekChipPicker = q("dashboardWeekChipPickerInput");
+  if (weekChipPicker) weekChipPicker.value = dashboardAnchorDate;
 
   const periodLabel = periodRangeLabel(metrics.period, metrics.range);
   const granularity = { daily: "Hourly", weekly: "Daily", monthly: "Weekly" }[metrics.period];
@@ -5643,7 +6425,6 @@ function renderAnalyticsDashboard() {
   if (loyaltyStatusSub) loyaltyStatusSub.textContent = "All-time";
 
   renderKpiHeroGrid(metrics);
-
   const trendSeries = computeTrendSeries(metrics.period, metrics.range);
   const trendLabels = trendSeries.map(s => s.label);
 
@@ -5674,10 +6455,8 @@ function renderAnalyticsDashboard() {
    Mirror the Operation tab's layout (KPI hero → 2 chart rows → ops grid)
    using the same period/date-range state. Staff numbers are all real,
    derived from the shared staff/booking/leave data. System numbers are real
-   where a real source exists (enquiries, payments, loyalty); anything with
-   no real backing (AI accuracy, uptime, response time) is clearly marked
-   "Illustrative" and left non-clickable, same convention as the rest of
-   this dashboard.
+   where a real source exists (enquiries, payments, loyalty). Metrics without
+   a backend source are omitted instead of being filled with sample values.
    ========================================================================== */
 
 const STAFF_DUTY_COLORS = { duty: "#059669", off: "#94A3B8", leave: "#DC2626" };
@@ -5940,10 +6719,14 @@ function renderStaffWeekDutyMix() {
 
 function openSystemKpiDetail(key) {
   const label = periodRangeLabel(currentDashboardPeriod, dashboardRange);
-  if (key === "bookingIntent") {
-    const items = realMessages.filter(m => m.intent_label === "booking");
-    const rows = items.map(m => renderDetailRow({
-      title: m.customerName, sub: `"${m.message_text}"`, tag: "done", tagLabel: "Booking"
+  if (key === "enquiry") {
+    const rows = enquiries.map(enquiryDetailRow).join("");
+    openDetailModal("Enquiry Resolution", `${enquiries.filter(e => e.status === "resolved").length} of ${enquiries.length} resolved.`, rows, { label: "Open Enquiries", href: "enquiries.html" });
+  } else if (key === "payment") {
+    const rows = paymentRecords.map(p => renderDetailRow({
+      title: p.customerName, sub: `${p.payment_id} · RM ${p.finalAmount.toLocaleString()}`,
+      tag: p.status === "verified" ? "done" : p.status === "pending" ? "pending" : "cancelled",
+      tagLabel: p.rawStatus || (p.status === "verified" ? "Paid" : "Pending")
     })).join("");
     openDetailModal("Booking-Related Messages", `${items.length} of ${realMessages.length} messages.`, rows, { label: "Open Enquiries", href: "enquiries.html" });
   } else if (key === "payment") {
@@ -5973,8 +6756,8 @@ function renderSystemKpiHero() {
   const cards = [
     { key: "bookingIntent", icon: "chat-message.png", label: "Booking-Related Messages", value: `${totalMessages ? Math.round((bookingMessages / totalMessages) * 100) : 0}%`, sub: `${bookingMessages}/${totalMessages} messages`, clickable: true },
     { key: "payment", icon: "payment-card.png", label: "Payment Verification Rate", value: `${totalPayments ? Math.round((verifiedPayments / totalPayments) * 100) : 0}%`, sub: `${verifiedPayments}/${totalPayments} verified`, clickable: true },
-    { key: "redemption", icon: "loyalty-reward-gift.png", label: "Members With Redemptions", value: `${totalMembers ? Math.round((membersWithRedemptions / totalMembers) * 100) : 0}%`, sub: `${membersWithRedemptions}/${totalMembers} members`, clickable: true },
-    { key: null, icon: "analytics-dashboard.png", label: "AI Response Accuracy", value: "96.4%", sub: "Illustrative", clickable: false }
+    { key: "loyalty", icon: "loyalty-reward-gift.png", label: "Loyalty Requests Processed", value: `${totalLoyalty ? Math.round((approvedLoyalty / totalLoyalty) * 100) : 0}%`, sub: `${approvedLoyalty}/${totalLoyalty} approved`, clickable: true },
+    { key: null, icon: "analytics-dashboard.png", label: "Data Source", value: "Live", sub: "Connected backend records", clickable: false }
   ];
 
   q("systemKpiHeroGrid").innerHTML = cards.map(c => `
@@ -5993,8 +6776,15 @@ function renderSystemKpiHero() {
 
 function renderSystemAutomationTrend(metrics) {
   const buckets = buildTrendBuckets(metrics.period, metrics.range);
-  const values = buckets.map((b, idx) => Math.round((95 + Math.sin(idx * 1.3) * 2.2 + Math.cos(idx * 0.7)) * 10) / 10);
+  const values = buckets.map(bucket => {
+    const items = enquiries.filter(bucket.matches);
+    const resolved = items.filter(item => item.status === "resolved").length;
+    return items.length ? Math.round((resolved / items.length) * 1000) / 10 : 0;
+  });
   const labels = buckets.map(b => b.label);
+
+  const subtitle = q("systemAutomationTrendSub");
+  if (subtitle) subtitle.textContent = `Real enquiry data · ${periodRangeLabel(metrics.period, metrics.range)}`;
 
   renderAreaTrendChart("systemAutomationTrendChart", values, {
     color: "#7C3AED", labels, format: v => `${v}%`
@@ -6064,10 +6854,10 @@ function renderSystemEnquiryDonut() {
 
 function renderSystemIntegrationSnapshot() {
   const rows = [
-    { icon: "chat-message.png", label: "WhatsApp Business API", value: "Connected" },
-    { icon: "payment-card.png", label: "Payment Gateway", value: "Connected" },
-    { icon: "calendar-simple.png", label: "Booking Calendar Sync", value: "Active" },
-    { icon: "time.png", label: "Last Sync", value: "Just now" }
+    { icon: "analytics-dashboard.png", label: "Application API", value: "Connected" },
+    { icon: "calendar-simple.png", label: "Bookings Loaded", value: bookings.length.toLocaleString("en-MY") },
+    { icon: "payment-card.png", label: "Payments Loaded", value: paymentRecords.length.toLocaleString("en-MY") },
+    { icon: "time.png", label: "Last Refresh", value: dashboardLastLoadedAt ? dashboardLastLoadedAt.toLocaleTimeString("en-MY", { hour: "2-digit", minute: "2-digit" }) : "—" }
   ];
 
   q("systemIntegrationSnapshotList").innerHTML = rows.map(r => `
@@ -6078,17 +6868,16 @@ function renderSystemIntegrationSnapshot() {
   `).join("");
 }
 
-function openMessagesLoggedDetail() {
-  const rows = realMessages.map(m => renderDetailRow({ title: m.customerName, sub: `"${m.message_text}"`, tag: "done", tagLabel: m.intent_label })).join("");
-  openDetailModal("Messages Logged", `${realMessages.length} inbound message(s), all-time.`, rows, { label: "Open Enquiries", href: "enquiries.html" });
-}
-
 function renderSystemHighlights() {
+  const resolved = enquiries.filter(e => e.status === "resolved").length;
+  const pendingPayments = paymentRecords.filter(p => p.status === "pending").length;
+  const pendingLeaves = leaveRequests.filter(lv => lv.status === "pending").length;
+
   const cards = [
-    { icon: "confirm-circle.png", label: "API Uptime", value: "99.9%", sub: "Illustrative", clickable: false },
-    { icon: "time.png", label: "Avg AI Response Time", value: "1.2s", sub: "Illustrative", clickable: false },
-    { icon: "confirm-circle.png", label: "Messages Logged", value: realMessages.length, sub: "All-time", clickable: true, onclick: "openMessagesLoggedDetail()" },
-    { icon: "notification-bell.png", label: "Error Rate", value: "0.3%", sub: "Illustrative", clickable: false }
+    { icon: "chat-message.png", label: "Total Enquiries", value: enquiries.length, sub: "All loaded records", clickable: false },
+    { icon: "confirm-circle.png", label: "Resolved Enquiries", value: resolved, sub: "All-time", clickable: true, onclick: "openSystemEnquiryDetail('resolved')" },
+    { icon: "payment-card.png", label: "Payments Awaiting", value: pendingPayments, sub: "Needs verification", clickable: false },
+    { icon: "time.png", label: "Pending Leave", value: pendingLeaves, sub: "Needs manager review", clickable: false }
   ];
 
   q("systemHighlightGrid").innerHTML = cards.map(c => `
@@ -6169,8 +6958,6 @@ function renderSystemDashboard() {
 }
 
 async function initAnalyticsDashboard() {
-  await loadRealDashboardData();
-
   document.querySelectorAll("#dashboardPeriodToggle .tab-btn").forEach(btn => {
     btn.addEventListener("click", () => {
       document.querySelectorAll("#dashboardPeriodToggle .tab-btn").forEach(b => b.classList.remove("active"));
@@ -6182,8 +6969,19 @@ async function initAnalyticsDashboard() {
   });
 
   q("dashboardPrevBtn")?.addEventListener("click", () => shiftDashboardAnchor(-1));
+  q("dashboardTodayBtn")?.addEventListener("click", () => {
+    dashboardAnchorDate = getToday();
+    renderAnalyticsDashboard();
+  });
   q("dashboardNextBtn")?.addEventListener("click", () => shiftDashboardAnchor(1));
-  q("dashboardTodayBtn")?.addEventListener("click", () => { dashboardAnchorDate = today; renderAnalyticsDashboard(); });
+
+  // Picking any date jumps to whichever day/week/month (per the active
+  // period tab) contains it — getPeriodRange() already resolves an
+  // arbitrary anchor date to its containing range.
+  attachDatePickerToLabel("dashboardWeekChip", date => {
+    dashboardAnchorDate = date;
+    renderAnalyticsDashboard();
+  }, dashboardAnchorDate);
 
   document.querySelectorAll("#dashboardSectionTabs .tab-btn").forEach(btn => {
     btn.addEventListener("click", () => {
@@ -6199,7 +6997,13 @@ async function initAnalyticsDashboard() {
     if (event.target.id === "detailModal") closeDetailModal();
   });
 
-  renderAnalyticsDashboard();
+  try {
+    await loadAnalyticsDashboardData();
+    renderAnalyticsDashboard();
+  } catch (error) {
+    console.error(error);
+    alert(error.message || "Failed to load analytical dashboard data.");
+  }
 }
 
 /* ==========================================================================
@@ -6210,46 +7014,66 @@ async function initAnalyticsDashboard() {
    into the account records so the sidebar/dashboard pick it up immediately.
    ========================================================================== */
 
-const SETTINGS_DEFAULTS = {
-  logoName: "",
-  businessName: "", country: "Malaysia", street: "", city: "", state: "", zip: "", description: "",
-  hours: { Mon: "09:30 AM – 06:30 PM", Tue: "09:30 AM – 06:30 PM", Wed: "09:30 AM – 06:30 PM", Thu: "09:30 AM – 06:30 PM", Fri: "09:30 AM – 06:30 PM", Sat: "10:00 AM – 05:00 PM", Sun: "Closed" },
-  closedDates: "",
-  payment: { cash: true, card: true, qr: true, online: false },
-  invoicePrefix: "PAW", taxName: "SST 6%",
-  language: "English", timezone: "Kuala Lumpur (GMT+8)", currency: "MYR (RM)", weightUnit: "kg", heightUnit: "cm",
-  policies: {},
-  bookingUrl: "", whatsapp: "", confirmRule: "Auto-confirm if slot is available"
-};
-
+// Real backend: company_name/country/street_address/city/state/postcode/
+// business_description are real `companies` columns (PATCH /api/companies/me).
+// Everything else on this page (hours, payment methods, invoice/tax,
+// localization, service policy filenames, booking/WhatsApp config) has no
+// dedicated column — it lives in one flexible `settings_json` blob (see
+// backend/sql/company_settings_migration.sql + routes/companies.js), merged
+// server-side so callers only send the keys they're changing. Business logos
+// are real JPG/PNG objects in Supabase Storage with their public URL stored in
+// companies.logo_path. Policy uploads remain filename-only for now.
 const SERVICE_META = {
   grooming: { icon: "grooming-scissors.png", label: "Grooming" },
   boarding: { icon: "boarding.png", label: "Boarding / Hotel" },
   daycare: { icon: "dog-play.png", label: "Daycare" }
 };
 
-function settingsStorageKey() {
-  const account = getCurrentAccount();
-  return "pawfect_business_settings_" + (account?.businessKey || "default");
-}
-
-function loadBusinessSettings() {
-  try {
-    const raw = localStorage.getItem(settingsStorageKey());
-    return raw ? { ...SETTINGS_DEFAULTS, ...JSON.parse(raw) } : { ...SETTINGS_DEFAULTS };
-  } catch (e) {
-    return { ...SETTINGS_DEFAULTS };
-  }
-}
+let currentCompanyRecord = null;
+let currentAccountRole = null;
+let currentAccountId = null;
+let teamAccountRecords = [];
+let selectedBusinessLogoFile = null;
+let businessLogoPreviewUrl = null;
 
 function showFilename(input, targetId) {
   const el = q(targetId);
   if (el && input.files.length) el.innerHTML = `<img src="icon/upload.png" alt="" class="row-icon">${input.files[0].name}`;
 }
 
-function renderServicePolicyCards(account) {
-  const activeServices = account?.services || ["grooming", "boarding", "daycare"];
-  const settings = loadBusinessSettings();
+function showBusinessLogoPreview(source, label) {
+  const preview = q("businessLogoPreview");
+  const icon = q("businessLogoUploadIcon");
+  const name = q("logoFileName");
+  if (!preview || !source) return;
+  preview.src = source;
+  preview.classList.remove("hidden");
+  icon?.classList.add("hidden");
+  if (name) name.textContent = label;
+}
+
+function handleBusinessLogoSelection(input) {
+  const file = input.files?.[0];
+  if (!file) return;
+  if (!["image/png", "image/jpeg"].includes(file.type)) {
+    alert("Business logo must be a PNG or JPG file.");
+    input.value = "";
+    return;
+  }
+  if (file.size > 2 * 1024 * 1024) {
+    alert("Business logo must be 2 MB or smaller.");
+    input.value = "";
+    return;
+  }
+  if (businessLogoPreviewUrl) URL.revokeObjectURL(businessLogoPreviewUrl);
+  businessLogoPreviewUrl = URL.createObjectURL(file);
+  selectedBusinessLogoFile = file;
+  showBusinessLogoPreview(businessLogoPreviewUrl, `${file.name} · ready to upload`);
+}
+
+function renderServicePolicyCards(company) {
+  const settings = company?.settings_json || {};
+  const activeServices = settings.selected_services || ["grooming", "boarding", "daycare"];
 
   const textEl = q("selectedServicesText");
   if (textEl) textEl.innerHTML = activeServices.map(type => `<img src="icon/${SERVICE_META[type]?.icon || "paw-print.png"}" alt="" class="row-icon">${SERVICE_META[type]?.label || type}`).join(" · ");
@@ -6271,40 +7095,49 @@ function renderServicePolicyCards(account) {
   }).join("");
 }
 
-function populateSettingsForm(s, account) {
-  q("cfg_businessName").value = s.businessName || account?.businessName || "";
-  q("cfg_country").value = s.country;
-  q("cfg_street").value = s.street;
-  q("cfg_city").value = s.city;
-  q("cfg_state").value = s.state;
-  q("cfg_zip").value = s.zip;
-  q("cfg_description").value = s.description;
-  if (s.logoName) q("logoFileName").innerHTML = '<img src="icon/upload.png" alt="" class="row-icon">' + s.logoName;
+function populateSettingsForm(company) {
+  const s = company?.settings_json || {};
 
-  ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"].forEach(day => { q("hour_" + day).value = s.hours[day] || ""; });
-  q("cfg_closedDates").value = s.closedDates;
+  q("cfg_businessName").value = company?.company_name || "";
+  q("cfg_country").value = company?.country || "Malaysia";
+  q("cfg_street").value = company?.street_address || "";
+  q("cfg_city").value = company?.city || "";
+  q("cfg_state").value = company?.state || "";
+  q("cfg_zip").value = company?.postcode || "";
+  q("cfg_description").value = company?.business_description || "";
+  if (/^https?:\/\//i.test(company?.logo_path || "")) {
+    showBusinessLogoPreview(company.logo_path, "Current business logo · choose a new file to replace it");
+  } else {
+    q("logoFileName").textContent = company?.logo_path
+      ? `Legacy logo reference: ${company.logo_path} · choose a JPG/PNG to replace it`
+      : "Click to upload logo (PNG, JPG — recommended 200×200 px)";
+  }
 
-  q("pay_cash").checked = !!s.payment.cash;
-  q("pay_card").checked = !!s.payment.card;
-  q("pay_qr").checked = !!s.payment.qr;
-  q("pay_online").checked = !!s.payment.online;
-  q("cfg_invoicePrefix").value = s.invoicePrefix;
-  q("cfg_taxName").value = s.taxName;
-  q("cfg_language").value = s.language;
-  q("cfg_timezone").value = s.timezone;
-  q("cfg_currency").value = s.currency;
-  q("cfg_weight").value = s.weightUnit;
-  q("cfg_height").value = s.heightUnit;
+  const hours = s.business_hours || {};
+  ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"].forEach(day => { q("hour_" + day).value = hours[day] || ""; });
+  q("cfg_closedDates").value = s.closed_dates || "";
 
-  q("cfg_bookingUrl").value = s.bookingUrl;
-  q("cfg_whatsapp").value = s.whatsapp;
-  q("cfg_confirmRule").value = s.confirmRule;
+  const payment = s.payment_methods || { cash: true, card: true, qr: true, online: false };
+  q("pay_cash").checked = !!payment.cash;
+  q("pay_card").checked = !!payment.card;
+  q("pay_qr").checked = !!payment.qr;
+  q("pay_online").checked = !!payment.online;
+  q("cfg_invoicePrefix").value = s.invoice_prefix || "";
+  q("cfg_taxName").value = s.tax_name || "";
+  q("cfg_language").value = s.language || "English";
+  q("cfg_timezone").value = s.timezone || "Kuala Lumpur (GMT+8)";
+  q("cfg_currency").value = s.currency || "MYR (RM)";
+  q("cfg_weight").value = s.weight_unit || "kg";
+  q("cfg_height").value = s.height_unit || "cm";
+
+  q("cfg_bookingUrl").value = s.booking_url || "";
+  q("cfg_whatsapp").value = s.whatsapp_number || "";
+  q("cfg_confirmRule").value = s.confirm_rule || "";
 }
 
 function collectServicePolicyNames() {
-  const account = getCurrentAccount();
-  const activeServices = account?.services || ["grooming", "boarding", "daycare"];
-  const existing = loadBusinessSettings().policies || {};
+  const activeServices = currentCompanyRecord?.settings_json?.selected_services || ["grooming", "boarding", "daycare"];
+  const existing = currentCompanyRecord?.settings_json?.policies || {};
   const result = {};
   activeServices.forEach(type => {
     const input = q("policy_" + type);
@@ -6313,70 +7146,73 @@ function collectServicePolicyNames() {
   return result;
 }
 
-function collectBusinessSettings() {
-  const existingLogo = loadBusinessSettings().logoName;
-  return {
-    logoName: q("cfg_logo").files[0]?.name || existingLogo || "",
-    businessName: q("cfg_businessName").value.trim(),
+async function saveBusinessSettings() {
+  const profilePayload = {
+    company_name: q("cfg_businessName").value.trim(),
     country: q("cfg_country").value,
-    street: q("cfg_street").value,
+    street_address: q("cfg_street").value,
     city: q("cfg_city").value,
     state: q("cfg_state").value,
-    zip: q("cfg_zip").value,
-    description: q("cfg_description").value,
-    hours: {
+    postcode: q("cfg_zip").value,
+    business_description: q("cfg_description").value,
+  };
+
+  if (!profilePayload.company_name || !profilePayload.postcode) {
+    alert("Business name and postcode are required.");
+    return;
+  }
+
+  const settingsPayload = {
+    business_hours: {
       Mon: q("hour_Mon").value, Tue: q("hour_Tue").value, Wed: q("hour_Wed").value,
       Thu: q("hour_Thu").value, Fri: q("hour_Fri").value, Sat: q("hour_Sat").value, Sun: q("hour_Sun").value
     },
-    closedDates: q("cfg_closedDates").value,
-    payment: { cash: q("pay_cash").checked, card: q("pay_card").checked, qr: q("pay_qr").checked, online: q("pay_online").checked },
-    invoicePrefix: q("cfg_invoicePrefix").value,
-    taxName: q("cfg_taxName").value,
+    closed_dates: q("cfg_closedDates").value,
+    payment_methods: { cash: q("pay_cash").checked, card: q("pay_card").checked, qr: q("pay_qr").checked, online: q("pay_online").checked },
+    invoice_prefix: q("cfg_invoicePrefix").value,
+    tax_name: q("cfg_taxName").value,
     language: q("cfg_language").value,
     timezone: q("cfg_timezone").value,
     currency: q("cfg_currency").value,
-    weightUnit: q("cfg_weight").value,
-    heightUnit: q("cfg_height").value,
+    weight_unit: q("cfg_weight").value,
+    height_unit: q("cfg_height").value,
     policies: collectServicePolicyNames(),
-    bookingUrl: q("cfg_bookingUrl").value,
-    whatsapp: q("cfg_whatsapp").value,
-    confirmRule: q("cfg_confirmRule").value
+    booking_url: q("cfg_bookingUrl").value,
+    whatsapp_number: q("cfg_whatsapp").value,
+    confirm_rule: q("cfg_confirmRule").value,
   };
-}
 
-function saveBusinessSettings() {
-  const settings = collectBusinessSettings();
-  localStorage.setItem(settingsStorageKey(), JSON.stringify(settings));
+  try {
+    if (selectedBusinessLogoFile) {
+      currentCompanyRecord = await api.uploadCompanyLogo(selectedBusinessLogoFile);
+      selectedBusinessLogoFile = null;
+      if (businessLogoPreviewUrl) URL.revokeObjectURL(businessLogoPreviewUrl);
+      businessLogoPreviewUrl = null;
+      q("cfg_logo").value = "";
+      showBusinessLogoPreview(currentCompanyRecord.logo_path, "Current business logo · upload complete");
+    }
+    currentCompanyRecord = await api.patch("/companies/me", { ...profilePayload, settings: settingsPayload });
 
-  const account = getCurrentAccount();
-  if (account && settings.businessName && settings.businessName !== account.businessName) {
-    account.businessName = settings.businessName;
-    localStorage.setItem("pawfect_current_account", JSON.stringify(account));
-
-    const email = String(account.email || "").toLowerCase();
-    if (email) {
-      try {
-        const stateRaw = localStorage.getItem("pawfect_account_state_" + email);
-        const state = stateRaw ? JSON.parse(stateRaw) : {};
-        state.businessName = settings.businessName;
-        localStorage.setItem("pawfect_account_state_" + email, JSON.stringify(state));
-      } catch (e) { /* ignore malformed stored state */ }
+    const storedAccount = getCurrentAccount();
+    if (storedAccount) {
+      storedAccount.businessName = currentCompanyRecord.company_name || storedAccount.businessName;
+      storedAccount.logoPath = currentCompanyRecord.logo_path || storedAccount.logoPath || "";
+      localStorage.setItem("pawfect_current_account", JSON.stringify(storedAccount));
+      renderSidebarAccount();
     }
 
-    renderSidebarAccount();
-  }
-
-  const note = q("settingsSavedNote");
-  if (note) {
-    note.style.opacity = "1";
-    clearTimeout(window.__settingsSavedTimer);
-    window.__settingsSavedTimer = setTimeout(() => { note.style.opacity = "0"; }, 2200);
+    const note = q("settingsSavedNote");
+    if (note) {
+      note.style.opacity = "1";
+      clearTimeout(window.__settingsSavedTimer);
+      window.__settingsSavedTimer = setTimeout(() => { note.style.opacity = "0"; }, 2200);
+    }
+  } catch (error) {
+    alert(error.message || "Failed to save settings.");
   }
 }
 
-function initSettings() {
-  const account = getCurrentAccount();
-
+async function initSettings() {
   document.querySelectorAll("#settingsTabs .tab-btn").forEach(btn => {
     btn.addEventListener("click", () => {
       document.querySelectorAll("#settingsTabs .tab-btn").forEach(b => b.classList.remove("active"));
@@ -6387,138 +7223,128 @@ function initSettings() {
     });
   });
 
-  renderServicePolicyCards(account);
-  populateSettingsForm(loadBusinessSettings(), account);
+  await refreshSettingsPageData();
+}
+
+async function refreshSettingsPageData() {
+  try {
+    const [company, me, accounts] = await Promise.all([
+      api.get("/companies/me"),
+      api.get("/accounts/me"),
+      api.get("/accounts"),
+    ]);
+    currentCompanyRecord = company;
+    currentAccountRole = me.role;
+    currentAccountId = me.account_id;
+    teamAccountRecords = accounts;
+  } catch (error) {
+    alert(error.message || "Failed to load settings.");
+    return;
+  }
+
+  populateSettingsForm(currentCompanyRecord);
+  renderServicePolicyCards(currentCompanyRecord);
   renderAccountsPanel();
+
+  const manager = currentAccountRole === "manager";
+  q("settingsSaveBar")?.classList.toggle("hidden", !manager);
+  document.querySelectorAll(".settings-panel input, .settings-panel select, .settings-panel textarea")
+    .forEach(control => { control.disabled = !manager; });
 }
 
 /* =========================
    TEAM ACCOUNTS (Manager: full control · Staff: read-only)
 ========================= */
 
-function customAccountsForSettings() {
-  try { return JSON.parse(localStorage.getItem("pawfect_custom_accounts") || "[]"); }
-  catch (e) { return []; }
-}
-
-function removedSeedAccountEmails() {
-  try { return JSON.parse(localStorage.getItem("pawfect_removed_seed_accounts") || "[]"); }
-  catch (e) { return []; }
-}
-
-function getBusinessAccounts(businessKey) {
-  const removedSeeds = removedSeedAccountEmails();
-
-  const seed = Object.values(DEMO_ACCOUNTS)
-    .filter(a => a.businessKey === businessKey && !removedSeeds.includes(a.email.toLowerCase()))
-    .map(a => ({ email: a.email, role: a.role, businessKey: a.businessKey, source: "seed" }));
-
-  const custom = customAccountsForSettings()
-    .filter(a => a.businessKey === businessKey)
-    .map(a => ({ email: a.email, role: a.role, businessKey: a.businessKey, source: "custom" }));
-
-  const byEmail = new Map();
-  [...seed, ...custom].forEach(a => byEmail.set(a.email.toLowerCase(), a));
-  return [...byEmail.values()];
-}
-
 function renderAccountsPanel() {
-  const account = getCurrentAccount();
-  const manager = isManager(account);
+  const manager = currentAccountRole === "manager";
 
   q("accountsManagerView").classList.toggle("hidden", !manager);
   q("accountsStaffView").classList.toggle("hidden", manager);
 
   if (!manager) {
-    q("staffOrgName").textContent = account?.businessName || "—";
-    q("staffOrgRole").textContent = account?.role || "—";
-    q("staffOrgEmail").textContent = account?.email || "—";
+    q("staffOrgName").textContent = currentCompanyRecord?.company_name || "—";
+    q("staffOrgRole").textContent = currentAccountRole || "—";
+    q("staffOrgEmail").textContent = getCurrentAccount()?.email || "—";
     return;
   }
 
   const nameEl = q("accountsBusinessName");
-  if (nameEl) nameEl.textContent = account?.businessName || "this business";
+  if (nameEl) nameEl.textContent = currentCompanyRecord?.company_name || "this business";
 
-  const list = getBusinessAccounts(account?.businessKey);
-  const currentEmail = String(account?.email || "").toLowerCase();
-
-  q("accountsTableBody").innerHTML = list.map(a => {
-    const isSelf = a.email.toLowerCase() === currentEmail;
+  q("accountsTableBody").innerHTML = teamAccountRecords.map(a => {
+    const current = Number(a.account_id) === Number(currentAccountId);
     return `
-      <tr>
-        <td>${a.email}${isSelf ? ' <span class="field-note">(you)</span>' : ""}</td>
-        <td><span class="status-tag ${a.role === "Manager" ? "status-scheduled" : "status-done"}">${a.role}</span></td>
-        <td>${a.source === "seed" ? "Default" : "Added"}</td>
-        <td><button class="edit-btn" onclick="removeTeamAccount('${a.email}','${a.source}')">Remove</button></td>
-      </tr>
-    `;
+    <tr>
+      <td><span class="profile-name">${escapeUiText(a.email || `ACC-${a.account_id}`)}</span><br><span class="profile-sub">ACC-${a.account_id}</span></td>
+      <td>${current
+        ? `<span class="status-tag ${a.role === "manager" ? "status-scheduled" : "status-done"}">${a.role}</span>`
+        : `<select id="accountRole_${a.account_id}" aria-label="Role for ACC-${a.account_id}">
+            <option value="staff" ${a.role === "staff" ? "selected" : ""}>Staff</option>
+            <option value="manager" ${a.role === "manager" ? "selected" : ""}>Manager</option>
+          </select>`}</td>
+      <td>${current
+        ? `<span class="status-tag status-done">${a.account_status}</span>`
+        : `<select id="accountStatus_${a.account_id}" aria-label="Status for ACC-${a.account_id}">
+            <option value="active" ${a.account_status === "active" ? "selected" : ""}>Active</option>
+            <option value="inactive" ${a.account_status === "inactive" ? "selected" : ""}>Inactive</option>
+          </select>`}</td>
+      <td>${current
+        ? `<span class="profile-sub">Current account</span>`
+        : `<div class="account-editor">
+            <button class="edit-btn" onclick="saveTeamAccount(${a.account_id})">Save</button>
+            <button class="action-btn" onclick="removeTeamAccount(${a.account_id})">Remove</button>
+          </div>`}</td>
+    </tr>
+  `;
   }).join("");
 }
 
-function addTeamAccount() {
-  const account = getCurrentAccount();
+async function saveTeamAccount(accountId) {
+  const role = q(`accountRole_${accountId}`)?.value;
+  const accountStatus = q(`accountStatus_${accountId}`)?.value;
+  try {
+    await api.patch(`/accounts/${accountId}`, { role, account_status: accountStatus });
+    await refreshSettingsPageData();
+  } catch (error) {
+    alert(error.message || "Failed to update account.");
+  }
+}
+
+async function addTeamAccount() {
   const email = q("newAccountEmail").value.trim().toLowerCase();
   const password = q("newAccountPassword").value;
-  const role = q("newAccountRole").value;
+  const role = q("newAccountRole").value.toLowerCase();
   const note = q("accountsAddNote");
 
   if (!email || !password) {
     if (note) { note.textContent = "Enter an email and password."; note.style.color = "#DC2626"; }
     return;
   }
-
-  const alreadyExists = getBusinessAccounts(account?.businessKey).some(a => a.email.toLowerCase() === email);
-  if (alreadyExists) {
-    if (note) { note.textContent = "An account with this email already exists."; note.style.color = "#DC2626"; }
+  if (password.length < 8) {
+    if (note) { note.textContent = "Password must be at least 8 characters."; note.style.color = "#DC2626"; }
     return;
   }
 
-  const list = customAccountsForSettings().filter(a => a.email.toLowerCase() !== email);
-  list.push({
-    email, password, role,
-    businessKey: account?.businessKey, businessName: account?.businessName,
-    blankData: false, setupCompleted: true, services: account?.services || ["grooming", "boarding", "daycare"]
-  });
-  localStorage.setItem("pawfect_custom_accounts", JSON.stringify(list));
-
-  q("newAccountEmail").value = "";
-  q("newAccountPassword").value = "";
-  q("newAccountRole").value = "Staff";
-  if (note) { note.textContent = "✓ Account added."; note.style.color = "#059669"; }
-
-  renderAccountsPanel();
+  try {
+    await api.post("/accounts", { email, password, role });
+    q("newAccountEmail").value = "";
+    q("newAccountPassword").value = "";
+    q("newAccountRole").value = "Staff";
+    if (note) { note.textContent = "✓ Account added."; note.style.color = "#059669"; }
+    await refreshSettingsPageData();
+  } catch (error) {
+    if (note) { note.textContent = error.message || "Failed to add account."; note.style.color = "#DC2626"; }
+  }
 }
 
-function removeTeamAccount(email, source) {
-  const account = getCurrentAccount();
-  const normalizedEmail = email.toLowerCase();
-  const list = getBusinessAccounts(account?.businessKey);
-  const target = list.find(a => a.email.toLowerCase() === normalizedEmail);
-  if (!target) return;
+async function removeTeamAccount(accountId) {
+  if (!confirm(`Remove ACC-${accountId} from this business? This cannot be undone.`)) return;
 
-  const managerCount = list.filter(a => a.role === "Manager").length;
-  if (target.role === "Manager" && managerCount <= 1) {
-    alert("You can't remove the only manager account for this business.");
-    return;
+  try {
+    await api.del(`/accounts/${accountId}`);
+    await refreshSettingsPageData();
+  } catch (error) {
+    alert(error.message || "Failed to remove account.");
   }
-
-  if (!confirm(`Remove ${email} from ${account?.businessName || "this business"}? This cannot be undone.`)) return;
-
-  if (source === "seed") {
-    const removed = removedSeedAccountEmails();
-    if (!removed.includes(normalizedEmail)) removed.push(normalizedEmail);
-    localStorage.setItem("pawfect_removed_seed_accounts", JSON.stringify(removed));
-  } else {
-    const updated = customAccountsForSettings().filter(a => a.email.toLowerCase() !== normalizedEmail);
-    localStorage.setItem("pawfect_custom_accounts", JSON.stringify(updated));
-  }
-
-  const isSelf = normalizedEmail === String(account?.email || "").toLowerCase();
-  if (isSelf) {
-    localStorage.removeItem("pawfect_current_account");
-    location.href = "login.html";
-    return;
-  }
-
-  renderAccountsPanel();
 }

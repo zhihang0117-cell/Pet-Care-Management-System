@@ -1325,7 +1325,38 @@ select {
 .logo-upload-label:hover { border-color: var(--btn-brown); }
 .logo-upload-label .upload-icon { width: 32px; height: 32px; object-fit: contain; mix-blend-mode: multiply; }
 .logo-upload-label p { font-size: 0.82rem; color: var(--text-muted); }
+.logo-upload-label small { font-size: 0.72rem; color: var(--text-muted); }
 .logo-upload-label input[type="file"] { display: none; }
+.business-logo-preview {
+    width: 96px;
+    height: 96px;
+    border-radius: 18px;
+    object-fit: contain;
+    background: #fff;
+    border: 1px solid var(--accent-sand);
+    padding: 6px;
+}
+.account-editor {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+}
+.account-editor select {
+    min-width: 112px;
+    padding: 8px 10px;
+    border: 1px solid var(--accent-sand);
+    border-radius: 10px;
+    background: var(--card-white);
+}
+.reply-preview {
+    white-space: pre-wrap;
+    padding: 12px 14px;
+    border-radius: var(--radius-small);
+    background: #F0FDF4;
+    border: 1px solid #BBF7D0;
+    color: var(--text-charcoal);
+}
 
 .hours-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(168px, 1fr)); gap: 12px; }
 .hours-grid > div { display: flex; flex-direction: column; gap: 6px; }
@@ -2776,6 +2807,57 @@ select {
     color: #fff;
 }
 
+.table-pagination {
+    display: flex;
+    align-items: center;
+    justify-content: flex-start;
+    gap: 6px;
+    flex-wrap: wrap;
+    margin-top: 14px;
+}
+
+.page-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 34px;
+    height: 34px;
+    padding: 0 10px;
+    border-radius: 10px;
+    border: 1.5px solid var(--accent-sand);
+    background-color: var(--card-white);
+    font-family: var(--font-sans);
+    font-size: 0.8rem;
+    font-weight: 600;
+    color: var(--btn-brown);
+    cursor: pointer;
+    transition: var(--transition-smooth);
+}
+
+.page-btn:hover:not(:disabled) {
+    background-color: var(--btn-brown);
+    border-color: var(--btn-brown);
+    color: #fff;
+}
+
+.page-btn.active {
+    background-color: var(--btn-brown);
+    border-color: var(--btn-brown);
+    color: #fff;
+    cursor: default;
+}
+
+.page-btn:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+}
+
+.page-ellipsis {
+    padding: 0 4px;
+    color: var(--text-muted);
+    font-weight: 600;
+}
+
 .empty-row {
     text-align: center;
     color: var(--text-muted);
@@ -2911,6 +2993,14 @@ select {
     margin: 0;
 }
 
+/* Recent Bookings inside the customer modal: not truncated, scrolls
+   internally instead so the rest of the form stays a fixed height. */
+.crm-list-scroll {
+    max-height: 260px;
+    overflow-y: auto;
+    padding-right: 6px;
+}
+
 .form-actions {
     grid-column: 1 / -1;
     display: flex;
@@ -3026,6 +3116,93 @@ select {
 
 .kpi-hero-delta.up { color: #059669; }
 .kpi-hero-delta.down { color: #DC2626; }
+
+/* Shared previous / Today / next date filter */
+.page-date-filter-row {
+    display: flex;
+    justify-content: flex-end;
+    margin-top: 20px;
+    padding-top: 20px;
+    border-top: 1px solid var(--accent-sand);
+}
+
+.service-date-toolbar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 18px;
+    margin-top: 20px;
+    padding-top: 20px;
+    border-top: 1px solid var(--accent-sand);
+}
+
+.service-date-toolbar > .bk-tab-group {
+    flex: 1 1 auto;
+}
+
+.service-date-toolbar > .page-date-filter {
+    flex: 0 0 auto;
+}
+
+.page-date-filter {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+}
+
+.page-date-filter .btn {
+    min-width: 42px;
+    height: 40px;
+    padding: 0 14px;
+}
+
+.page-date-label {
+    min-width: 132px;
+    justify-content: center;
+    margin: 0;
+    white-space: nowrap;
+}
+
+.page-date-label-pickable {
+    cursor: pointer;
+    position: relative;
+}
+
+.page-date-label-pickable:hover,
+.page-date-label-pickable:focus-visible {
+    filter: brightness(0.96);
+    outline: none;
+}
+
+.page-date-label-pickable::after {
+    content: "▾";
+    margin-left: 6px;
+    font-size: 0.7em;
+    opacity: 0.6;
+}
+
+/* Kept in the layout (so its native picker button works) but visually
+   collapsed — the chip itself, styled above, is the click target. */
+.page-date-native-input {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    opacity: 0;
+    pointer-events: none;
+    border: 0;
+    padding: 0;
+}
+
+@media (max-width: 1100px) {
+    .service-date-toolbar { align-items: flex-start; flex-direction: column; }
+}
+
+@media (max-width: 720px) {
+    .page-date-filter-row { justify-content: flex-start; }
+    .page-date-filter { width: 100%; }
+    .page-date-label { flex: 1; }
+}
 
 /* Action cards (Daily Overview) — icon+title centered, value bottom-right */
 .action-card-head {
@@ -3281,4 +3458,3 @@ select {
     font-weight: 800;
     color: var(--text-charcoal);
 }
-

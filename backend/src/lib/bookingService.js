@@ -46,6 +46,50 @@ export function nightsBetween(checkIn, checkOut) {
   return Math.max(1, Math.round(ms / (1000 * 60 * 60 * 24)));
 }
 
+const BOOKING_STATUSES = new Set(["Pending", "Scheduled", "Done", "No Show", "Cancelled"]);
+
+function invalidBooking(message) {
+  const err = new Error(message);
+  err.status = 400;
+  throw err;
+}
+
+function validateBookingInput(type, booking, { creating = false } = {}) {
+  if (!Number.isInteger(Number(booking.pet_id)) || Number(booking.pet_id) <= 0) invalidBooking("Select a valid pet.");
+  if (!Number.isInteger(Number(booking.staff_id)) || Number(booking.staff_id) <= 0) invalidBooking("Select a valid staff member.");
+  if (!BOOKING_STATUSES.has(booking.booking_status)) invalidBooking("Select a valid booking status.");
+  if (creating && !["Pending", "Scheduled"].includes(booking.booking_status)) {
+    invalidBooking("A new booking must start as Pending or Scheduled.");
+  }
+
+  if (type === "grooming") {
+    if (!String(booking.service_name || "").trim() || !booking.booking_date || !booking.booking_time) {
+      invalidBooking("Service name, booking date, and booking time are required.");
+    }
+    if (!Number.isFinite(Number(booking.price)) || Number(booking.price) < 0) invalidBooking("Price must be zero or greater.");
+    if (booking.add_on_price != null && (!Number.isFinite(Number(booking.add_on_price)) || Number(booking.add_on_price) < 0)) {
+      invalidBooking("Add-on price must be zero or greater.");
+    }
+  } else if (type === "daycare") {
+    if (!String(booking.package_type || "").trim() || !booking.booking_date || !booking.check_in_time || !booking.check_out_time) {
+      invalidBooking("Package, booking date, check-in time, and check-out time are required.");
+    }
+    if (booking.check_out_time <= booking.check_in_time) invalidBooking("Check-out time must be after check-in time.");
+    if (!Number.isFinite(Number(booking.price)) || Number(booking.price) < 0) invalidBooking("Price must be zero or greater.");
+  } else if (type === "boarding") {
+    if (!String(booking.room_type || "").trim() || !booking.check_in_date || !booking.check_out_date || !booking.check_in_time || !booking.check_out_time) {
+      invalidBooking("Room, check-in/out dates, and check-in/out times are required.");
+    }
+    if (booking.check_out_date < booking.check_in_date ||
+        (booking.check_out_date === booking.check_in_date && booking.check_out_time <= booking.check_in_time)) {
+      invalidBooking("Check-out must be after check-in.");
+    }
+    if (!Number.isFinite(Number(booking.price_per_night)) || Number(booking.price_per_night) < 0) {
+      invalidBooking("Price per night must be zero or greater.");
+    }
+  }
+}
+
 /** Finds which of the 3 booking tables a payment_id belongs to. */
 export async function findBookingByPaymentId(companyId, paymentId) {
   for (const [type, cfg] of Object.entries(BOOKING_TYPES)) {
@@ -180,8 +224,11 @@ export async function createBooking(type, companyId, body) {
       total_price: basePriceForPayment,
       feeding_instruction: body.feeding_instruction || "-",
       medical_instruction: body.medical_instruction || "-",
+      notes: body.notes || "-",
     };
   }
+
+  validateBookingInput(type, bookingRow, { creating: true });
 
   const { finalAmount } = computeFinalAmount(basePriceForPayment, addOnPrice, null);
 
@@ -212,10 +259,194 @@ export async function createBooking(type, companyId, body) {
     .single();
 
   if (bookingError) {
-    await supabase.from("payment").delete().eq("payment_id", payment.payment_id);
+    await supabase.from("payment").delete().eq("company_id", companyId).eq("payment_id", payment.payment_id);
     bookingError.status = 400;
     throw bookingError;
   }
 
   return { booking, payment };
+}
+
+function paymentPayloadForBooking(type, booking) {
+  let service;
+  let basePrice;
+  let addOnPrice = 0;
+  let addOns = "";
+
+  if (type === "grooming") {
+    service = booking.service_name;
+    basePrice = Number(booking.price) || 0;
+    addOnPrice = Number(booking.add_on_price) || 0;
+    addOns = booking.add_on && booking.add_on !== "-" ? `${booking.add_on} (+RM${addOnPrice})` : "";
+  } else if (type === "daycare") {
+    service = booking.package_type;
+    basePrice = Number(booking.price) || 0;
+  } else {
+    service = booking.room_type;
+    basePrice = Number(booking.total_price) || 0;
+  }
+
+  const { finalAmount } = computeFinalAmount(basePrice, addOnPrice, null);
+  return { service, base_price: basePrice, add_ons: addOns, final_amount: finalAmount };
+}
+
+function isAwaitingPayment(status) {
+  return status === "Pending" || status === "Unpaid";
+}
+
+function isUnsettledPayment(status) {
+  return isAwaitingPayment(status) || status === "Cancelled";
+}
+
+/** Updates a booking and keeps its pending payment pricing/service in sync. */
+export async function updateBooking(type, companyId, bookingId, body) {
+  const config = BOOKING_TYPES[type];
+  const { data: existing, error: findError } = await supabase
+    .from(config.table)
+    .select("*")
+    .eq("company_id", companyId)
+    .eq(config.idColumn, bookingId)
+    .single();
+  if (findError || !existing) {
+    const err = new Error("Booking not found");
+    err.status = 404;
+    throw err;
+  }
+
+  const payload = { ...body };
+  delete payload[config.idColumn];
+  delete payload.company_id;
+  delete payload[config.paymentIdColumn];
+  delete payload.created_date;
+  delete payload.created_time;
+
+  const next = { ...existing, ...payload };
+  if (type === "boarding") {
+    next.total_price = (Number(next.price_per_night) || 0) * nightsBetween(next.check_in_date, next.check_out_date);
+    payload.total_price = next.total_price;
+  }
+  validateBookingInput(type, next);
+
+  const { data: payment, error: paymentFindError } = await supabase
+    .from("payment")
+    .select("*")
+    .eq("company_id", companyId)
+    .eq("payment_id", existing[config.paymentIdColumn])
+    .single();
+  if (paymentFindError || !payment) {
+    const err = new Error("Linked payment not found");
+    err.status = 409;
+    throw err;
+  }
+  if (payload.booking_status === "Done" && payment.status !== "Paid") {
+    const err = new Error("Verify the linked payment before marking this booking Done.");
+    err.status = 409;
+    throw err;
+  }
+  if (payment.status === "Paid" && payload.booking_status && payload.booking_status !== "Done") {
+    const err = new Error("A paid booking must remain Done. Refund handling is required before changing its status.");
+    err.status = 409;
+    throw err;
+  }
+
+  const nextPayment = paymentPayloadForBooking(type, next);
+  const pricingChanged = ["service", "base_price", "add_ons", "final_amount"]
+    .some((key) => String(nextPayment[key] ?? "") !== String(payment[key] ?? ""));
+  if (!isUnsettledPayment(payment.status) && pricingChanged) {
+    const err = new Error("A completed or refunded booking's service or price cannot be changed.");
+    err.status = 409;
+    throw err;
+  }
+
+  const { data: updated, error: bookingError } = await supabase
+    .from(config.table)
+    .update(payload)
+    .eq("company_id", companyId)
+    .eq(config.idColumn, bookingId)
+    .select()
+    .single();
+  if (bookingError) {
+    bookingError.status = 400;
+    throw bookingError;
+  }
+
+  const paymentUpdate = isUnsettledPayment(payment.status) && pricingChanged ? { ...nextPayment } : {};
+  if (payload.booking_status === "Cancelled" && isAwaitingPayment(payment.status)) {
+    paymentUpdate.status = "Cancelled";
+  } else if (payment.status === "Cancelled" && payload.booking_status && payload.booking_status !== "Cancelled") {
+    paymentUpdate.status = "Unpaid";
+  }
+
+  if (Object.keys(paymentUpdate).length > 0) {
+    const { error: paymentError } = await supabase
+      .from("payment")
+      .update(paymentUpdate)
+      .eq("company_id", companyId)
+      .eq("payment_id", payment.payment_id);
+    if (paymentError) {
+      const rollback = { ...existing };
+      delete rollback[config.idColumn];
+      delete rollback.company_id;
+      await supabase.from(config.table).update(rollback).eq("company_id", companyId).eq(config.idColumn, bookingId);
+      paymentError.status = 400;
+      throw paymentError;
+    }
+  }
+
+  return updated;
+}
+
+/** Deletes an unpaid booking and its linked payment, with compensation on failure. */
+export async function deleteBooking(type, companyId, bookingId) {
+  const config = BOOKING_TYPES[type];
+  const { data: booking, error: findError } = await supabase
+    .from(config.table)
+    .select("*")
+    .eq("company_id", companyId)
+    .eq(config.idColumn, bookingId)
+    .single();
+  if (findError || !booking) {
+    const err = new Error("Booking not found");
+    err.status = 404;
+    throw err;
+  }
+
+  const paymentId = booking[config.paymentIdColumn];
+  const { data: payment, error: paymentFindError } = await supabase
+    .from("payment")
+    .select("*")
+    .eq("company_id", companyId)
+    .eq("payment_id", paymentId)
+    .single();
+  if (paymentFindError || !payment) {
+    const err = new Error("Linked payment not found");
+    err.status = 409;
+    throw err;
+  }
+  if (!isUnsettledPayment(payment.status)) {
+    const err = new Error("Completed or refunded payments cannot be deleted; retain them for audit history.");
+    err.status = 409;
+    throw err;
+  }
+
+  const { error: bookingError } = await supabase
+    .from(config.table)
+    .delete()
+    .eq("company_id", companyId)
+    .eq(config.idColumn, bookingId);
+  if (bookingError) {
+    bookingError.status = 400;
+    throw bookingError;
+  }
+
+  const { error: paymentError } = await supabase
+    .from("payment")
+    .delete()
+    .eq("company_id", companyId)
+    .eq("payment_id", paymentId);
+  if (paymentError) {
+    await supabase.from(config.table).insert(booking);
+    paymentError.status = 400;
+    throw paymentError;
+  }
 }

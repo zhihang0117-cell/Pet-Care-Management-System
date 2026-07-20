@@ -1,7 +1,7 @@
 import { Router } from "express";
 import { supabase } from "../supabaseClient.js";
 import { asyncHandler } from "../middleware/auth.js";
-import { BOOKING_TYPES, createBooking } from "../lib/bookingService.js";
+import { BOOKING_TYPES, createBooking, updateBooking, deleteBooking } from "../lib/bookingService.js";
 
 const SEARCHABLE = {
   grooming: ["service_name", "notes"],
@@ -81,18 +81,7 @@ bookingsRouter.post(
 bookingsRouter.patch(
   "/:type/:id",
   asyncHandler(async (req, res) => {
-    const { table, idColumn } = req.bookingConfig;
-    const payload = { ...req.body };
-    delete payload[idColumn];
-    delete payload.company_id;
-    const { data, error } = await supabase
-      .from(table)
-      .update(payload)
-      .eq("company_id", req.companyId)
-      .eq(idColumn, req.params.id)
-      .select()
-      .single();
-    if (error) return res.status(400).json({ error: error.message });
+    const data = await updateBooking(req.params.type, req.companyId, req.params.id, req.body);
     res.json(data);
   })
 );
@@ -100,9 +89,7 @@ bookingsRouter.patch(
 bookingsRouter.delete(
   "/:type/:id",
   asyncHandler(async (req, res) => {
-    const { table, idColumn } = req.bookingConfig;
-    const { error } = await supabase.from(table).delete().eq("company_id", req.companyId).eq(idColumn, req.params.id);
-    if (error) return res.status(400).json({ error: error.message });
+    await deleteBooking(req.params.type, req.companyId, req.params.id);
     res.status(204).end();
   })
 );

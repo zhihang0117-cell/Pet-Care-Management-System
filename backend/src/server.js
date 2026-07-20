@@ -7,6 +7,7 @@ import { requireAuthUser } from "./middleware/authUser.js";
 
 import { authRouter } from "./routes/auth.js";
 import { accountsRouter } from "./routes/accounts.js";
+import { companiesRouter } from "./routes/companies.js";
 import { customersRouter } from "./routes/customers.js";
 import { petsRouter } from "./routes/pets.js";
 import { staffRouter } from "./routes/staff.js";
@@ -24,7 +25,9 @@ const app = express();
 
 const allowedOrigins = (process.env.CORS_ORIGINS || "").split(",").map((s) => s.trim()).filter(Boolean);
 app.use(cors({ origin: allowedOrigins.length ? allowedOrigins : true }));
-app.use(express.json());
+// Business-logo uploads are sent as a base64 JSON payload. The frontend caps
+// the source file at 2 MB; 3 MB leaves room for base64 expansion and metadata.
+app.use(express.json({ limit: "3mb" }));
 
 app.get("/health", (req, res) => res.json({ ok: true }));
 
@@ -35,6 +38,7 @@ app.use("/api/auth", authRouter);
 // requireAuthUser verifies the Supabase JWT and resolves company_id/role
 // from accounts — see middleware/authUser.js and DEVELOPER_GUIDE.md §3.
 app.use("/api/accounts", requireAuthUser, accountsRouter);
+app.use("/api/companies", requireAuthUser, companiesRouter);
 app.use("/api/customers", requireAuthUser, customersRouter);
 app.use("/api/pets", requireAuthUser, petsRouter);
 app.use("/api/staff", requireAuthUser, staffRouter);

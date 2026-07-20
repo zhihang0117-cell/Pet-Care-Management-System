@@ -95,10 +95,12 @@
 
           <div class="form-group">
             <label>Business Logo</label>
-            <label class="logo-upload-label">
-              <img src="icon/upload.png" alt="" class="upload-icon">
+            <label class="logo-upload-label business-logo-uploader" for="cfg_logo">
+              <img id="businessLogoPreview" class="business-logo-preview hidden" alt="Business logo preview">
+              <img src="icon/upload.png" alt="" class="upload-icon" id="businessLogoUploadIcon">
               <p id="logoFileName">Click to upload logo (PNG, JPG — recommended 200×200 px)</p>
-              <input type="file" id="cfg_logo" accept="image/*" onchange="showFilename(this,'logoFileName')">
+              <small>PNG or JPG only · maximum 2 MB</small>
+              <input type="file" id="cfg_logo" accept=".png,.jpg,.jpeg,image/png,image/jpeg" onchange="handleBusinessLogoSelection(this)">
             </label>
           </div>
 
@@ -322,15 +324,15 @@
 
           <!-- Manager view: full account control -->
           <div id="accountsManagerView">
-            <p class="field-note">Everyone below has staff-portal access under <strong id="accountsBusinessName">this business</strong>. Add a new teammate or remove one that no longer needs access.</p>
+            <p class="field-note">Everyone below has staff-portal access under <strong id="accountsBusinessName">this business</strong>. Add teammates, change their role or access status, or remove accounts.</p>
 
             <div class="bk-table-wrap">
               <table class="bk-table">
                 <thead>
                   <tr>
-                    <th>Email</th>
+                    <th>Account</th>
                     <th>Role</th>
-                    <th>Source</th>
+                    <th>Status</th>
                     <th>Action</th>
                   </tr>
                 </thead>
@@ -346,7 +348,7 @@
               </div>
               <div class="form-group">
                 <label for="newAccountPassword">Temporary Password <span class="req">*</span></label>
-                <input type="text" id="newAccountPassword" placeholder="password123">
+                <input type="password" id="newAccountPassword" minlength="8" placeholder="At least 8 characters" autocomplete="new-password">
               </div>
               <div class="form-group">
                 <label for="newAccountRole">Role <span class="req">*</span></label>
@@ -387,7 +389,7 @@
     </div>
 
     <!-- Save action bar -->
-    <section class="bk-section" style="display:flex;align-items:center;gap:16px;flex-wrap:wrap;">
+    <section class="bk-section" id="settingsSaveBar" style="display:flex;align-items:center;gap:16px;flex-wrap:wrap;">
       <button class="btn btn-primary" type="button" onclick="saveBusinessSettings()">Save Changes</button>
       <span id="settingsSavedNote" style="font-size:0.85rem;font-weight:700;color:#059669;opacity:0;transition:opacity 0.3s ease;">✓ Settings saved</span>
     </section>
@@ -395,6 +397,9 @@
   </main>
 </div>
 
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js"></script>
+<script src="supabase-config.js"></script>
+<script src="api-client.js"></script>
 <script src="auth.js"></script>
 <script src="common.js"></script>
 </body>

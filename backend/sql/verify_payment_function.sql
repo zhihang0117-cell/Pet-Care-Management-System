@@ -9,19 +9,21 @@ alter table payment
 alter table payment
   add column if not exists verified_by_staff_id int references staff(staff_id);
 
--- 2. The atomic verification function.
---    p_payment_id      : payment.payment_id to verify
---    p_loyalty_id      : the loyaltymember.loyalty_id who this payment belongs to
---    p_coupon_id       : coupon.coupon_id if a voucher is being redeemed, else null
---    p_earn_rate       : points earned per RM1 of final_amount (backend passes this in
---                        from LOYALTY_EARN_RATE so it's configurable without touching SQL)
---    p_verified_by     : staff_id of whoever clicked "Verify"
+-- Remove the original five-argument version before installing the complete,
+-- company-scoped transaction below.
+drop function if exists verify_payment(int, int, int, numeric, int);
+
+-- 2. Atomic verification: amount, payment method, loyalty ledger, payment
+-- status and booking status all commit together or all roll back together.
 create or replace function verify_payment(
+  p_company_id int,
   p_payment_id int,
-  p_loyalty_id int,
+  p_loyalty_id int default null,
   p_coupon_id int default null,
   p_earn_rate numeric default 1,
-  p_verified_by int default null
+  p_verified_by int default null,
+  p_payment_method text default null,
+  p_final_amount numeric default null
 )
 returns jsonb
 language plpgsql
@@ -40,29 +42,46 @@ begin
   select * into v_payment
   from payment
   where payment_id = p_payment_id
+    and company_id = p_company_id
   for update;
 
   if not found then
     raise exception 'Payment % not found', p_payment_id using errcode = 'P0002';
   end if;
 
-  if v_payment.status = 'Paid' then
-    raise exception 'Payment % has already been verified', p_payment_id using errcode = 'P0001';
+  if v_payment.status not in ('Pending', 'Unpaid') then
+    raise exception 'Payment % cannot be verified from status %', p_payment_id, v_payment.status using errcode = 'P0001';
   end if;
 
-  -- Lock the member row so points can't be double-spent by a concurrent request.
-  select * into v_member
-  from loyaltymember
-  where loyalty_id = p_loyalty_id
-  for update;
+  if p_payment_method is null or p_payment_method not in ('Cash', 'Card', 'E-Wallet', 'Bank Transfer', 'Online') then
+    raise exception 'A valid payment method is required' using errcode = 'P0001';
+  end if;
 
-  if not found then
-    raise exception 'Loyalty member % not found', p_loyalty_id using errcode = 'P0002';
+  v_payment.final_amount := coalesce(p_final_amount, v_payment.final_amount);
+
+  -- A non-member can pay normally. Loyalty locking/earning only applies when
+  -- the booking's customer has a loyalty row.
+  if p_loyalty_id is not null then
+    select * into v_member
+    from loyaltymember
+    where loyalty_id = p_loyalty_id
+      and company_id = p_company_id
+    for update;
+
+    if not found then
+      raise exception 'Loyalty member % not found', p_loyalty_id using errcode = 'P0002';
+    end if;
   end if;
 
   -- Validate + resolve the voucher, if one is being redeemed at verification time.
   if p_coupon_id is not null then
-    select * into v_coupon from coupon where coupon_id = p_coupon_id;
+    if p_loyalty_id is null then
+      raise exception 'A loyalty member is required to redeem a voucher' using errcode = 'P0001';
+    end if;
+
+    select * into v_coupon from coupon
+    where coupon_id = p_coupon_id
+      and company_id = p_company_id;
 
     if not found then
       raise exception 'Coupon % not found', p_coupon_id using errcode = 'P0002';
@@ -73,40 +92,68 @@ begin
         v_member.points_balance, v_coupon.points_required using errcode = 'P0001';
     end if;
 
+    if v_coupon.expiry_date is not null and v_coupon.expiry_date < current_date then
+      raise exception 'Coupon % has expired', p_coupon_id using errcode = 'P0001';
+    end if;
+
     v_spend := v_coupon.points_required;
   end if;
 
-  -- Points earned from this payment (based on the already-discounted final_amount).
-  v_earn := round(v_payment.final_amount * p_earn_rate);
+  if p_loyalty_id is not null then
+    v_earn := round(v_payment.final_amount * p_earn_rate);
+    v_new_balance := v_member.points_balance - v_spend + v_earn;
 
-  v_new_balance := v_member.points_balance - v_spend + v_earn;
+    v_new_tier := case
+      when v_new_balance >= 1200 then 'Platinum'
+      when v_new_balance >= 700  then 'Gold'
+      when v_new_balance >= 300  then 'Silver'
+      else 'Bronze'
+    end;
 
-  v_new_tier := case
-    when v_new_balance >= 1200 then 'Platinum'
-    when v_new_balance >= 700  then 'Gold'
-    when v_new_balance >= 300  then 'Silver'
-    else 'Bronze'
-  end;
+    insert into redemption (
+      company_id, loyalty_id, loyalty_earn, loyalty_spend, coupon_id,
+      status, create_date, create_time, approved_date, approved_time
+    )
+    values (
+      v_payment.company_id, p_loyalty_id, v_earn, v_spend, p_coupon_id,
+      'Approved', current_date, localtime, current_date, localtime
+    )
+    returning redemption_id into v_redemption_id;
 
-  -- Record the loyalty transaction.
-  insert into redemption (company_id, loyalty_id, loyalty_earn, loyalty_spend, coupon_id)
-  values (v_payment.company_id, p_loyalty_id, v_earn, v_spend, p_coupon_id)
-  returning redemption_id into v_redemption_id;
-
-  -- Apply the point change + possible tier change.
-  update loyaltymember
-  set points_balance  = v_new_balance,
-      tier            = v_new_tier,
-      redemption_made = redemption_made + case when v_spend > 0 then 1 else 0 end
-  where loyalty_id = p_loyalty_id;
+    update loyaltymember
+    set points_balance  = v_new_balance,
+        tier            = v_new_tier,
+        redemption_made = redemption_made + case when v_spend > 0 then 1 else 0 end
+    where loyalty_id = p_loyalty_id
+      and company_id = p_company_id;
+  else
+    v_earn := 0;
+    v_new_balance := null;
+    v_new_tier := null;
+  end if;
 
   -- Mark the payment as paid and link it to the redemption record we just made.
   update payment
   set status             = 'Paid',
       paid_at             = now(),
       redemption_id       = v_redemption_id,
-      verified_by_staff_id = p_verified_by
-  where payment_id = p_payment_id;
+      verified_by_staff_id = p_verified_by,
+      payment_method       = case
+        when v_payment.final_amount = 0 and p_coupon_id is not null then 'Loyalty Redemption'
+        else p_payment_method
+      end,
+      final_amount         = v_payment.final_amount
+  where payment_id = p_payment_id
+    and company_id = p_company_id;
+
+  -- Exactly one of these tables should contain the payment_id. Keeping all
+  -- three updates inside this function makes booking completion transactional.
+  update grooming_booking set booking_status = 'Done'
+  where company_id = p_company_id and payment_id = p_payment_id;
+  update daycare_booking set booking_status = 'Done'
+  where company_id = p_company_id and payment_id = p_payment_id;
+  update boarding_booking set booking_status = 'Done'
+  where company_id = p_company_id and payment_id = p_payment_id;
 
   return jsonb_build_object(
     'payment_id', p_payment_id,
@@ -121,3 +168,8 @@ begin
   );
 end;
 $$;
+
+revoke all on function verify_payment(int, int, int, int, numeric, int, text, numeric)
+  from public, anon, authenticated;
+grant execute on function verify_payment(int, int, int, int, numeric, int, text, numeric)
+  to service_role;

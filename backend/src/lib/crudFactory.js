@@ -18,7 +18,17 @@ const RESERVED_QUERY_KEYS = new Set(["search", "limit", "offset", "order", "asce
  *   GET /api/pets?customer_id=3
  *   GET /api/bookings/grooming?booking_status=pending
  */
-export function makeCrudRouter({ table, idColumn, searchableColumns = [], defaultOrder }) {
+export function makeCrudRouter({
+  table,
+  idColumn,
+  searchableColumns = [],
+  defaultOrder,
+  createMiddleware = [],
+  updateMiddleware = [],
+  deleteMiddleware = [],
+  createPayload,
+  updatePayload,
+}) {
   const router = Router();
 
   router.get(
@@ -72,8 +82,10 @@ export function makeCrudRouter({ table, idColumn, searchableColumns = [], defaul
 
   router.post(
     "/",
+    ...createMiddleware,
     asyncHandler(async (req, res) => {
-      const payload = { ...req.body, company_id: req.companyId };
+      const requestedPayload = createPayload ? await createPayload(req) : req.body;
+      const payload = { ...requestedPayload, company_id: req.companyId };
       delete payload[idColumn]; // let the DB assign the primary key
       const { data, error } = await supabase.from(table).insert(payload).select().single();
       if (error) return res.status(400).json({ error: error.message });
@@ -83,8 +95,10 @@ export function makeCrudRouter({ table, idColumn, searchableColumns = [], defaul
 
   router.patch(
     "/:id",
+    ...updateMiddleware,
     asyncHandler(async (req, res) => {
-      const payload = { ...req.body };
+      const requestedPayload = updatePayload ? await updatePayload(req) : req.body;
+      const payload = { ...requestedPayload };
       delete payload[idColumn];
       delete payload.company_id; // never let a client move a row to another tenant
       const { data, error } = await supabase
@@ -101,6 +115,7 @@ export function makeCrudRouter({ table, idColumn, searchableColumns = [], defaul
 
   router.delete(
     "/:id",
+    ...deleteMiddleware,
     asyncHandler(async (req, res) => {
       const { error } = await supabase
         .from(table)

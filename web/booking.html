@@ -68,11 +68,19 @@
         <h1 class="bk-page-title" style="margin-bottom:0;">Booking Dashboard</h1>
         <span class="overview-chip live-clock" id="liveDateTime"></span>
       </div>
-      <div class="bk-tab-group" id="serviceFilterTabs">
-        <button class="tab-btn active" data-filter="all">All</button>
-        <button class="tab-btn" data-filter="grooming"><img src="icon/grooming-scissors.png" alt="" class="tab-icon">Grooming</button>
-        <button class="tab-btn" data-filter="boarding"><img src="icon/boarding.png" alt="" class="tab-icon">Boarding</button>
-        <button class="tab-btn" data-filter="daycare"><img src="icon/dog-play.png" alt="" class="tab-icon">Daycare</button>
+      <div class="service-date-toolbar">
+        <div class="bk-tab-group" id="serviceFilterTabs">
+          <button class="tab-btn active" data-filter="all">All</button>
+          <button class="tab-btn" data-filter="grooming"><img src="icon/grooming-scissors.png" alt="" class="tab-icon">Grooming</button>
+          <button class="tab-btn" data-filter="boarding"><img src="icon/boarding.png" alt="" class="tab-icon">Boarding</button>
+          <button class="tab-btn" data-filter="daycare"><img src="icon/dog-play.png" alt="" class="tab-icon">Daycare</button>
+        </div>
+        <div class="page-date-filter" aria-label="Booking date filter">
+          <button class="btn btn-secondary" id="bookingFilterPrevBtn" type="button" aria-label="Previous day">←</button>
+          <button class="btn btn-primary" id="bookingFilterTodayBtn" type="button">Today</button>
+          <button class="btn btn-secondary" id="bookingFilterNextBtn" type="button" aria-label="Next day">→</button>
+          <span class="overview-chip page-date-label" id="bookingFilterLabel"></span>
+        </div>
       </div>
 
       <div class="bk-view-header" style="margin-top:20px;padding-top:20px;border-top:1px solid var(--accent-sand);">
@@ -104,10 +112,6 @@
           <button class="tab-btn" data-view="listing">Listing</button>
         </div>
         <div class="bk-view-actions" id="kanbanQuickActions">
-          <div class="bk-date-toggle">
-            <button class="tab-btn active" id="todayBtn">Today</button>
-            <button class="tab-btn"        id="allBtn">All</button>
-          </div>
           <select class="bk-select" id="kanbanStaffFilter" style="height:40px;font-size:0.85rem;">
             <option value="all">All Staff</option>
           </select>
@@ -161,9 +165,9 @@
           <table class="bk-table">
             <thead>
               <tr>
-                <th>Date</th><th>Customer</th><th>Pet</th><th>Service</th><th>Staff</th>
-                <th>Time</th><th>Duration</th><th>Status</th>
-                <th>Amount</th><th>Room</th><th></th>
+                <th>Date</th><th>Owner</th><th>Pet</th><th>Service</th><th>Staff</th>
+                <th>Time</th><th>Status</th>
+                <th>Amount</th><th></th>
               </tr>
             </thead>
             <tbody id="listingTableBody"></tbody>
@@ -183,18 +187,13 @@
       <input type="hidden" id="bookingId" />
       <input type="hidden" id="selectedPetId" />
       <div class="form-grid-2">
-        <div class="form-group full" style="position:relative;">
-          <label>Find Pet / Customer</label>
-          <input type="text" id="petSearchInput" placeholder="Type a pet or customer name…" autocomplete="off" />
-          <div id="petSearchResults" class="bk-search-results hidden" style="position:absolute;z-index:20;background:var(--surface-white,#fff);border:1px solid var(--accent-sand);border-radius:8px;max-height:220px;overflow-y:auto;width:100%;box-shadow:0 6px 16px rgba(0,0,0,0.08);"></div>
+        <div class="form-group full">
+          <label>Pet</label>
+          <select id="bookingPetId" required></select>
         </div>
         <div class="form-group">
-          <label>Customer Name</label>
-          <input type="text" id="customerName" readonly required />
-        </div>
-        <div class="form-group">
-          <label>Pet Name</label>
-          <input type="text" id="petName" readonly required />
+          <label>Owner</label>
+          <input type="text" id="bookingOwnerName" readonly />
         </div>
         <div class="form-group">
           <label>Service Type</label>
@@ -205,7 +204,7 @@
           </select>
         </div>
         <div class="form-group">
-          <label>Staff Name</label>
+          <label>Staff</label>
           <select id="staffName" required></select>
         </div>
         <div class="form-group">
@@ -219,99 +218,85 @@
           </select>
         </div>
 
-        <!-- Shared date (grooming + daycare use booking_date) -->
-        <div class="form-group date-field">
-          <label>Date</label>
+        <div class="form-group grooming-field hidden">
+          <label>Service Name</label>
+          <input type="text" id="serviceName" placeholder="e.g. Full Grooming" />
+        </div>
+        <div class="form-group daycare-field hidden">
+          <label>Package Type</label>
+          <input type="text" id="packageType" placeholder="e.g. Full-Day Daycare" />
+        </div>
+        <div class="form-group boarding-field hidden">
+          <label>Room Type</label>
+          <input type="text" id="roomType" placeholder="e.g. Standard Boarding" />
+        </div>
+
+        <div class="form-group gd-field">
+          <label>Price (RM)</label>
+          <input type="number" id="price" min="0" step="0.01" />
+        </div>
+        <div class="form-group boarding-field hidden">
+          <label>Price per Night (RM)</label>
+          <input type="number" id="pricePerNight" min="0" step="0.01" />
+        </div>
+
+        <div class="form-group grooming-field hidden">
+          <label>Add-on (optional)</label>
+          <input type="text" id="addOnName" placeholder="e.g. Teeth cleaning" />
+        </div>
+        <div class="form-group grooming-field hidden">
+          <label>Add-on Price (RM)</label>
+          <input type="number" id="addOnPrice" min="0" step="0.01" />
+        </div>
+
+        <div class="form-group gd-field">
+          <label>Booking Date</label>
           <input type="date" id="bookingDate" />
         </div>
-
-        <!-- Grooming-only -->
-        <div class="form-group grooming-only hidden">
-          <label>Time</label>
+        <div class="form-group grooming-field hidden">
+          <label>Booking Time</label>
           <input type="time" id="bookingTime" />
         </div>
-        <div class="form-group grooming-only hidden">
-          <label>Service Name</label>
-          <input type="text" id="groomingServiceName" placeholder="e.g. Bathing" />
-        </div>
-        <div class="form-group grooming-only hidden">
-          <label>Price (RM)</label>
-          <input type="number" id="groomingPrice" min="0" step="0.01" />
-        </div>
-        <div class="form-group grooming-only hidden">
-          <label>Add-on (optional)</label>
-          <input type="text" id="groomingAddOn" placeholder="e.g. Nail Clipping" />
-        </div>
-        <div class="form-group grooming-only hidden">
-          <label>Add-on Price (RM)</label>
-          <input type="number" id="groomingAddOnPrice" min="0" step="0.01" />
-        </div>
 
-        <!-- Daycare-only -->
-        <div class="form-group daycare-only hidden">
-          <label>Check-in Time</label>
-          <input type="time" id="daycareCheckInTime" />
-        </div>
-        <div class="form-group daycare-only hidden">
-          <label>Check-out Time</label>
-          <input type="time" id="daycareCheckOutTime" />
-        </div>
-        <div class="form-group daycare-only hidden">
-          <label>Package Type</label>
-          <input type="text" id="daycarePackageType" placeholder="e.g. Half-Day Daycare" />
-        </div>
-        <div class="form-group daycare-only hidden">
-          <label>Price (RM)</label>
-          <input type="number" id="daycarePrice" min="0" step="0.01" />
-        </div>
-
-        <!-- Boarding-only -->
-        <div class="form-group boarding-only hidden">
+        <div class="form-group boarding-field hidden">
           <label>Check-in Date</label>
           <input type="date" id="checkInDate" />
         </div>
-        <div class="form-group boarding-only hidden">
-          <label>Check-in Time</label>
-          <input type="time" id="checkInTime" />
-        </div>
-        <div class="form-group boarding-only hidden">
+        <div class="form-group boarding-field hidden">
           <label>Check-out Date</label>
           <input type="date" id="checkOutDate" />
         </div>
-        <div class="form-group boarding-only hidden">
+        <div class="form-group bd-field hidden">
+          <label>Check-in Time</label>
+          <input type="time" id="checkInTime" />
+        </div>
+        <div class="form-group bd-field hidden">
           <label>Check-out Time</label>
           <input type="time" id="checkOutTime" />
         </div>
-        <div class="form-group boarding-only hidden">
-          <label>Room Type</label>
-          <input type="text" id="boardingRoomType" placeholder="e.g. Mars Room" />
-        </div>
-        <div class="form-group boarding-only hidden">
-          <label>Price per Night (RM)</label>
-          <input type="number" id="boardingPricePerNight" min="0" step="0.01" />
-        </div>
-        <div class="form-group boarding-only hidden">
-          <label>Feeding Instruction</label>
-          <input type="text" id="boardingFeeding" placeholder="e.g. Standard kibbles" />
-        </div>
-        <div class="form-group boarding-only hidden">
-          <label>Medical Instruction</label>
-          <input type="text" id="boardingMedical" placeholder="e.g. -" />
-        </div>
 
-        <div class="form-group">
-          <label>Amount (RM)</label>
-          <input type="number" id="amount" min="0" step="0.01" readonly />
-        </div>
-        <div class="form-group full">
+        <div class="form-group full gb-field">
           <label>Notes</label>
-          <textarea id="specialNote" rows="3"></textarea>
+          <textarea id="notes" rows="2"></textarea>
+        </div>
+        <div class="form-group full daycare-field hidden">
+          <label>Special Instruction</label>
+          <textarea id="specialInstruction" rows="2"></textarea>
+        </div>
+        <div class="form-group full boarding-field hidden">
+          <label>Feeding Instruction</label>
+          <textarea id="feedingInstruction" rows="2"></textarea>
+        </div>
+        <div class="form-group full boarding-field hidden">
+          <label>Medical Instruction</label>
+          <textarea id="medicalInstruction" rows="2"></textarea>
         </div>
       </div>
       <div class="bk-modal-actions">
         <button type="submit"  class="btn btn-primary"><img src="icon/download.png" alt="" class="btn-icon solid-btn-icon">Save Booking</button>
-        <button type="button"  class="btn btn-secondary" id="doneServiceBtn"><img src="icon/confirm-circle.png" alt="" class="btn-icon">Done Service</button>
+        <button type="button"  class="btn btn-secondary" id="doneServiceBtn"><img src="icon/payment-card.png" alt="" class="btn-icon">Open Payment</button>
         <button type="button"  class="btn btn-secondary bk-danger-btn" id="cancelBookingBtn"><img src="icon/close-circle.png" alt="" class="btn-icon">Cancel Booking</button>
+        <button type="button"  class="btn btn-secondary bk-danger-btn" id="deleteBookingBtn"><img src="icon/close-circle.png" alt="" class="btn-icon">Delete</button>
         <button type="button"  class="btn btn-secondary" id="openPetProfileBtn"><img src="icon/paw-print.png" alt="" class="btn-icon">Pet Profile</button>
         <button type="button"  class="btn btn-secondary" id="closeModalBtn"><img src="icon/close-circle.png" alt="" class="btn-icon">Close</button>
       </div>

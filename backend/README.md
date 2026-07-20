@@ -16,13 +16,18 @@ LLM / agent  ────────────────┘
 
 ## 1. One-time Supabase setup
 
-Open your Supabase project → SQL Editor → paste and run:
-`sql/verify_payment_function.sql`
+Open your Supabase project → SQL Editor and run these files in order:
 
-This adds two small columns to `payment_history` (`paid_at`,
-`verified_by_staff_id`) and one Postgres function, `verify_payment(...)`,
-which does the entire "deduct points, log the redemption, mark paid" step
-as a single atomic transaction. It doesn't touch or delete any existing data.
+1. `sql/company_settings_migration.sql`
+2. `sql/verify_payment_function.sql`
+3. `sql/enquiry_refund_logo_migration.sql`
+4. `sql/crud_consistency_functions.sql`
+5. `sql/rls_policies.sql`
+6. `sql/register_company_function.sql`
+
+These migrations add company settings/logo storage, enquiry reply audit data,
+payment verification/refund audit data, and the atomic payment functions. They
+do not delete any existing rows.
 
 ## 2. Configure and run the backend
 
@@ -67,7 +72,7 @@ pooling; not worth it at this scale.)
 - `src/lib/pricing.js` — `computeFinalAmount()` (base + add-on − voucher),
   `assertCanRedeem()` (points check), `pointsEarnedFor()`.
 - `src/lib/bookingService.js` — `createBooking()` auto-computes the price
-  when a booking is made and creates the linked `payment_history` row.
+  when a booking is made and creates the linked `payment` row.
 - `src/lib/paymentService.js` — `verifyPayment()` is the "Verify Payment &
   Redemption" action: recomputes the total with any chosen voucher, then
   calls the atomic SQL function, which deducts/earns points, writes the
@@ -80,22 +85,15 @@ pooling; not worth it at this scale.)
   `/api/dashboard/revenue?period=today|week|month`.
 - Every list endpoint (`/api/bookings/:type`, `/api/payments`, etc.) accepts
   arbitrary `?column=value` filters, e.g. `?booking_status=Pending`.
-- **Read `dashboard.js`'s comment about date filtering** — your dates are
-  stored as non-zero-padded text (`"2026/5/1"`), which sorts incorrectly as a
-  string for range queries. The revenue endpoint works around this by
-  comparing real `Date` objects in Node; keep that in mind if you add more
-  date-range queries directly in SQL/Supabase's dashboard.
+- Booking/payment dates use ISO `YYYY-MM-DD` values, so range comparisons
+  remain correctly ordered in both JavaScript and Postgres.
 
 **③ Linking Supabase to your HTML pages:**
 - `frontend-integration/api-client.js` — a small `fetch` wrapper (`api.get`,
   `api.post`, etc. plus convenience methods) to drop into every page.
-- `frontend-integration/payment-page.js` — a complete, worked example
-  rewiring `payment.html`'s pending/history tables and the verify button to
-  real data. Use this as the template for the other pages (booking.html,
-  loyalty.html, staff.html, profile.html, dashboard.html) — same pattern:
-  replace the mock-array reads in `common.js` with `api.get(...)` calls.
-  I can do that conversion for the remaining pages next if you want it —
-  it's the same recipe repeated per page.
+- `web/api-client.js` and `web/common.js` wire the booking, daily overview,
+  CRM, loyalty, payment, enquiry, staff, settings, and analytical dashboards
+  to the authenticated API.
 
 **④ CRUD for an LLM to update the database:**
 - `src/llm/tools.js` — tool schema (Anthropic/OpenAI function-calling shaped)
@@ -149,25 +147,24 @@ to that token's `company_id` — you don't need to pass a company id yourself.
 |---|---|
 | Auth | `POST /api/auth/register-company` (public) |
 | Accounts (team) | `GET /api/accounts`, `POST /api/accounts` (manager), `PATCH/DELETE /api/accounts/:id` (manager) |
+| Company settings | `GET/PATCH /api/companies/me`, `POST /api/companies/me/logo` (manager) |
 | Customers | `GET/POST /api/customers`, `GET/PATCH/DELETE /api/customers/:id` |
 | Pets | `GET/POST /api/pets`, `GET/PATCH/DELETE /api/pets/:id` |
 | Staff | `GET/POST /api/staff`, `GET/PATCH/DELETE /api/staff/:id` |
 | Coupons | `GET/POST /api/coupons`, `GET/PATCH/DELETE /api/coupons/:id` |
-| Chat messages | `GET/POST /api/chat-messages` |
+| Chat messages | `GET/POST /api/chat-messages`, `GET/PATCH/DELETE /api/chat-messages/:id` (delete is manager-only) |
 | Leave requests | `GET/POST /api/leave-requests`, `POST /api/leave-requests/:id/decision` |
 | Member info | `GET /api/member-info`, `PATCH /api/member-info/:id/manual-adjustment` |
 | Redemption ledger | `GET /api/redemptions` (read-only) |
 | Bookings | `GET/POST /api/bookings/:type`, `GET/PATCH/DELETE /api/bookings/:type/:id` (`:type` = grooming/daycare/boarding) |
-| Payments | `GET /api/payments`, `GET /api/payments/:id`, `POST /api/payments/:id/quote-voucher`, `POST /api/payments/:id/verify` |
+| Payments | `GET /api/payments`, `GET /api/payments/:id`, `POST /api/payments/:id/quote-voucher`, `POST /api/payments/:id/verify`, `POST /api/payments/:id/refund` (manager) |
 | Dashboard | `GET /api/dashboard/summary`, `GET /api/dashboard/revenue?period=` |
 | LLM tools | `GET /api/llm/tools-schema`, `POST /api/llm/execute` (needs `x-llm-api-key`) |
 
 ## Known gaps to come back to
 
-- **Run the SQL files in order**: `verify_payment_function.sql`, then
-  `rls_policies.sql`, then `register_company_function.sql` (order matters —
-  the latter two both reference `current_company_id()`/tables the earlier
-  ones set up).
-- **Customer name on payment rows**: `payment_history` has no direct
+- **Run the SQL files in the one-time setup order above** before using the
+  matching CRUD buttons.
+- **Customer name on payment rows**: `payment` has no direct
   `customer_id`, only reachable via booking → pet → customer. Fine at small
   scale (see the note in `payment-page.js`); consider denormalizing later.

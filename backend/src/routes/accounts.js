@@ -14,13 +14,14 @@ accountsRouter.get(
   asyncHandler(async (req, res) => {
     const { data: company, error } = await supabase
       .from("companies")
-      .select("company_id, company_name, country, city, logo_path")
+      .select("company_id, company_name, country, city, logo_path, settings_json")
       .eq("company_id", req.companyId)
       .single();
     if (error) return res.status(400).json({ error: error.message });
 
     res.json({
       account_id: req.accountId,
+      email: req.authUser?.email || null,
       role: req.accountRole,
       company_id: req.companyId,
       company,
@@ -38,7 +39,11 @@ accountsRouter.get(
       .eq("company_id", req.companyId)
       .order("account_id", { ascending: true });
     if (error) return res.status(400).json({ error: error.message });
-    res.json(data);
+    const accounts = await Promise.all((data || []).map(async account => {
+      const { data: userData } = await supabase.auth.admin.getUserById(account.auth_user_id);
+      return { ...account, email: userData?.user?.email || null };
+    }));
+    res.json(accounts);
   })
 );
 
@@ -54,6 +59,9 @@ accountsRouter.post(
     const { email, password, role } = req.body;
     if (!email || !password || !role) {
       return res.status(400).json({ error: "email, password, and role are required." });
+    }
+    if (String(password).length < 8) {
+      return res.status(400).json({ error: "password must be at least 8 characters." });
     }
     if (!["manager", "staff"].includes(role)) {
       return res.status(400).json({ error: "role must be 'manager' or 'staff'." });
@@ -91,28 +99,41 @@ accountsRouter.patch(
     if (role) payload.role = role;
     if (account_status) payload.account_status = account_status;
 
+    if (payload.role && !["manager", "staff"].includes(payload.role)) {
+      return res.status(400).json({ error: "role must be 'manager' or 'staff'." });
+    }
+    if (payload.account_status && !["active", "inactive"].includes(payload.account_status)) {
+      return res.status(400).json({ error: "account_status must be 'active' or 'inactive'." });
+    }
+
     if (payload.role === undefined && payload.account_status === undefined) {
       return res.status(400).json({ error: "Nothing to update." });
     }
 
-    // Guard: don't let the last manager demote themselves (or be demoted).
-    if (payload.role === "staff") {
-      const { data: target } = await supabase
-        .from("accounts")
-        .select("role")
-        .eq("company_id", req.companyId)
-        .eq("account_id", req.params.accountId)
-        .single();
-      if (target?.role === "manager") {
+    const { data: target } = await supabase
+      .from("accounts")
+      .select("account_id, role, account_status")
+      .eq("company_id", req.companyId)
+      .eq("account_id", req.params.accountId)
+      .maybeSingle();
+    if (!target) return res.status(404).json({ error: "Account not found." });
+    if (Number(target.account_id) === Number(req.accountId) && payload.account_status === "inactive") {
+      return res.status(400).json({ error: "You cannot deactivate the account currently signed in." });
+    }
+
+    // Guard: a company must always retain at least one active manager.
+    const removesActiveManager = target.role === "manager" && target.account_status === "active"
+      && (payload.role === "staff" || payload.account_status === "inactive");
+    if (removesActiveManager) {
         const { count } = await supabase
           .from("accounts")
           .select("*", { count: "exact", head: true })
           .eq("company_id", req.companyId)
-          .eq("role", "manager");
+          .eq("role", "manager")
+          .eq("account_status", "active");
         if ((count || 0) <= 1) {
-          return res.status(400).json({ error: "Can't demote the only manager account for this company." });
+          return res.status(400).json({ error: "The company must keep at least one active manager account." });
         }
-      }
     }
 
     const { data, error } = await supabase
@@ -139,6 +160,9 @@ accountsRouter.delete(
       .eq("account_id", req.params.accountId)
       .single();
     if (findError || !target) return res.status(404).json({ error: "Account not found." });
+    if (Number(target.account_id) === Number(req.accountId)) {
+      return res.status(400).json({ error: "You cannot remove the account currently signed in." });
+    }
 
     if (target.role === "manager") {
       const { count } = await supabase
@@ -151,13 +175,20 @@ accountsRouter.delete(
       }
     }
 
-    await supabase.auth.admin.deleteUser(target.auth_user_id);
-    const { error } = await supabase
+    const { data: deletedAccount, error } = await supabase
       .from("accounts")
       .delete()
       .eq("company_id", req.companyId)
-      .eq("account_id", req.params.accountId);
+      .eq("account_id", req.params.accountId)
+      .select()
+      .single();
     if (error) return res.status(400).json({ error: error.message });
+
+    const { error: authDeleteError } = await supabase.auth.admin.deleteUser(target.auth_user_id);
+    if (authDeleteError) {
+      await supabase.from("accounts").insert(deletedAccount);
+      return res.status(400).json({ error: `Account removal was rolled back: ${authDeleteError.message}` });
+    }
     res.status(204).end();
   })
 );

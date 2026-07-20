@@ -41,18 +41,65 @@ async function apiRequest(path, { method = "GET", body } = {}) {
   return res.json();
 }
 
+// register-company is the one endpoint callable with no session yet (see
+// backend/src/routes/auth.js) — it can't go through apiRequest() above,
+// which always attaches a Supabase bearer token.
+async function registerCompany(payload) {
+  const res = await fetch(`${API_BASE_URL}/auth/register-company`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    throw new Error(data.error || `Registration failed (${res.status})`);
+  }
+  return data;
+}
+
+async function fileToBase64(file) {
+  const dataUrl = await new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result || ""));
+    reader.onerror = () => reject(new Error("Could not read the selected file."));
+    reader.readAsDataURL(file);
+  });
+  return dataUrl.split(",")[1] || "";
+}
+
+async function uploadCompanyLogo(file) {
+  if (!file || !["image/png", "image/jpeg"].includes(file.type)) {
+    throw new Error("Business logo must be a PNG or JPG file.");
+  }
+  if (file.size > 2 * 1024 * 1024) {
+    throw new Error("Business logo must be 2 MB or smaller.");
+  }
+  return apiRequest("/companies/me/logo", {
+    method: "POST",
+    body: {
+      file_name: file.name,
+      content_type: file.type,
+      data_base64: await fileToBase64(file),
+    },
+  });
+}
+
 const api = {
   get: (path) => apiRequest(path),
   post: (path, body) => apiRequest(path, { method: "POST", body }),
   patch: (path, body) => apiRequest(path, { method: "PATCH", body }),
   del: (path) => apiRequest(path, { method: "DELETE" }),
+  registerCompany,
+  uploadCompanyLogo,
 
   // Convenience helpers matching the endpoints you'll use most:
   listPayments: (filters = {}) => api.get(`/payments?${new URLSearchParams(filters)}`),
   getPaymentDetail: (paymentId) => api.get(`/payments/${paymentId}`),
   quoteVoucher: (paymentId, couponId) => api.post(`/payments/${paymentId}/quote-voucher`, { coupon_id: couponId }),
-  verifyPayment: (paymentId, { couponId, staffId } = {}) =>
-    api.post(`/payments/${paymentId}/verify`, { coupon_id: couponId, staff_id: staffId }),
+  verifyPayment: (paymentId, { couponId, staffId, paymentMethod } = {}) =>
+    api.post(`/payments/${paymentId}/verify`, { coupon_id: couponId, staff_id: staffId, payment_method: paymentMethod }),
+  refundPayment: (paymentId, reason) => api.post(`/payments/${paymentId}/refund`, { reason }),
 
   listBookings: (type, filters = {}) => api.get(`/bookings/${type}?${new URLSearchParams(filters)}`),
   getBooking: (type, id) => api.get(`/bookings/${type}/${id}`),

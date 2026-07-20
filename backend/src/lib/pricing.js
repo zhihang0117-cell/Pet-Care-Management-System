@@ -68,6 +68,13 @@ export function assertCanRedeem(member, coupon) {
     err.status = 404;
     throw err;
   }
+  const expiryDate = String(coupon.expiry_date || "").slice(0, 10);
+  const today = new Date().toISOString().slice(0, 10);
+  if (expiryDate && expiryDate < today) {
+    const err = new Error("This voucher has expired.");
+    err.status = 400;
+    throw err;
+  }
   if (member.points_balance < coupon.points_required) {
     const err = new Error(
       `Not enough points. This voucher needs ${coupon.points_required} points, ` +

@@ -82,6 +82,12 @@
           style="flex:1;min-width:220px;max-width:none;border-radius:var(--radius-small);"
           placeholder="Search member name, phone number, or loyalty ID…"
         />
+        <div class="page-date-filter" aria-label="Loyalty activity date filter">
+          <button class="btn btn-secondary" id="loyaltyDatePrevBtn" type="button" aria-label="Previous day">←</button>
+          <button class="btn btn-primary" id="loyaltyDateTodayBtn" type="button">Today</button>
+          <button class="btn btn-secondary" id="loyaltyDateNextBtn" type="button" aria-label="Next day">→</button>
+          <span class="overview-chip page-date-label" id="loyaltyDateLabel"></span>
+        </div>
       </div>
     </section>
 
@@ -123,7 +129,7 @@
         <div class="metric-card">
           <h3>Points Redeemed</h3>
           <p id="loyaltyPointsRedeemed">0</p>
-          <small style="font-size:0.78rem;color:var(--text-muted);">Total points redeemed in range</small>
+          <small style="font-size:0.78rem;color:var(--text-muted);">Points redeemed on selected date</small>
         </div>
       </div>
     </section>
@@ -156,6 +162,7 @@
           <tbody id="loyaltyPendingBody"></tbody>
         </table>
       </div>
+      <div class="table-pagination" id="loyaltyPendingPagination"></div>
     </section>
 
     <!-- Member List -->
@@ -177,6 +184,7 @@
           <tbody id="loyaltyMemberBody"></tbody>
         </table>
       </div>
+      <div class="table-pagination" id="loyaltyMembersPagination"></div>
     </section>
 
     <!-- Point & Redemption Rules -->
