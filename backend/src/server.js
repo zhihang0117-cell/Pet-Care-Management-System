@@ -1,3 +1,11 @@
+import path from "path";
+import { fileURLToPath } from "url";
+import "dotenv/config";
+import express from "express";
+import cors from "cors";
+import path from "path";
+import { fileURLToPath } from "url";
+
 import "dotenv/config";
 import express from "express";
 import cors from "cors";
@@ -23,6 +31,12 @@ import { llmRouter } from "./routes/llm.js";
 
 const app = express();
 
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
+// web 文件夹的位置
+const webPath = path.join(__dirname, "../../web");
+
 const allowedOrigins = (process.env.CORS_ORIGINS || "").split(",").map((s) => s.trim()).filter(Boolean);
 app.use(cors({ origin: allowedOrigins.length ? allowedOrigins : true }));
 // Business-logo uploads are sent as a base64 JSON payload. The frontend caps
@@ -30,6 +44,9 @@ app.use(cors({ origin: allowedOrigins.length ? allowedOrigins : true }));
 app.use(express.json({ limit: "3mb" }));
 
 app.get("/health", (req, res) => res.json({ ok: true }));
+
+// 托管 web 文件夹中的 HTML、CSS、JS、图片
+app.use(express.static(webPath));
 
 // --- Public: no session yet (this IS how a session/company gets created) ---
 app.use("/api/auth", authRouter);
@@ -55,6 +72,25 @@ app.use("/api/dashboard", requireAuthUser, dashboardRouter);
 // session), so it keeps the header-based resolveCompany instead. ---
 app.use("/api/llm", resolveCompany, llmRouter);
 
+// 网站首页
+app.get("/", (req, res) => {
+  res.sendFile(path.join(webPath, "index.html"));
+});
+
+// 支持直接打开 login.html、dashboard.html 等页面
+app.get("/:page.html", (req, res, next) => {
+  const requestedPage = req.params.page;
+
+  // 防止路径穿越
+  if (!/^[a-zA-Z0-9_-]+$/.test(requestedPage)) {
+    return next();
+  }
+
+  res.sendFile(path.join(webPath, `${requestedPage}.html`), (error) => {
+    if (error) next();
+  });
+});
+
 // Central error handler.
 app.use((err, req, res, _next) => {
   console.error(err);
@@ -62,6 +98,7 @@ app.use((err, req, res, _next) => {
 });
 
 const port = process.env.PORT || 4000;
-app.listen(port, () => {
-  console.log(`Pawfect backend listening on http://localhost:${port}`);
+
+app.listen(port, "0.0.0.0", () => {
+  console.log(`Pawfect backend listening on port ${port}`);
 });

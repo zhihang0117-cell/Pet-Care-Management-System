@@ -16,7 +16,7 @@
  * separate LLM/agent trust model (see backend/src/middleware/auth.js).
  */
 
-const API_BASE_URL = "http://localhost:4000/api"; // change to your deployed backend URL
+const API_BASE_URL = "/api"; // change to your deployed backend URL
 
 async function apiRequest(path, { method = "GET", body } = {}) {
   const token = await getSupabaseAccessToken();
