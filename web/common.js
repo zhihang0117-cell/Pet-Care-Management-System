@@ -166,28 +166,6 @@ async function fetchBookingPageData() {
     ...daycare.map(normalizeDaycareBooking),
     ...boarding.map(normalizeBoardingBooking),
   ];
-
-  await promoteDueScheduledBookings();
-}
-
-// A booking sits "Scheduled" until its date arrives, then it becomes
-// "Pending" — today's queue of bookings that actually need servicing. The
-// backend has no cron/trigger for this, so it's applied here instead, the
-// one place booking.html/dailyoverview.html/dashboard.html all load
-// bookings from. `<=` (not `===`) also sweeps up anything that was due on
-// a day nobody had the app open, not just bookings due exactly today.
-async function promoteDueScheduledBookings() {
-  const todayStr = getToday();
-  const due = bookingRecords.filter(b => b.status === "scheduled" && b.date && b.date <= todayStr);
-  if (!due.length) return;
-
-  await Promise.all(due.map(booking =>
-    api.updateBooking(booking.type, booking.rawId, { booking_status: "Pending" })
-      .then(() => { booking.status = "pending"; })
-      // Best-effort: a failed promotion just leaves that booking Scheduled
-      // for the next page load to retry, instead of blocking the page.
-      .catch(() => {})
-  ));
 }
 
 // Shared by profile.html/staff.html (and dashboard.html's dead-simple
@@ -360,8 +338,11 @@ function setupModalEvents() {
   });
 
   document.getElementById("cancelBookingBtn").addEventListener("click", async () => {
-    document.getElementById("bookingStatus").value = "cancelled";
-    await saveBooking();
+    const statusSelect = document.getElementById("bookingStatus");
+    const previousStatus = statusSelect.value;
+    statusSelect.value = "cancelled";
+    const saved = await saveBooking();
+    if (!saved) statusSelect.value = previousStatus;
   });
 
   document.getElementById("deleteBookingBtn").addEventListener("click", async () => {
@@ -371,7 +352,7 @@ function setupModalEvents() {
     if (!confirm("Delete this booking? This cannot be undone.")) return;
 
     try {
-      await api.del(`/bookings/${booking.type}/${booking.rawId}`);
+      await api.deleteBooking(booking.type, booking.rawId);
       closeModal();
       await refreshBookingPageData();
     } catch (error) {
@@ -511,42 +492,16 @@ function getKanbanBookings() {
   });
 }
 
-// Unlike the other kanban columns, "Scheduled" isn't pinned to whichever
-// single date the top filter is on — bookings can be scheduled across many
-// different future dates, so this shows the whole upcoming pipeline
-// (still respecting the service/staff filters) instead of just one day.
-// Never includes today or earlier: promoteDueScheduledBookings() already
-// promotes anything due to "pending" as soon as its date arrives.
-function getUpcomingScheduledBookings() {
-  const todayStr = getToday();
-  return bookingRecords
-    .filter(booking => {
-      const matchesService = currentServiceFilter === "all" || booking.type === currentServiceFilter;
-      const matchesStaff = currentStaffFilter === "all" || String(booking.staffId) === String(currentStaffFilter);
-      return matchesService && matchesStaff && booking.status === "scheduled" && booking.date > todayStr;
-    })
-    .sort((a, b) => (a.date || "").localeCompare(b.date || "") || (a.time || "").localeCompare(b.time || ""));
-}
-
 /* =========================
    METRIC CARDS
 ========================= */
 
-// Set by the date-range filter controller (see setupBookingDateFilter);
-// defaults to today so the cards match the page's default "Daily" view.
-let bookingMetricsRange = { start: getToday(), end: getToday() };
-let bookingMetricsPeriod = "daily";
-
-function periodWord(period) {
-  return period === "monthly" ? "This Month" : period === "weekly" ? "This Week" : "Today";
-}
-
 function renderMetricCards() {
   const wrapper = document.getElementById("metricCards");
-  const range = bookingMetricsRange;
-  const data = getFilteredBookings().filter(b => b.date >= range.start && b.date <= range.end);
-
-  const metrics = buildMetrics(currentServiceFilter, data, range, bookingMetricsPeriod);
+  const serviceBookings = bookingRecords.filter(booking =>
+    currentServiceFilter === "all" || booking.type === currentServiceFilter
+  );
+  const metrics = buildMetrics(currentServiceFilter, serviceBookings, bookingFilterDate);
 
   wrapper.innerHTML = metrics.map(metric => `
     <div class="metric-card">
@@ -556,18 +511,18 @@ function renderMetricCards() {
   `).join("");
 }
 
-function buildMetrics(filter, data, range, period) {
-  const word = periodWord(period);
+function buildMetrics(filter, serviceBookings, selectedDate) {
+  const dated = serviceBookings.filter(booking => booking.date === selectedDate);
 
   if (filter === "grooming") {
-    const grooming = data.filter(b => b.type === "grooming");
+    const grooming = dated;
     const doneRate = percentage(
       grooming.filter(b => b.status === "done").length,
       grooming.length
     );
 
     return [
-      { label: "Bookings", value: countToday(grooming) },
+      { label: "Bookings", value: grooming.length },
       { label: "Done Rate", value: doneRate },
       { label: "Pending Booking", value: countStatus(grooming, "pending") },
       { label: "No-show", value: countStatus(grooming, "no_show") }
@@ -575,13 +530,17 @@ function buildMetrics(filter, data, range, period) {
   }
 
   if (filter === "boarding") {
-    const boarding = data.filter(b => b.type === "boarding");
+    const boarding = serviceBookings;
+    const currentBoarders = boarding.filter(b =>
+      b.checkInDate <= selectedDate && b.checkOutDate >= selectedDate &&
+      b.status !== "no_show" && b.status !== "cancelled"
+    );
 
     return [
-      { label: "Boarding", value: countToday(boarding) },
-      { label: "Current Boarder", value: boarding.filter(b => b.status !== "no_show" && b.status !== "cancelled").length },
-      { label: "Check-in", value: boarding.filter(b => b.checkInDate === bookingFilterDate).length },
-      { label: "Check-out", value: boarding.filter(b => b.checkOutDate === bookingFilterDate).length }
+      { label: "Boarding", value: dated.length },
+      { label: "Current Boarder", value: currentBoarders.length },
+      { label: "Check-in", value: boarding.filter(b => b.checkInDate === selectedDate && b.status !== "cancelled").length },
+      { label: "Check-out", value: boarding.filter(b => b.checkOutDate === selectedDate && b.status !== "cancelled").length }
     ];
   }
 
@@ -589,30 +548,31 @@ function buildMetrics(filter, data, range, period) {
     // No room/capacity table exists in the real schema (mock's `rooms`
     // array has no backend equivalent), so the old "Capacity" ratio metric
     // is replaced with a plain active-today count.
-    const daycare = data.filter(b => b.type === "daycare");
+    const daycare = dated;
 
     return [
-      { label: "Daycare", value: countToday(daycare) },
+      { label: "Daycare", value: daycare.length },
       { label: "Pending Pick-up", value: daycare.filter(b => b.status === "done").length },
       { label: "No-show", value: countStatus(daycare, "no_show") },
-      { label: "Active", value: daycare.filter(b => b.date === bookingFilterDate && b.status !== "no_show" && b.status !== "cancelled").length }
+      { label: "Active", value: daycare.filter(b => b.status !== "no_show" && b.status !== "cancelled").length }
     ];
   }
 
-  const grooming = data.filter(b => b.type === "grooming");
+  const grooming = dated.filter(b => b.type === "grooming");
   const groomingDoneRate = percentage(
     grooming.filter(b => b.status === "done").length,
     grooming.length
   );
-  const boardingCheckIn = data.filter(b => b.serviceType === "boarding" && b.checkInDate >= range.start && b.checkInDate <= range.end).length;
-  const boardingCheckOut = data.filter(b => b.serviceType === "boarding" && b.checkOutDate >= range.start && b.checkOutDate <= range.end).length;
+  const boarding = serviceBookings.filter(b => b.type === "boarding");
+  const boardingCheckIn = boarding.filter(b => b.checkInDate === selectedDate && b.status !== "cancelled").length;
+  const boardingCheckOut = boarding.filter(b => b.checkOutDate === selectedDate && b.status !== "cancelled").length;
 
   return [
-    { label: "Pending Services", value: countStatus(data, "pending") },
+    { label: "Pending Services", value: countStatus(dated, "pending") },
     { label: "Grooming Done Rate", value: groomingDoneRate },
-    { label: "Boarding Check-in / Check-out", value: `${todayCheckIn()}/${todayCheckOut()}` },
-    { label: "Daycare Attendance", value: countToday(data.filter(b => b.type === "daycare")) },
-    { label: "No Show", value: countStatus(data, "no_show") }
+    { label: "Boarding Check-in / Check-out", value: `${boardingCheckIn}/${boardingCheckOut}` },
+    { label: "Daycare Attendance", value: dated.filter(b => b.type === "daycare").length },
+    { label: "No Show", value: countStatus(dated, "no_show") }
   ];
 }
 
@@ -629,11 +589,6 @@ function staffUtilizationToday() {
    KANBAN
 ========================= */
 
-// No separate promotion step needed here: `bookings` is derived from
-// `bookingRecords` (see loadAnalyticsDashboardData()), which
-// promoteDueScheduledBookings() in fetchBookingPageData() already promoted
-// before this array was built.
-
 function renderKanban() {
   const board = document.getElementById("kanbanBoard");
 
@@ -646,12 +601,9 @@ function renderKanban() {
   ];
 
   const data = getKanbanBookings();
-  const upcomingScheduled = getUpcomingScheduledBookings();
 
   board.innerHTML = columns.map(column => {
-    const columnBookings = column.key === "scheduled"
-      ? upcomingScheduled
-      : data.filter(booking => booking.status === column.key);
+    const columnBookings = data.filter(booking => booking.status === column.key);
     return `
     <div class="kanban-column" data-status="${column.key}">
       <h3>${column.label}</h3>
@@ -699,19 +651,26 @@ function setupKanbanDragAndDrop() {
       const booking = findBookingRecord(draggedBookingId);
       draggedBookingId = null;
 
-      if (booking) {
-        updateBookingStatus(booking, newStatus);
+      if (booking && booking.status !== newStatus) {
+        await updateBookingStatus(booking, newStatus);
       }
     });
   });
 }
 
 async function updateBookingStatus(booking, newStatusInternal) {
+  const previousStatus = booking.status;
+  booking.status = newStatusInternal;
+  renderAll();
   try {
     await api.updateBooking(booking.type, booking.rawId, { booking_status: denormalizeBookingStatus(newStatusInternal) });
     await refreshBookingPageData();
+    return true;
   } catch (error) {
+    booking.status = previousStatus;
+    renderAll();
     alert(error.message || "Failed to update booking status.");
+    return false;
   }
 }
 
@@ -1067,9 +1026,12 @@ async function updateListingStatus(event) {
 
   if (!booking) return;
 
-  event.target.disabled = true;
-  await updateBookingStatus(booking, newStatus);
-  event.target.disabled = false;
+  const select = event.target;
+  const previousStatus = booking.status;
+  select.disabled = true;
+  const updated = await updateBookingStatus(booking, newStatus);
+  if (!updated) select.value = previousStatus;
+  select.disabled = false;
 }
 
 /* =========================
@@ -1163,8 +1125,8 @@ async function saveBooking() {
   const staffId = document.getElementById("staffName").value;
   const statusInternal = document.getElementById("bookingStatus").value;
 
-  if (!petId) { alert("Please select a pet."); return; }
-  if (!staffId) { alert("Please select a staff member."); return; }
+  if (!petId) { alert("Please select a pet."); return false; }
+  if (!staffId) { alert("Please select a staff member."); return false; }
 
   const payload = {
     pet_id: Number(petId),
@@ -1183,7 +1145,7 @@ async function saveBooking() {
 
     if (!serviceName || price === "" || !date || !time) {
       alert("Please fill in service name, price, booking date and booking time.");
-      return;
+      return false;
     }
 
     payload.service_name = serviceName;
@@ -1207,11 +1169,11 @@ async function saveBooking() {
 
     if (!packageType || price === "" || !date || !checkInTime || !checkOutTime) {
       alert("Please fill in package type, price, booking date, check-in time and check-out time.");
-      return;
+      return false;
     }
     if (checkOutTime <= checkInTime) {
       alert("Check-out time must be after check-in time.");
-      return;
+      return false;
     }
 
     payload.package_type = packageType;
@@ -1233,11 +1195,11 @@ async function saveBooking() {
 
     if (!roomType || pricePerNight === "" || !checkInDate || !checkOutDate || !checkInTime || !checkOutTime) {
       alert("Please fill in room type, price per night, check-in/out date and check-in/out time.");
-      return;
+      return false;
     }
     if (checkOutDate < checkInDate || (checkOutDate === checkInDate && checkOutTime <= checkInTime)) {
       alert("Check-out must be after check-in.");
-      return;
+      return false;
     }
 
     payload.room_type = roomType;
@@ -1258,7 +1220,7 @@ async function saveBooking() {
   if (!leavingActiveSchedule && slotDate && slotTime &&
       !canAddBookingToSlot(slotDate, slotTime, staffId, bookingId)) {
     alert("This booking cannot be saved. The selected timeslot already has 3 bookings or the selected staff is already assigned at this time.");
-    return;
+    return false;
   }
 
   const submitBtn = document.querySelector("#bookingForm button[type=submit]");
@@ -1275,8 +1237,10 @@ async function saveBooking() {
 
     closeModal();
     await refreshBookingPageData();
+    return true;
   } catch (error) {
     alert(error.message || "Failed to save booking.");
+    return false;
   } finally {
     if (submitBtn) submitBtn.disabled = false;
   }
@@ -3720,19 +3684,16 @@ function countApprovedRedemptions(fullName) {
 
 const loyaltySearchInput = document.getElementById("loyaltySearchInput");
 const loyaltyPendingBody = document.getElementById("loyaltyPendingBody");
+const loyaltyPendingRedemptionBody = document.getElementById("loyaltyPendingRedemptionBody");
 const loyaltyMemberBody = document.getElementById("loyaltyMemberBody");
 const loyaltyPendingRecordCount = document.getElementById("loyaltyPendingRecordCount");
+const loyaltyPendingRedemptionRecordCount = document.getElementById("loyaltyPendingRedemptionRecordCount");
 const loyaltyMemberRecordCount = document.getElementById("loyaltyMemberRecordCount");
 
-// Real backend data. NOTE: "Pending Approvals" has no real analog for
-// redemptions — a redemption is created atomically when staff verifies a
-// payment (payment.html, already wired), there's no separate approval
-// queue. This tab is repurposed as "customers not yet enrolled" (real:
-// customers with no loyaltymember row), with a direct Enroll action
-// (POST /api/member-info, built for this) — a more honest translation of
-// "something pending on the loyalty side" than a fabricated queue.
+// Real backend data. A redemption row is created atomically when staff
+// verify a payment (payment.html, already wired) — this tab lists that
+// ledger straight from the `redemption` table.
 let loyaltyMemberRecords = [];
-let unenrolledCustomers = [];
 let loyaltyCouponRecords = [];
 let loyaltyRedemptionRecords = [];
 let loyaltyEarnRate = null;
@@ -3747,6 +3708,7 @@ async function initLoyaltyPage() {
       document.querySelectorAll("#loyaltyTabs .tab-btn").forEach(b => b.classList.remove("active"));
       btn.classList.add("active");
       document.getElementById("loyaltyPendingPanel").classList.toggle("hidden", btn.dataset.panel !== "pending");
+      document.getElementById("loyaltyPendingRedemptionPanel").classList.toggle("hidden", btn.dataset.panel !== "pendingRedemption");
       document.getElementById("loyaltyMembersPanel").classList.toggle("hidden", btn.dataset.panel !== "members");
       document.getElementById("loyaltyRulesPanel").classList.toggle("hidden", btn.dataset.panel !== "rules");
     });
@@ -3754,11 +3716,13 @@ async function initLoyaltyPage() {
 
   loyaltySearchInput.addEventListener("input", () => {
     resetListPage("loyaltyPending");
+    resetListPage("loyaltyPendingRedemption");
     resetListPage("loyaltyMembers");
     renderLoyaltyLists();
   });
 
   registerListRerenderer("loyaltyPending", renderLoyaltyLists);
+  registerListRerenderer("loyaltyPendingRedemption", renderLoyaltyLists);
   registerListRerenderer("loyaltyMembers", renderLoyaltyLists);
 
   bindDateNavigator("loyaltyDate", {
@@ -3789,9 +3753,6 @@ async function refreshLoyaltyPageData() {
     loyaltyRedemptionRecords = redemptions;
     loyaltyEarnRate = company.settings_json?.loyalty_earn_rate ?? null;
     bookingCustomerOptions = customersList; // populates findBookingCustomer() used below
-
-    const enrolledCustomerIds = new Set(members.map(m => String(m.customer_id)));
-    unenrolledCustomers = customersList.filter(c => !enrolledCustomerIds.has(String(c.customer_id)));
   } catch (error) {
     alert(error.message || "Failed to load loyalty data.");
   }
@@ -3802,17 +3763,17 @@ async function refreshLoyaltyPageData() {
 }
 
 function updateLoyaltyKPI() {
-  const datedRedemptions = filterRecordsByDateIfPresent(loyaltyRedemptionRecords, loyaltyDateFilter, ["create_date", "created_at"]);
+  // All-time, not scoped to the date filter — matches the Redemption
+  // History table below (see renderLoyaltyPendingTable()), since seed/real
+  // redemption dates don't cluster around "today".
   const datedMembers = filterRecordsByDateIfPresent(loyaltyMemberRecords, loyaltyDateFilter, ["create_date", "created_at", "join_date"]);
-  const pointsRedeemed = datedRedemptions
+  const pointsRedeemed = loyaltyRedemptionRecords
     .filter(r => String(r.status || "").toLowerCase() !== "refunded")
     .reduce((sum, r) => sum + (Number(r.loyalty_spend) || 0), 0);
 
   document.getElementById("loyaltyTotalMembers").textContent = datedMembers.length;
-  // Matches the Pending Approvals table below: not scoped to the date
-  // filter — "unenrolled" is a standing state, not something that happened
-  // on a particular day, so every candidate should keep showing up.
-  document.getElementById("loyaltyPendingCount").textContent = unenrolledCustomers.length;
+  document.getElementById("loyaltyPendingCount").textContent = loyaltyRedemptionRecords
+    .filter(r => String(r.status || "").toLowerCase() === "pending").length;
   document.getElementById("loyaltyGoldCount").textContent = datedMembers.filter(m => m.tier === "Gold" || m.tier === "Platinum").length;
   document.getElementById("loyaltyPointsRedeemed").textContent = pointsRedeemed.toLocaleString();
 }
@@ -3820,39 +3781,135 @@ function updateLoyaltyKPI() {
 function renderLoyaltyLists() {
   const searchValue = loyaltySearchInput.value.toLowerCase().trim();
   renderLoyaltyPendingTable(searchValue);
+  renderLoyaltyPendingRedemptionTable(searchValue);
   renderLoyaltyMemberTable(searchValue);
 }
 
+function renderLoyaltyPendingRedemptionTable(searchValue) {
+  const pending = loyaltyRedemptionRecords.filter(redemption => {
+    if (String(redemption.status || "").toLowerCase() !== "pending") return false;
+    const member = loyaltyMemberRecords.find(m => String(m.loyalty_id) === String(redemption.loyalty_id));
+    const customer = member ? findBookingCustomer(member.customer_id) : null;
+    return (customer?.full_name || "").toLowerCase().includes(searchValue) ||
+      String(redemption.redemption_id).includes(searchValue);
+  }).sort((a, b) => (a.create_date || a.created_at || "").localeCompare(b.create_date || b.created_at || ""));
+
+  loyaltyPendingRedemptionRecordCount.textContent = `${pending.length} records`;
+
+  if (pending.length === 0) {
+    loyaltyPendingRedemptionBody.innerHTML = `<tr><td colspan="7" class="empty-row">No pending redemption records.</td></tr>`;
+    renderListPagination("loyaltyPendingRedemption", 0);
+    return;
+  }
+
+  const pendingPage = paginateList("loyaltyPendingRedemption", pending, 5);
+
+  loyaltyPendingRedemptionBody.innerHTML = pendingPage.map(redemption => {
+    const member = loyaltyMemberRecords.find(m => String(m.loyalty_id) === String(redemption.loyalty_id));
+    const customer = member ? findBookingCustomer(member.customer_id) : null;
+    const coupon = loyaltyCouponRecords.find(c => String(c.coupon_id) === String(redemption.coupon_id));
+    return `
+    <tr>
+      <td><span class="key-chip">REDM-${redemption.redemption_id}</span></td>
+      <td><span class="profile-name">${escapeUiText(customer?.full_name || "Unknown")}</span></td>
+      <td>${Number(redemption.loyalty_earn || 0).toLocaleString()} pts</td>
+      <td>${Number(redemption.loyalty_spend || 0).toLocaleString()} pts</td>
+      <td>${escapeUiText(coupon?.reward_name || "—")}</td>
+      <td><span class="status-tag status-pending">Pending</span></td>
+      <td><button type="button" class="action-btn" onclick="openRedemptionDetail(${redemption.redemption_id})"><img src="icon/view.png" alt="" class="btn-icon">View</button></td>
+    </tr>
+  `;
+  }).join("");
+}
+
 function renderLoyaltyPendingTable(searchValue) {
-  // Not scoped to loyaltyDateFilter — "unenrolled" is a standing state, not
-  // something that happened on a particular day.
-  const candidates = unenrolledCustomers.filter(c =>
-    c.full_name.toLowerCase().includes(searchValue) ||
-    (c.phone_number || "").toLowerCase().includes(searchValue)
-  );
+  // All-time, not scoped to the date filter above — see updateLoyaltyKPI()
+  // for why. The date filter stays for layout parity with payment.html; it
+  // doesn't narrow this list.
+  const history = loyaltyRedemptionRecords.filter(r => {
+    const member = loyaltyMemberRecords.find(m => String(m.loyalty_id) === String(r.loyalty_id));
+    const customer = member ? findBookingCustomer(member.customer_id) : null;
+    return (customer?.full_name || "").toLowerCase().includes(searchValue) ||
+      String(r.redemption_id).includes(searchValue);
+  }).sort((a, b) => (b.create_date || "").localeCompare(a.create_date || ""));
 
-  loyaltyPendingRecordCount.textContent = `${candidates.length} to enroll`;
+  loyaltyPendingRecordCount.textContent = `${history.length} records`;
 
-  if (candidates.length === 0) {
-    loyaltyPendingBody.innerHTML = `<tr><td colspan="6" class="empty-row">Every customer is already enrolled.</td></tr>`;
+  if (history.length === 0) {
+    loyaltyPendingBody.innerHTML = `<tr><td colspan="6" class="empty-row">No redemption records found.</td></tr>`;
     renderListPagination("loyaltyPending", 0);
     return;
   }
 
-  const candidatesPage = paginateList("loyaltyPending", candidates, 5);
+  const historyPage = paginateList("loyaltyPending", history, 5);
 
-  loyaltyPendingBody.innerHTML = candidatesPage.map(c => `
+  loyaltyPendingBody.innerHTML = historyPage.map(r => {
+    const member = loyaltyMemberRecords.find(m => String(m.loyalty_id) === String(r.loyalty_id));
+    const customer = member ? findBookingCustomer(member.customer_id) : null;
+    const coupon = loyaltyCouponRecords.find(c => String(c.coupon_id) === String(r.coupon_id));
+    return `
     <tr>
-      <td><span class="key-chip">CUST-${c.customer_id}</span></td>
-      <td><span class="profile-name">${c.full_name}</span></td>
-      <td>Not enrolled</td>
-      <td>${c.phone_number || "—"}</td>
-      <td>—</td>
-      <td>
-        <button class="action-btn" onclick="enrollLoyaltyMember(${c.customer_id})"><img src="icon/confirm-circle.png" alt="" class="btn-icon">Enroll</button>
-      </td>
+      <td><span class="key-chip">REDM-${r.redemption_id}</span></td>
+      <td><span class="profile-name">${escapeUiText(customer?.full_name || "Unknown")}</span></td>
+      <td>${Number(r.loyalty_earn || 0).toLocaleString()} pts</td>
+      <td>${Number(r.loyalty_spend || 0).toLocaleString()} pts</td>
+      <td>${escapeUiText(coupon?.reward_name || "—")}</td>
+      <td><button type="button" class="action-btn" onclick="openRedemptionDetail(${r.redemption_id})"><img src="icon/view.png" alt="" class="btn-icon">View</button></td>
     </tr>
-  `).join("");
+  `;
+  }).join("");
+}
+
+function openRedemptionDetail(redemptionId) {
+  const redemption = loyaltyRedemptionRecords.find(r => String(r.redemption_id) === String(redemptionId));
+  if (!redemption) return;
+
+  const member = loyaltyMemberRecords.find(m => String(m.loyalty_id) === String(redemption.loyalty_id));
+  const customer = member ? findBookingCustomer(member.customer_id) : null;
+  const coupon = loyaltyCouponRecords.find(c => String(c.coupon_id) === String(redemption.coupon_id));
+  const status = redemption.status || "—";
+  const recordDate = redemption.create_date || redemption.created_at || "—";
+
+  detailPage.style.display = "flex";
+  detailTitle.textContent = `Redemption Detail · REDM-${redemption.redemption_id}`;
+  detailForm.onsubmit = null;
+  detailForm.innerHTML = `
+    <div class="form-group">
+      <label>Redemption ID</label>
+      <input value="REDM-${redemption.redemption_id}" readonly />
+    </div>
+    <div class="form-group">
+      <label>Status</label>
+      <input value="${escapeUiText(status)}" readonly />
+    </div>
+    <div class="form-group">
+      <label>Member</label>
+      <input value="${escapeUiText(customer?.full_name || "Unknown")}" readonly />
+    </div>
+    <div class="form-group">
+      <label>Loyalty ID</label>
+      <input value="${member ? `LOY-${member.loyalty_id}` : "—"}" readonly />
+    </div>
+    <div class="form-group">
+      <label>Points Earned</label>
+      <input value="${Number(redemption.loyalty_earn || 0).toLocaleString()} pts" readonly />
+    </div>
+    <div class="form-group">
+      <label>Points Spent</label>
+      <input value="${Number(redemption.loyalty_spend || 0).toLocaleString()} pts" readonly />
+    </div>
+    <div class="form-group">
+      <label>Coupon</label>
+      <input value="${escapeUiText(coupon?.reward_name || "—")}" readonly />
+    </div>
+    <div class="form-group">
+      <label>Record Date</label>
+      <input value="${escapeUiText(recordDate)}" readonly />
+    </div>
+    <div class="form-actions">
+      <button type="button" class="cancel-btn" onclick="closeDetailPage()"><img src="icon/close-circle.png" alt="" class="btn-icon">Close</button>
+    </div>
+  `;
 }
 
 function renderLoyaltyMemberTable(searchValue) {
@@ -3892,15 +3949,6 @@ function renderLoyaltyMemberTable(searchValue) {
       </tr>
     `;
     }).join("");
-}
-
-async function enrollLoyaltyMember(customerId) {
-  try {
-    await api.post("/member-info", { customer_id: customerId });
-    await refreshLoyaltyPageData();
-  } catch (error) {
-    alert(error.message || "Failed to enroll member.");
-  }
 }
 
 function openLoyaltyMemberDetail(loyaltyId) {
@@ -4168,23 +4216,53 @@ async function initPaymentPage() {
 }
 
 async function refreshPaymentPageData() {
-  const [payments, coupons, customersList, petsList, company, me] = await Promise.all([
+  const [payments, coupons, customersList, petsList, grooming, daycare, boarding, company, me] = await Promise.all([
     api.get("/payments"),
     api.get("/coupons"),
     api.get("/customers"),
     api.get("/pets"),
+    api.get("/bookings/grooming"),
+    api.get("/bookings/daycare"),
+    api.get("/bookings/boarding"),
     api.get("/companies/me"),
     api.get("/accounts/me"),
   ]);
-  paymentRows = payments;
   couponsCache = coupons;
   customersCacheForPayments = customersList;
   petsCacheForPayments = petsList;
+  paymentRows = enrichPaymentRowsLocally(payments, [...grooming, ...daycare, ...boarding], petsList, customersList);
   paymentCompanySettings = company.settings_json || {};
   paymentAccountRole = me.role;
 
   await updatePaymentKPI();
   await renderPaymentLists();
+}
+
+// Older API deployments returned raw payment rows without customer_name or
+// pet_name. Rebuild those labels from the same persisted relationship used
+// by the backend: payment -> booking -> pet -> customer. Values already
+// supplied by the backend remain authoritative.
+function enrichPaymentRowsLocally(payments, bookingRows, pets, customers) {
+  const bookingByPaymentId = new Map(
+    bookingRows
+      .filter(booking => booking.payment_id != null)
+      .map(booking => [String(booking.payment_id), booking])
+  );
+  const petById = new Map(pets.map(pet => [String(pet.pet_id), pet]));
+  const customerById = new Map(customers.map(customer => [String(customer.customer_id), customer]));
+
+  return payments.map(payment => {
+    const booking = bookingByPaymentId.get(String(payment.payment_id));
+    const pet = booking ? petById.get(String(booking.pet_id)) : null;
+    const customer = pet ? customerById.get(String(pet.customer_id)) : null;
+    return {
+      ...payment,
+      pet_id: payment.pet_id ?? pet?.pet_id ?? null,
+      pet_name: payment.pet_name || pet?.pet_name || null,
+      customer_id: payment.customer_id ?? customer?.customer_id ?? null,
+      customer_name: payment.customer_name || customer?.full_name || null,
+    };
+  });
 }
 
 function isPaymentAwaitingVerification(payment) {
@@ -4529,7 +4607,7 @@ const enquiryPendingRecordCount = document.getElementById("enquiryPendingRecordC
 const enquiryHistoryBody = document.getElementById("enquiryHistoryBody");
 const enquiryHistoryRecordCount = document.getElementById("enquiryHistoryRecordCount");
 let currentEnquiryAccountRole = null;
-let currentEnquiryFilter = "all";
+let currentEnquiryPanel = "pending";
 
 function escapeUiText(value) {
   return String(value ?? "").replace(/[&<>"']/g, character => ({
@@ -4552,7 +4630,9 @@ async function initEnquiriesPage() {
     btn.addEventListener("click", () => {
       document.querySelectorAll("#enquiryTabs .tab-btn").forEach(b => b.classList.remove("active"));
       btn.classList.add("active");
-      currentEnquiryFilter = btn.dataset.filter;
+      currentEnquiryPanel = btn.dataset.panel;
+      document.getElementById("enquiryPendingPanel").classList.toggle("hidden", currentEnquiryPanel !== "pending");
+      document.getElementById("enquiryHistoryPanel").classList.toggle("hidden", currentEnquiryPanel !== "all");
       renderEnquiryLists();
     });
   });
@@ -4664,8 +4744,8 @@ function renderEnquiryPendingTable(searchValue) {
 }
 
 function renderEnquiryHistoryTable(searchValue) {
-  // All-time, not scoped to a single day — see updateEnquiryKPI() above for
-  // why (test data especially tends to span many different receive_dates).
+  // All-time by design: this tab is the complete enquiry log, including
+  // both pending and replied records.
   const history = filterEnquiries(enquiryRecords, searchValue)
     .sort((a, b) => enquiryTimeSortKey(b).localeCompare(enquiryTimeSortKey(a)));
 
@@ -5561,24 +5641,24 @@ async function loadAnalyticsDashboardData() {
   // System panel (renderSystemDashboard/renderSystemKpiHero) reads these
   // customer-name-joined `real*` globals directly, separately from the
   // Operation/Staff panels' mock-shaped globals above.
-  const customerById = new Map(customers.map(c => [c.customer_id, c]));
+  const customerById = new Map(customers.map(c => [String(c.customer_id), c]));
   realMembers = members.map(m => ({
     ...m,
-    customerName: customerById.get(m.customer_id)?.full_name || "—",
-    phone: customerById.get(m.customer_id)?.phone_number || "—",
+    customerName: customerById.get(String(m.customer_id))?.full_name || "—",
+    phone: customerById.get(String(m.customer_id))?.phone_number || "—",
   }));
   realCoupons = coupons;
-  const realCouponById = new Map(realCoupons.map(c => [c.coupon_id, c]));
-  const memberByLoyaltyId = new Map(realMembers.map(m => [m.loyalty_id, m]));
+  const realCouponById = new Map(realCoupons.map(c => [String(c.coupon_id), c]));
+  const memberByLoyaltyId = new Map(realMembers.map(m => [String(m.loyalty_id), m]));
   realRedemptions = redemptions.map(r => ({
     ...r,
-    memberName: memberByLoyaltyId.get(r.loyalty_id)?.customerName || "—",
-    couponName: r.coupon_id ? (realCouponById.get(r.coupon_id)?.reward_name || "—") : null,
+    memberName: memberByLoyaltyId.get(String(r.loyalty_id))?.customerName || "—",
+    couponName: r.coupon_id ? (realCouponById.get(String(r.coupon_id))?.reward_name || "—") : null,
   }));
   realMessages = messages.map(m => ({
     ...m,
-    customerName: customerById.get(m.sender_id)?.full_name || "—",
-    phone: customerById.get(m.sender_id)?.phone_number || "",
+    customerName: customerById.get(String(m.sender_id))?.full_name || "—",
+    phone: customerById.get(String(m.sender_id))?.phone_number || "",
   }));
   realPayments = payments;
 
@@ -6707,7 +6787,7 @@ function openSystemKpiDetail(key) {
     openDetailModal("Booking-Related Messages", `${items.length} of ${realMessages.length} messages.`, rows, { label: "Open Enquiries", href: "enquiries.html" });
   } else if (key === "payment") {
     const rows = realPayments.map(p => renderDetailRow({
-      title: p.customerName || p.service, sub: `PAY-${String(p.payment_id).padStart(4, "0")} · RM ${Number(p.final_amount).toLocaleString()}`,
+      title: p.customer_name || p.service, sub: `PAY-${String(p.payment_id).padStart(4, "0")} · RM ${Number(p.final_amount).toLocaleString()}`,
       tag: p.status === "Paid" ? "done" : "pending", tagLabel: p.status
     })).join("");
     const verified = realPayments.filter(p => p.status === "Paid").length;

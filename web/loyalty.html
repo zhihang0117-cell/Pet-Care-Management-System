@@ -91,23 +91,6 @@
       </div>
     </section>
 
-    <!-- KPI date-range filter -->
-    <section class="bk-section bk-section-slim">
-      <div class="bk-view-header">
-        <div class="bk-tab-group" id="loyaltyMetricsPeriodToggle">
-          <button class="tab-btn active" data-period="daily">Daily</button>
-          <button class="tab-btn" data-period="weekly">Weekly</button>
-          <button class="tab-btn" data-period="monthly">Monthly</button>
-        </div>
-        <div class="calendar-nav-controls">
-          <button class="btn btn-secondary" id="loyaltyMetricsPrevBtn">←</button>
-          <button class="btn btn-primary" id="loyaltyMetricsTodayBtn" style="font-size:0.78rem;">Today</button>
-          <button class="btn btn-secondary" id="loyaltyMetricsNextBtn">→</button>
-          <span class="overview-chip" id="loyaltyMetricsRangeChip" style="margin:0 0 0 6px;"></span>
-        </div>
-      </div>
-    </section>
-
     <!-- KPI Cards -->
     <section class="bk-section bk-section-slim">
       <div class="bk-kpi-grid">
@@ -137,10 +120,33 @@
     <!-- Filter tabs -->
     <section class="bk-section bk-section-slim">
       <div class="bk-tab-group" id="loyaltyTabs">
-        <button class="tab-btn active" data-panel="pending"><img src="icon/time.png" alt="" class="tab-icon">Redemption History</button>
+        <button class="tab-btn" data-panel="pendingRedemption"><img src="icon/time.png" alt="" class="tab-icon">Pending Redemption</button>
         <button class="tab-btn" data-panel="members"><img src="icon/loyalty-reward-gift.png" alt="" class="tab-icon">Member List</button>
+        <button class="tab-btn active" data-panel="pending"><img src="icon/time.png" alt="" class="tab-icon">Redemption History</button>
         <button class="tab-btn" data-panel="rules"><img src="icon/settings.png" alt="" class="tab-icon">Point &amp; Redemption Rules</button>
       </div>
+    </section>
+
+    <!-- Pending Redemption -->
+    <section class="bk-section hidden" id="loyaltyPendingRedemptionPanel">
+      <div class="bk-view-header" style="margin-bottom:16px;">
+        <div>
+          <h2 style="font-family:var(--font-serif);font-size:1.15rem;font-weight:700;margin-bottom:2px;">Pending Redemption</h2>
+          <p style="font-size:0.78rem;color:var(--text-muted);">Redemption records whose current status is Pending</p>
+        </div>
+        <span id="loyaltyPendingRedemptionRecordCount" style="font-size:0.78rem;font-weight:700;color:var(--text-muted);white-space:nowrap;">0 records</span>
+      </div>
+      <div class="bk-table-wrap">
+        <table class="bk-table">
+          <thead>
+            <tr>
+              <th>Redemption ID</th><th>Member</th><th>Points Earned</th><th>Points Spent</th><th>Coupon</th><th>Status</th><th>Action</th>
+            </tr>
+          </thead>
+          <tbody id="loyaltyPendingRedemptionBody"></tbody>
+        </table>
+      </div>
+      <div class="table-pagination" id="loyaltyPendingRedemptionPagination"></div>
     </section>
 
     <!-- Redemption History -->
@@ -156,7 +162,7 @@
         <table class="bk-table">
           <thead>
             <tr>
-              <th>Redemption ID</th><th>Member</th><th>Points Earned</th><th>Points Spent</th><th>Coupon Used</th>
+              <th>Redemption ID</th><th>Member</th><th>Points Earned</th><th>Points Spent</th><th>Coupon Used</th><th>Action</th>
             </tr>
           </thead>
           <tbody id="loyaltyPendingBody"></tbody>

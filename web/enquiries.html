@@ -86,23 +86,6 @@
       </div>
     </section>
 
-    <!-- KPI date-range filter -->
-    <section class="bk-section bk-section-slim">
-      <div class="bk-view-header">
-        <div class="bk-tab-group" id="enquiryMetricsPeriodToggle">
-          <button class="tab-btn active" data-period="daily">Daily</button>
-          <button class="tab-btn" data-period="weekly">Weekly</button>
-          <button class="tab-btn" data-period="monthly">Monthly</button>
-        </div>
-        <div class="calendar-nav-controls">
-          <button class="btn btn-secondary" id="enquiryMetricsPrevBtn">←</button>
-          <button class="btn btn-primary" id="enquiryMetricsTodayBtn" style="font-size:0.78rem;">Today</button>
-          <button class="btn btn-secondary" id="enquiryMetricsNextBtn">→</button>
-          <span class="overview-chip" id="enquiryMetricsRangeChip" style="margin:0 0 0 6px;"></span>
-        </div>
-      </div>
-    </section>
-
     <!-- KPI Cards -->
     <section class="bk-section bk-section-slim">
       <div class="bk-kpi-grid">
@@ -134,22 +117,20 @@
       </div>
     </section>
 
-    <!-- Intent filter tabs -->
+    <!-- Enquiry status tabs -->
     <section class="bk-section bk-section-slim">
       <div class="bk-tab-group" id="enquiryTabs">
-        <button class="tab-btn active" data-filter="all">All</button>
-        <button class="tab-btn" data-filter="booking">Booking</button>
-        <button class="tab-btn" data-filter="policy">Policy</button>
-        <button class="tab-btn" data-filter="loyalty">Loyalty</button>
+        <button class="tab-btn active" data-panel="pending">Pending Enquiries</button>
+        <button class="tab-btn" data-panel="all">All Enquiries</button>
       </div>
     </section>
 
-    <!-- Message Log -->
+    <!-- Pending Enquiries -->
     <section class="bk-section" id="enquiryPendingPanel">
       <div class="bk-view-header" style="margin-bottom:16px;">
         <div>
-          <h2 style="font-family:var(--font-serif);font-size:1.15rem;font-weight:700;margin-bottom:2px;">Message Log</h2>
-          <p style="font-size:0.78rem;color:var(--text-muted);">Inbound WhatsApp messages, classified by intent</p>
+          <h2 style="font-family:var(--font-serif);font-size:1.15rem;font-weight:700;margin-bottom:2px;">Pending Enquiries</h2>
+          <p style="font-size:0.78rem;color:var(--text-muted);">All enquiries that are still awaiting a reply</p>
         </div>
         <span id="enquiryPendingRecordCount" style="font-size:0.78rem;font-weight:700;color:var(--text-muted);white-space:nowrap;">0 records</span>
       </div>
@@ -157,7 +138,7 @@
         <table class="bk-table">
           <thead>
             <tr>
-              <th>Message ID</th><th>Customer</th><th>Message</th><th>Intent</th><th>Received At</th><th>Action</th>
+              <th>Enquiry ID</th><th>Customer</th><th>Message</th><th>Received At</th><th>SLA</th><th>Action</th>
             </tr>
           </thead>
           <tbody id="enquiryPendingBody"></tbody>
@@ -166,12 +147,12 @@
       <div class="table-pagination" id="enquiryPendingPagination"></div>
     </section>
 
-    <!-- History -->
+    <!-- All Enquiries -->
     <section class="bk-section hidden" id="enquiryHistoryPanel">
       <div class="bk-view-header" style="margin-bottom:16px;">
         <div>
-          <h2 style="font-family:var(--font-serif);font-size:1.15rem;font-weight:700;margin-bottom:2px;">Enquiry History</h2>
-          <p style="font-size:0.78rem;color:var(--text-muted);">All enquiries, pending and resolved — SLA no longer applies once resolved</p>
+          <h2 style="font-family:var(--font-serif);font-size:1.15rem;font-weight:700;margin-bottom:2px;">All Enquiries</h2>
+          <p style="font-size:0.78rem;color:var(--text-muted);">Every enquiry, including pending and replied records</p>
         </div>
         <span id="enquiryHistoryRecordCount" style="font-size:0.78rem;font-weight:700;color:var(--text-muted);white-space:nowrap;">0 records</span>
       </div>
