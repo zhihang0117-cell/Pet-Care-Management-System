@@ -190,6 +190,24 @@ async function promoteDueScheduledBookings() {
   ));
 }
 
+// Shared by profile.html/staff.html (and dashboard.html's dead-simple
+// System panel loader) wherever real bookings/staff are needed alongside a
+// page's own real data — fetches via fetchBookingPageData() then maps into
+// the mock-shaped `staff`/`bookings` globals older render helpers expect.
+async function loadRealBookingData() {
+  await fetchBookingPageData();
+  staff = bookingStaffOptions.map(member => ({
+    ...member,
+    id: member.staff_id,
+    name: member.staff_name,
+    offDays: member.off_days_json || [],
+  }));
+  bookings = bookingRecords.map(record => ({
+    ...record,
+    serviceType: record.type,
+  }));
+}
+
 function normalizeGroomingBooking(b) {
   const pet = findBookingPet(b.pet_id);
   return {
@@ -1864,7 +1882,7 @@ function buildRealActionCards(filter) {
     {
       key: 'pendingConfirmation',
       icon: 'confirm-circle.png', label: 'Pending Booking Confirmation', value: pendingConfirmation,
-      sub: `Scheduled ${word.toLowerCase()}, awaiting confirmation`, tone: 'info'
+      sub: `Scheduled today, awaiting confirmation`, tone: 'info'
     },
     {
       key: 'pendingEnquiries',
@@ -1885,8 +1903,8 @@ function buildRealActionCards(filter) {
     const checkOutsDue = boardingBookings.filter(b => b.checkOutDate === todayStr && b.status !== 'no_show' && b.status !== 'cancelled').length;
 
     cards.push(
-      { key: 'boardingCheckIn', icon: 'login.png', label: 'Boarding Check-In Due', value: checkInsDue, sub: `Arrivals to confirm (${word.toLowerCase()})`, tone: 'success' },
-      { key: 'boardingCheckOut', icon: 'logout.png', label: 'Boarding Check-Out Due', value: checkOutsDue, sub: `Departures to confirm (${word.toLowerCase()})`, tone: 'warning' }
+      { key: 'boardingCheckIn', icon: 'login.png', label: 'Boarding Check-In Due', value: checkInsDue, sub: `Arrivals to confirm (today)`, tone: 'success' },
+      { key: 'boardingCheckOut', icon: 'logout.png', label: 'Boarding Check-Out Due', value: checkOutsDue, sub: `Departures to confirm (today)`, tone: 'warning' }
     );
   }
 
@@ -2115,7 +2133,7 @@ function renderRealWeeklySchedule(filter) {
   const dates = getDateRange(weekAnchor, addDays(weekAnchor, 6));
   const todayStr = getToday();
 
-  q('scheduleWeekLabel').textContent = `${formatShortDate(weekStart)} – ${formatShortDate(addDays(weekStart, 6))}`;
+  q('scheduleWeekLabel').textContent = `${formatShortDate(weekAnchor)} – ${formatShortDate(addDays(weekAnchor, 6))}`;
 
   q('scheduleHead').innerHTML = dates.map(date => {
     const d = new Date(date + 'T00:00:00');
@@ -2335,10 +2353,6 @@ function renderRealActionQueue(filter) {
     tbody.innerHTML = `<tr><td colspan="6" class="queue-empty">Nothing pending right now — all caught up!</td></tr>`;
     return;
   }
-
-  // Daily view is a single day, so just the time is unambiguous; Weekly/
-  // Monthly span multiple days, so the date is shown alongside it.
-  const showDate = period !== 'daily';
 
   tbody.innerHTML = rows.map(row => `
     <tr onclick="${row.rowOnclick}">
@@ -2657,10 +2671,6 @@ async function initDailyOverviewReal() {
       renderRealDailyOverview();
     },
   });
-
-  q('calPrevBtn').addEventListener('click', () => { weekAnchor = addDays(weekAnchor, -7); renderRealWeeklySchedule(currentFilter); });
-  q('calNextBtn').addEventListener('click', () => { weekAnchor = addDays(weekAnchor, 7); renderRealWeeklySchedule(currentFilter); });
-  q('calTodayBtn').addEventListener('click', () => { weekAnchor = getStartOfWeek(getToday()); renderRealWeeklySchedule(currentFilter); });
 
   q('detailModal').addEventListener('click', event => {
     if (event.target.id === 'detailModal') closeDetailModal();
@@ -3704,11 +3714,8 @@ function buildLoyaltyMembers() {
 }
 
 function countApprovedRedemptions(fullName) {
-  if (loyaltyDataIsReal) {
-    const member = realMembers.find(m => m.customerName === fullName);
-    return member?.redemption_made || 0;
-  }
-  return loyaltyRequests.filter(r => r.customerName === fullName && r.status === 'approved').length;
+  const member = loyaltyMemberRecords.find(m => getCustomerById(m.customer_id)?.full_name === fullName);
+  return member?.redemption_made || 0;
 }
 
 const loyaltySearchInput = document.getElementById("loyaltySearchInput");
@@ -3789,11 +3796,6 @@ async function refreshLoyaltyPageData() {
     alert(error.message || "Failed to load loyalty data.");
   }
 
-  createDateRangeFilter("loyaltyMetrics", (range) => {
-    loyaltyMetricsRange = range;
-    updateLoyaltyKPI();
-  }).init();
-
   updateLoyaltyKPI();
   renderLoyaltyLists();
   renderLoyaltyRulesPanel();
@@ -3817,7 +3819,7 @@ function updateLoyaltyKPI() {
 
 function renderLoyaltyLists() {
   const searchValue = loyaltySearchInput.value.toLowerCase().trim();
-  renderLoyaltyHistoryTable(searchValue);
+  renderLoyaltyPendingTable(searchValue);
   renderLoyaltyMemberTable(searchValue);
 }
 
@@ -4284,7 +4286,7 @@ async function renderPaymentPendingTable(pending) {
 function renderPaymentHistoryTable(history) {
   paymentHistoryRecordCount.textContent = `${history.length} records`;
 
-  if (filtered.length === 0) {
+  if (history.length === 0) {
     paymentHistoryBody.innerHTML = `<tr><td colspan="13" class="empty-row">No transaction record found.</td></tr>`;
     renderListPagination("paymentHistory", 0);
     return;
@@ -4438,7 +4440,7 @@ async function openPaymentDetail(paymentId) {
 
     <div class="form-group">
       <label>Date</label>
-      <input value="${formatDate(payment.date)}" readonly />
+      <input value="${formatDate(p.date)}" readonly />
     </div>
 
     <div class="form-group">
@@ -4527,6 +4529,7 @@ const enquiryPendingRecordCount = document.getElementById("enquiryPendingRecordC
 const enquiryHistoryBody = document.getElementById("enquiryHistoryBody");
 const enquiryHistoryRecordCount = document.getElementById("enquiryHistoryRecordCount");
 let currentEnquiryAccountRole = null;
+let currentEnquiryFilter = "all";
 
 function escapeUiText(value) {
   return String(value ?? "").replace(/[&<>"']/g, character => ({
@@ -4581,11 +4584,6 @@ async function refreshEnquiryPageData() {
   } catch (error) {
     alert(error.message || "Failed to load enquiries.");
   }
-
-  createDateRangeFilter("enquiryMetrics", (range) => {
-    enquiryMetricsRange = range;
-    updateEnquiryKPI();
-  }).init();
 
   updateEnquiryKPI();
   renderEnquiryLists();
@@ -4907,15 +4905,15 @@ async function resolveEnquiryAndRefresh(id) {
 
 // Dual-shape: staff.html converts `staff`/`leaveRequests` to real Supabase
 // data, but dashboard.html still calls these same functions against the
-// mock arrays (not converted yet). `bookingsAreReal` (set by
-// loadRealBookingData(), which staff.html also calls) is the shared signal
-// for which shape is currently loaded — real staff uses staff_id/off_days_json,
-// mock staff uses id/offDays.
+// mock arrays (not converted yet). `leaveDataIsReal` (set by
+// loadRealStaffPageData(), which calls loadRealBookingData()) is the shared
+// signal for which shape is currently loaded — real staff uses
+// staff_id/off_days_json, mock staff uses id/offDays.
 function findStaffAny(staffId) {
-  return bookingsAreReal ? findRealStaff(staffId) : findStaff(staffId);
+  return leaveDataIsReal ? findStaffRecord(staffId) : findStaff(staffId);
 }
 function staffOffDays(member) {
-  return bookingsAreReal ? (member.off_days_json || []) : (member.offDays || []);
+  return leaveDataIsReal ? (member.off_days_json || []) : (member.offDays || []);
 }
 
 function isStaffOnLeave(staffId, dateStr) {
@@ -4952,7 +4950,7 @@ function countBookingsForStaffToday(staffId) {
 let leaveDataIsReal = false;
 
 function mapLeaveRequest(row) {
-  const member = findRealStaff(row.staff_id);
+  const member = findStaffRecord(row.staff_id);
   return {
     id: row.leave_id,
     staffId: row.staff_id,
@@ -5491,54 +5489,11 @@ function openLeaveCellDetail(staffId, dateStr) {
    stay marked "Illustrative" and non-clickable.
    ========================================================================== */
 
+let realMembers = [];
+let realCoupons = [];
+let realRedemptions = [];
+let realMessages = [];
 let realPayments = [];
-
-async function loadRealDashboardData() {
-  await loadRealBookingData(); // bookings + staff
-
-  const [customersRes, petsRes, membersRes, couponsRes, redemptionsRes, leaveRes, messagesRes, paymentsRes] = await Promise.all([
-    api.listCustomers({ limit: 1000 }),
-    api.listPets({ limit: 1000 }),
-    api.listMembers({ limit: 1000 }),
-    api.listCoupons(),
-    api.listRedemptions({ limit: 1000 }),
-    api.listLeaveRequests({ limit: 1000 }),
-    api.listChatMessages({ limit: 1000 }),
-    api.listPayments({ limit: 2000 }),
-  ]);
-
-  customers = customersRes;
-  pets = petsRes;
-  crmDataIsReal = true;
-
-  const customerById = new Map(customers.map(c => [c.customer_id, c]));
-
-  realMembers = membersRes.map(m => ({
-    ...m,
-    customerName: customerById.get(m.customer_id)?.full_name || "—",
-    phone: customerById.get(m.customer_id)?.phone_number || "—",
-  }));
-  realCoupons = couponsRes;
-  const couponById = new Map(realCoupons.map(c => [c.coupon_id, c]));
-  const memberByLoyaltyId = new Map(realMembers.map(m => [m.loyalty_id, m]));
-  realRedemptions = redemptionsRes.map(r => ({
-    ...r,
-    memberName: memberByLoyaltyId.get(r.loyalty_id)?.customerName || "—",
-    couponName: r.coupon_id ? (couponById.get(r.coupon_id)?.reward_name || "—") : null,
-  }));
-  loyaltyDataIsReal = true;
-
-  leaveRequests = leaveRes.map(mapLeaveRequest);
-  leaveDataIsReal = true;
-
-  realMessages = messagesRes.map(m => ({
-    ...m,
-    customerName: customerById.get(m.sender_id)?.full_name || "—",
-    phone: customerById.get(m.sender_id)?.phone_number || "",
-  }));
-
-  realPayments = paymentsRes;
-}
 
 const SERVICE_MIX_COLORS = { grooming: "#3B82F6", boarding: "#10B981", daycare: "#F59E0B" };
 
@@ -5602,6 +5557,31 @@ async function loadAnalyticsDashboardData() {
     ...pet,
     species: pet.pet_type || "Pet",
   }));
+
+  // System panel (renderSystemDashboard/renderSystemKpiHero) reads these
+  // customer-name-joined `real*` globals directly, separately from the
+  // Operation/Staff panels' mock-shaped globals above.
+  const customerById = new Map(customers.map(c => [c.customer_id, c]));
+  realMembers = members.map(m => ({
+    ...m,
+    customerName: customerById.get(m.customer_id)?.full_name || "—",
+    phone: customerById.get(m.customer_id)?.phone_number || "—",
+  }));
+  realCoupons = coupons;
+  const realCouponById = new Map(realCoupons.map(c => [c.coupon_id, c]));
+  const memberByLoyaltyId = new Map(realMembers.map(m => [m.loyalty_id, m]));
+  realRedemptions = redemptions.map(r => ({
+    ...r,
+    memberName: memberByLoyaltyId.get(r.loyalty_id)?.customerName || "—",
+    couponName: r.coupon_id ? (realCouponById.get(r.coupon_id)?.reward_name || "—") : null,
+  }));
+  realMessages = messages.map(m => ({
+    ...m,
+    customerName: customerById.get(m.sender_id)?.full_name || "—",
+    phone: customerById.get(m.sender_id)?.phone_number || "",
+  }));
+  realPayments = payments;
+
   staff = bookingStaffOptions.map(member => ({
     ...member,
     id: member.staff_id,
@@ -5730,7 +5710,7 @@ function computeOccupancyRate(range) {
     const availableSlots = days.length * CALENDAR_HOURS.length * 3;
     return availableSlots ? Math.min(100, (activeBookings / availableSlots) * 100) : 0;
   }
-  const dailyRates = days.map(d => rooms.filter(r => isRoomOccupiedOnDate(r.id, d)).length / rooms.length);
+  const dailyRates = days.map(d => rooms.filter(r => isRoomLabelOccupiedOnDate(r.id, d)).length / rooms.length);
   return (dailyRates.reduce((a, b) => a + b, 0) / dailyRates.length) * 100;
 }
 
@@ -6521,7 +6501,7 @@ function openStaffBookingDetail(staffId) {
   const items = bookings
     .filter(b => String(b.staffId) === String(staffId) && b.date >= dashboardRange.start && b.date <= dashboardRange.end)
     .sort((a, b) => a.date.localeCompare(b.date) || a.time.localeCompare(b.time));
-  const member = findRealStaff(staffId);
+  const member = findStaffRecord(staffId);
   const label = periodRangeLabel(currentDashboardPeriod, dashboardRange);
   openDetailModal(`${member?.staff_name || "Staff"} — Bookings`, `${items.length} booking(s) · ${label}`, items.map(bookingDetailRow).join(""), { label: "Open Staff Management", href: "staff.html" });
 }
@@ -6718,15 +6698,11 @@ function renderStaffWeekDutyMix() {
 }
 
 function openSystemKpiDetail(key) {
-  const label = periodRangeLabel(currentDashboardPeriod, dashboardRange);
-  if (key === "enquiry") {
-    const rows = enquiries.map(enquiryDetailRow).join("");
-    openDetailModal("Enquiry Resolution", `${enquiries.filter(e => e.status === "resolved").length} of ${enquiries.length} resolved.`, rows, { label: "Open Enquiries", href: "enquiries.html" });
-  } else if (key === "payment") {
-    const rows = paymentRecords.map(p => renderDetailRow({
-      title: p.customerName, sub: `${p.payment_id} · RM ${p.finalAmount.toLocaleString()}`,
-      tag: p.status === "verified" ? "done" : p.status === "pending" ? "pending" : "cancelled",
-      tagLabel: p.rawStatus || (p.status === "verified" ? "Paid" : "Pending")
+  if (key === "bookingIntent") {
+    const items = realMessages.filter(m => m.intent_label === "booking");
+    const rows = items.map(m => renderDetailRow({
+      title: m.customerName, sub: m.message_text || m.intent_label || "—",
+      tag: "info", tagLabel: m.intent_label || "—"
     })).join("");
     openDetailModal("Booking-Related Messages", `${items.length} of ${realMessages.length} messages.`, rows, { label: "Open Enquiries", href: "enquiries.html" });
   } else if (key === "payment") {
@@ -6735,13 +6711,14 @@ function openSystemKpiDetail(key) {
       tag: p.status === "Paid" ? "done" : "pending", tagLabel: p.status
     })).join("");
     const verified = realPayments.filter(p => p.status === "Paid").length;
-    openDetailModal("Payment Verification", `${verified} of ${realPayments.length} verified · ${label}`, rows, { label: "Open Payment", href: "payment.html" });
-  } else if (key === "redemption") {
-    const withRedemptions = realMembers.filter(m => m.redemption_made > 0);
-    const rows = withRedemptions.map(m => renderDetailRow({
-      title: m.customerName, sub: `${m.tier} · ${m.points_balance} pts`, tag: "done", tagLabel: `${m.redemption_made} redemption(s)`
+    openDetailModal("Payment Verification", `${verified} of ${realPayments.length} verified.`, rows, { label: "Open Payment", href: "payment.html" });
+  } else if (key === "loyalty") {
+    const rows = realRedemptions.map(r => renderDetailRow({
+      title: r.memberName, sub: `${r.couponName || "Loyalty transaction"} · ${r.loyalty_spend || 0} pts`,
+      tag: r.status === "Refunded" ? "cancelled" : "done", tagLabel: r.status || "Approved"
     })).join("");
-    openDetailModal("Members With Redemptions", `${withRedemptions.length} of ${realMembers.length} members have redeemed at least once.`, rows, { label: "Open Loyalty", href: "loyalty.html" });
+    const approved = realRedemptions.filter(r => r.status !== "Refunded").length;
+    openDetailModal("Loyalty Requests Processed", `${approved} of ${realRedemptions.length} approved.`, rows, { label: "Open Loyalty", href: "loyalty.html" });
   }
 }
 
@@ -6750,8 +6727,8 @@ function renderSystemKpiHero() {
   const bookingMessages = realMessages.filter(m => m.intent_label === "booking").length;
   const totalPayments = realPayments.length;
   const verifiedPayments = realPayments.filter(p => p.status === "Paid").length;
-  const totalMembers = realMembers.length;
-  const membersWithRedemptions = realMembers.filter(m => m.redemption_made > 0).length;
+  const totalLoyalty = realRedemptions.length;
+  const approvedLoyalty = realRedemptions.filter(r => r.status !== "Refunded").length;
 
   const cards = [
     { key: "bookingIntent", icon: "chat-message.png", label: "Booking-Related Messages", value: `${totalMessages ? Math.round((bookingMessages / totalMessages) * 100) : 0}%`, sub: `${bookingMessages}/${totalMessages} messages`, clickable: true },
