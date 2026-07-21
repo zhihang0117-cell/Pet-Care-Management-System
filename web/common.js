@@ -1,5 +1,103 @@
 function q(id) { return document.getElementById(id); }
 
+const RECORD_ID_PARAMS = [
+  "customer_id", "pet_id", "grooming_booking_id", "daycare_booking_id",
+  "boarding_booking_id", "payment_id", "message_id", "staff_id",
+  "leave_id", "loyalty_id", "redemption_id", "coupon_id",
+];
+let restoringRecordUrl = false;
+
+function recordUrlParamsWithoutIds() {
+  const current = new URLSearchParams(location.search);
+  current.delete("company_id");
+  RECORD_ID_PARAMS.forEach(param => current.delete(param));
+  return current;
+}
+
+// Keep record-detail URLs shareable and predictable. Company scope is always
+// the first query parameter, followed by the primary key of the opened table.
+function setRecordUrl(idParam, idValue) {
+  if (restoringRecordUrl) return;
+  const companyId = getCurrentAccount()?.businessKey;
+  if (companyId == null || companyId === "" || idValue == null || idValue === "") return;
+
+  const params = new URLSearchParams();
+  params.set("company_id", companyId);
+  params.set(idParam, idValue);
+  recordUrlParamsWithoutIds().forEach((value, key) => params.append(key, value));
+  history.pushState({ ...(history.state || {}), recordDetail: true }, "", `${location.pathname}?${params}${location.hash}`);
+}
+
+function replaceUrlWithoutRecord() {
+  const params = recordUrlParamsWithoutIds();
+  const query = params.toString();
+  history.replaceState(null, "", `${location.pathname}${query ? `?${query}` : ""}${location.hash}`);
+}
+
+function clearRecordUrl(preferBack = true) {
+  if (preferBack && history.state?.recordDetail) {
+    history.back();
+    return;
+  }
+  replaceUrlWithoutRecord();
+}
+
+function hideOpenRecordUi() {
+  const bookingModal = document.getElementById("bookingModal");
+  if (bookingModal) bookingModal.style.display = "none";
+  if (typeof detailPage !== "undefined" && detailPage) detailPage.style.display = "none";
+  if (typeof detailForm !== "undefined" && detailForm) detailForm.innerHTML = "";
+}
+
+async function restoreRecordFromUrl() {
+  const params = new URLSearchParams(location.search);
+  const companyId = params.get("company_id");
+  const currentCompanyId = String(getCurrentAccount()?.businessKey || "");
+  if (companyId && currentCompanyId && companyId !== currentCompanyId) {
+    console.warn("Record URL belongs to a different company; ignoring it.");
+    hideOpenRecordUi();
+    return false;
+  }
+
+  const routes = [
+    ["customer_id", value => openCustomerForm(Number(value))],
+    ["pet_id", value => openPetForm(Number(value))],
+    ["grooming_booking_id", value => document.getElementById("kanbanBoard")
+      ? openBookingDetails(`grooming:${value}`)
+      : openCustomerBookingDetail("grooming", Number(value))],
+    ["daycare_booking_id", value => document.getElementById("kanbanBoard")
+      ? openBookingDetails(`daycare:${value}`)
+      : openCustomerBookingDetail("daycare", Number(value))],
+    ["boarding_booking_id", value => document.getElementById("kanbanBoard")
+      ? openBookingDetails(`boarding:${value}`)
+      : openCustomerBookingDetail("boarding", Number(value))],
+    ["payment_id", value => openPaymentDetail(Number(value))],
+    ["message_id", value => openEnquiryDetailPage(Number(value))],
+    ["staff_id", value => openStaffForm(Number(value))],
+    ["leave_id", value => {
+      const leave = leaveRecords.find(item => String(item.leave_id) === String(value));
+      if (leave) openLeaveCellDetail(leave.staff_id, leave.start_date);
+    }],
+    ["loyalty_id", value => openLoyaltyMemberDetail(Number(value))],
+    ["redemption_id", value => openRedemptionDetail(Number(value))],
+    ["coupon_id", value => openRuleForm(Number(value))],
+  ];
+
+  const route = routes.find(([param]) => params.has(param));
+  if (!route) {
+    hideOpenRecordUi();
+    return false;
+  }
+
+  restoringRecordUrl = true;
+  try {
+    await route[1](params.get(route[0]));
+  } finally {
+    restoringRecordUrl = false;
+  }
+  return true;
+}
+
 /* =========================
    LEGACY VIEW-MODEL COMPATIBILITY
 ========================= */
@@ -83,7 +181,7 @@ document.addEventListener("DOMContentLoaded", async () => {
     }
 
     if (document.getElementById("kanbanBoard")) {
-      initBookingPage();
+      await initBookingPage();
     }
 
     if (document.getElementById("actionCards")) {
@@ -117,9 +215,20 @@ document.addEventListener("DOMContentLoaded", async () => {
     if (document.getElementById("enquiryPendingBody")) {
       await initEnquiriesPage();
     }
+
+    await restoreRecordFromUrl();
   } catch (err) {
     console.error("Page init failed:", err);
     alert(`Something failed to load: ${err.message}`);
+  }
+});
+
+window.addEventListener("popstate", async () => {
+  try {
+    await restoreRecordFromUrl();
+  } catch (error) {
+    console.error("Failed to restore record from browser history:", error);
+    hideOpenRecordUi();
   }
 });
 
@@ -1066,6 +1175,9 @@ function openBookingDetails(bookingIdOrObj) {
     : bookingIdOrObj;
   if (!booking) return;
 
+  if (booking.id) setRecordUrl(`${booking.type}_booking_id`, booking.rawId);
+  else clearRecordUrl(false);
+
   const raw = booking.raw || {};
 
   populatePetDropdown();
@@ -1116,6 +1228,7 @@ function openBookingDetails(bookingIdOrObj) {
 
 function closeModal() {
   document.getElementById("bookingModal").style.display = "none";
+  clearRecordUrl();
 }
 
 async function saveBooking() {
@@ -3250,6 +3363,8 @@ function openCustomerForm(customerId = null) {
     ? findCustomerRecord(customerId)
     : { customer_id: null, full_name: "", phone_number: "", address: "" };
   if (isEdit && !customer) return;
+  if (isEdit) setRecordUrl("customer_id", customer.customer_id);
+  else clearRecordUrl(false);
 
   const linkedPets = isEdit ? getPetsForCustomer(customer.customer_id) : [];
 
@@ -3378,6 +3493,7 @@ async function openCustomerBookingDetail(type, id) {
     return null;
   });
   if (!booking) return;
+  setRecordUrl(`${type}_booking_id`, id);
 
   const pet = findPetRecord(booking.pet_id);
   const status = normalizeBookingStatus(booking.booking_status);
@@ -3448,6 +3564,8 @@ function openPetForm(petId = null) {
         service_notes: ""
       };
   if (isEdit && !pet) return;
+  if (isEdit) setRecordUrl("pet_id", pet.pet_id);
+  else clearRecordUrl(false);
 
   detailPage.style.display = "flex";
   detailTitle.textContent = isEdit
@@ -3589,6 +3707,7 @@ function openPetForm(petId = null) {
 function closeDetailPage() {
   detailPage.style.display = "none";
   detailForm.innerHTML = "";
+  clearRecordUrl();
 }
 
 async function removeCustomer(customerId) {
@@ -3863,6 +3982,7 @@ function renderLoyaltyPendingTable(searchValue) {
 function openRedemptionDetail(redemptionId) {
   const redemption = loyaltyRedemptionRecords.find(r => String(r.redemption_id) === String(redemptionId));
   if (!redemption) return;
+  setRecordUrl("redemption_id", redemption.redemption_id);
 
   const member = loyaltyMemberRecords.find(m => String(m.loyalty_id) === String(redemption.loyalty_id));
   const customer = member ? findBookingCustomer(member.customer_id) : null;
@@ -3954,6 +4074,7 @@ function renderLoyaltyMemberTable(searchValue) {
 function openLoyaltyMemberDetail(loyaltyId) {
   const member = loyaltyMemberRecords.find(m => m.loyalty_id === loyaltyId);
   if (!member) return;
+  setRecordUrl("loyalty_id", member.loyalty_id);
   const customer = findBookingCustomer(member.customer_id);
 
   const memberRedemptions = loyaltyRedemptionRecords
@@ -4077,6 +4198,8 @@ function openRuleForm(couponId = null) {
     ? loyaltyCouponRecords.find(c => c.coupon_id === couponId)
     : { coupon_id: null, points_required: "", reward_name: "", reward_type: "Discount (RM value)", "discount_value (RM)": "", expiry_date: "" };
   if (isEdit && !rule) return;
+  if (isEdit) setRecordUrl("coupon_id", rule.coupon_id);
+  else clearRecordUrl(false);
 
   detailPage.style.display = "flex";
   detailTitle.textContent = isEdit ? `Edit Redemption Rule · ${rule.reward_name}` : "Add Redemption Rule";
@@ -4456,6 +4579,8 @@ async function openPaymentDetail(paymentId) {
   });
   if (!detail) return;
 
+  setRecordUrl("payment_id", paymentId);
+
   const p = detail.payment;
   const pet = detail.booking ? petsCacheForPayments.find(x => String(x.pet_id) === String(detail.booking.pet_id)) : null;
   const customer = customersCacheForPayments.find(c => String(c.customer_id) === String(detail.customerId));
@@ -4785,6 +4910,7 @@ function getRelatedEnquiriesForCustomer(customerId, excludeId) {
 function openEnquiryDetailPage(id) {
   const e = enquiryRecords.find(x => x.id === id);
   if (!e) return;
+  setRecordUrl("message_id", e.id);
 
   const isPending = e.status === "pending";
   const relatedEnquiries = e.customerId != null ? getRelatedEnquiriesForCustomer(e.customerId, e.id) : [];
@@ -4881,6 +5007,7 @@ function openEnquiryDetailPage(id) {
 }
 
 function openNewEnquiryForm() {
+  clearRecordUrl(false);
   detailPage.style.display = "flex";
   detailTitle.textContent = "Log Enquiry";
   detailForm.innerHTML = `
@@ -5224,6 +5351,8 @@ function openStaffForm(staffId = null) {
     ? findStaffRecord(staffId)
     : { staff_id: null, staff_name: "", role: "Groomer", email: "", phone: "", off_days_json: [] };
   if (isEdit && !member) return;
+  if (isEdit) setRecordUrl("staff_id", member.staff_id);
+  else clearRecordUrl(false);
 
   const readonly = !manager;
   const dayOptions = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
@@ -5412,6 +5541,7 @@ function renderLeaveHistoryTable() {
 }
 
 function openApplyLeaveForm() {
+  clearRecordUrl(false);
   const manager = isManager(getCurrentAccount());
   const loginEmail = String(getCurrentAccount()?.email || "").trim().toLowerCase();
   const currentStaff = manager
@@ -5529,6 +5659,7 @@ function openLeaveCellDetail(staffId, dateStr) {
     dateStr >= r.start_date && dateStr <= r.end_date
   );
   if (!lv) return;
+  setRecordUrl("leave_id", lv.leave_id);
   const member = findStaffRecord(staffId);
 
   detailPage.style.display = "flex";
