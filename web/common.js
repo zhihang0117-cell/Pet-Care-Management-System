@@ -7293,21 +7293,22 @@ function renderServicePolicyCards(company) {
     const documentRows = documents.length ? documents.map(doc => {
       const status = String(doc.status || "pending").toLowerCase();
       const statusLabel = status === "indexed" ? "Ready" : status === "failed" ? "Failed" : "Processing";
+      const encodedFileName = encodeURIComponent(doc.file_name).replaceAll("'", "%27");
       return `
       <div class="policy-document-row">
         <div class="policy-file-icon"><img src="icon/pet-medical-record.png" alt=""></div>
         <div class="policy-document-info">
-          <strong title="${escapeHtml(doc.file_name)}">${escapeHtml(doc.file_name)}</strong>
+          <strong title="${escapeUiText(doc.file_name)}">${escapeUiText(doc.file_name)}</strong>
           <div class="policy-document-meta">
             <span class="policy-status policy-status-${status}">${statusLabel}</span>
             ${doc.chunks_indexed != null ? `<span>${doc.chunks_indexed} chunks</span>` : ""}
             ${doc.indexed_at ? `<span>Updated ${new Date(doc.indexed_at).toLocaleDateString()}</span>` : ""}
           </div>
-          ${doc.error_message ? `<small class="policy-error">${escapeHtml(doc.error_message)}</small>` : ""}
+          ${doc.error_message ? `<small class="policy-error">${escapeUiText(doc.error_message)}</small>` : ""}
         </div>
         ${currentAccountRole === "manager" ? `
           <div class="policy-document-actions">
-            <button type="button" class="policy-action-button" onclick="downloadPolicyDocument('${doc.document_id}', '${encodeURIComponent(doc.file_name)}')">Download</button>
+            <button type="button" class="policy-action-button" onclick="downloadPolicyDocument('${doc.document_id}', '${encodedFileName}')">Download</button>
             <label class="policy-action-button" for="replace_policy_${doc.document_id}">Replace</label>
             <input class="hidden" type="file" id="replace_policy_${doc.document_id}" accept=".docx,application/vnd.openxmlformats-officedocument.wordprocessingml.document" onchange="replacePolicyDocument('${doc.document_id}', this)">
             <button type="button" class="policy-action-button policy-action-danger" onclick="deletePolicyDocument('${doc.document_id}')">Remove</button>

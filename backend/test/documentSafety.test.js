@@ -21,6 +21,15 @@ test("uploaded filenames are rendered as text nodes", async () => {
   assert.match(settings, /document\.createTextNode\(input\.files\[0\]\.name\)/);
 });
 
+test("settings policy cards use the shared HTML escaping helper", async () => {
+  const settings = await source("web/common.js");
+  assert.match(settings, /function escapeUiText\(value\)/);
+  assert.match(settings, /escapeUiText\(doc\.file_name\)/);
+  assert.match(settings, /escapeUiText\(doc\.error_message\)/);
+  assert.doesNotMatch(settings, /escapeHtml\(doc\./);
+  assert.match(settings, /encodeURIComponent\(doc\.file_name\)\.replaceAll\("'", "%27"\)/);
+});
+
 test("document deletion is atomic inside Postgres", async () => {
   const migration = await source("backend/sql/company_documents_migration.sql");
   const routes = await source("backend/src/routes/companies.js");
