@@ -64,26 +64,14 @@
                 </label>
             </div>
 
-            <!-- Account fields -->
+            <!-- Account fields. Password is collected on step 2 so it never
+                 needs to be persisted between pages. -->
             <div class="form-stack">
                 <div class="form-group">
                     <label for="reg_email">Manager Login Email <span class="req">*</span></label>
                     <input id="reg_email" type="email" required placeholder="business@email.com">
                 </div>
-                <div class="form-grid-2">
-                    <div class="form-group">
-                        <label for="reg_password">Password <span class="req">*</span></label>
-                        <input id="reg_password" type="password" required minlength="8" placeholder="Min. 8 characters" oninput="checkPasswordStrength()">
-                    </div>
-                    <div class="form-group">
-                        <label for="reg_confirm">Confirm Password <span class="req">*</span></label>
-                        <input id="reg_confirm" type="password" required minlength="8" placeholder="Retype password">
-                    </div>
-                </div>
-                <div>
-                    <div class="password-meter"><div id="passwordBar"></div></div>
-                    <p class="field-note" id="passwordText">Password must be at least 8 characters and both fields must match.</p>
-                </div>
+                <p class="field-note">You will create the manager password on the secure final setup step.</p>
             </div>
 
             <div class="auth-actions">

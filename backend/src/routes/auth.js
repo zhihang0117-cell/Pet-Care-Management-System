@@ -40,6 +40,13 @@ authRouter.post(
     if (!Array.isArray(teamAccounts)) {
       return res.status(400).json({ error: "teamAccounts must be an array." });
     }
+    if (settings?.selected_services !== undefined) {
+      const selected = settings.selected_services;
+      if (!Array.isArray(selected) || selected.length === 0
+        || selected.some(service => !["grooming", "boarding", "daycare"].includes(service))) {
+        return res.status(400).json({ error: "selected_services contains an unsupported service." });
+      }
+    }
 
     const normalizedManagerEmail = String(email).trim().toLowerCase();
     const normalizedTeamAccounts = teamAccounts.map((account) => ({

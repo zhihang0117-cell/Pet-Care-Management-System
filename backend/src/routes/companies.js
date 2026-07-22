@@ -7,11 +7,12 @@ import { requireManager } from "../middleware/authUser.js";
 export const companiesRouter = Router();
 
 const BUSINESS_ASSET_BUCKET = "business-assets";
-const COMPANY_DOCUMENT_BUCKET = "company-documents";
+const COMPANY_DOCUMENT_BUCKET = "business-documents";
 const MAX_LOGO_BYTES = 2 * 1024 * 1024;
 const MAX_DOCUMENT_BYTES = 10 * 1024 * 1024;
 const DOCUMENT_TYPES = new Set(["policies", "service_information", "business_flow_booking", "veterinary"]);
 const SERVICE_TYPES = new Set(["grooming", "boarding", "daycare", "general"]);
+const DOCX_MIME = "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
 
 function isMissingCompanyDocumentsTable(error) {
   const message = String(error?.message || error || "");
@@ -57,9 +58,23 @@ async function ensureCompanyDocumentBucket() {
   const { error: createError } = await supabase.storage.createBucket(COMPANY_DOCUMENT_BUCKET, {
     public: false,
     fileSizeLimit: MAX_DOCUMENT_BYTES,
-    allowedMimeTypes: ["application/vnd.openxmlformats-officedocument.wordprocessingml.document"],
+    allowedMimeTypes: [DOCX_MIME],
   });
   if (createError && !/already exists/i.test(createError.message || "")) throw createError;
+}
+
+function validateDocumentUpload(fileName, contentType, dataBase64) {
+  const normalizedName = String(fileName || "").toLowerCase();
+  const isDocx = normalizedName.endsWith(".docx") && contentType === DOCX_MIME;
+  if (!isDocx || !dataBase64) {
+    return { error: "A valid DOCX file is required." };
+  }
+  const buffer = Buffer.from(dataBase64, "base64");
+  const validSignature = buffer.subarray(0, 2).toString() === "PK";
+  if (!buffer.length || buffer.length > MAX_DOCUMENT_BYTES || !validSignature) {
+    return { error: "The document is invalid or larger than 10 MB." };
+  }
+  return { buffer };
 }
 
 function safeStorageName(name) {
@@ -177,6 +192,30 @@ companiesRouter.get(
   })
 );
 
+companiesRouter.get(
+  "/me/documents/:documentId/download",
+  asyncHandler(async (req, res) => {
+    const { data: document, error } = await supabase.from("company_documents")
+      .select("document_id, file_name, mime_type, storage_bucket, storage_path")
+      .eq("company_id", req.companyId).eq("document_id", req.params.documentId).single();
+    if (error || !document) return res.status(404).json({ error: "Document not found." });
+
+    const { data, error: downloadError } = await supabase.storage
+      .from(document.storage_bucket).download(document.storage_path);
+    if (downloadError) return res.status(400).json({ error: downloadError.message });
+
+    const bytes = Buffer.from(await data.arrayBuffer());
+    const originalName = String(document.file_name || "document").replace(/[\r\n]/g, "_");
+    const fallbackName = originalName.replace(/[^\x20-\x7E]/g, "_").replace(/"/g, "_");
+    const encodedName = encodeURIComponent(originalName).replace(/['()*]/g, character =>
+      `%${character.charCodeAt(0).toString(16).toUpperCase()}`
+    );
+    res.setHeader("Content-Type", document.mime_type || "application/octet-stream");
+    res.setHeader("Content-Disposition", `attachment; filename="${fallbackName}"; filename*=UTF-8''${encodedName}`);
+    res.send(bytes);
+  })
+);
+
 companiesRouter.post(
   "/me/documents",
   requireManager,
@@ -187,17 +226,9 @@ companiesRouter.post(
     if (!SERVICE_TYPES.has(serviceType) || !DOCUMENT_TYPES.has(documentType)) {
       return res.status(400).json({ error: "Invalid service_type or document_type." });
     }
-    if (!String(fileName || "").toLowerCase().endsWith(".docx")) {
-      return res.status(400).json({ error: "Policy documents must be DOCX files." });
-    }
-    const expectedMime = "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
-    if (contentType !== expectedMime || !dataBase64) {
-      return res.status(400).json({ error: "A valid DOCX file is required." });
-    }
-    const buffer = Buffer.from(dataBase64, "base64");
-    if (!buffer.length || buffer.length > MAX_DOCUMENT_BYTES || buffer.subarray(0, 2).toString() !== "PK") {
-      return res.status(400).json({ error: "The DOCX file is invalid or larger than 10 MB." });
-    }
+    const validation = validateDocumentUpload(fileName, contentType, dataBase64);
+    if (validation.error) return res.status(400).json({ error: validation.error });
+    const { buffer } = validation;
 
     await ensureCompanyDocumentBucket();
     const documentId = randomUUID();
@@ -224,6 +255,7 @@ companiesRouter.post(
       return sendDocumentDatabaseError(res, insertError);
     }
 
+    let indexingCompleted = false;
     try {
       const result = await callAiBackend("/api/documents/process", {
         company_id: Number(req.companyId),
@@ -233,14 +265,24 @@ companiesRouter.post(
         storage_bucket: COMPANY_DOCUMENT_BUCKET,
         storage_path: storagePath,
       });
+      indexingCompleted = true;
       const { data, error } = await supabase.from("company_documents").update({
         status: "indexed", chunks_indexed: result.chunks_indexed, error_message: null, indexed_at: new Date().toISOString(),
       }).eq("company_id", req.companyId).eq("document_id", documentId).select().single();
       if (error) throw error;
       res.status(201).json(data);
     } catch (error) {
-      await supabase.from("company_documents").update({ status: "failed", error_message: String(error.message || error).slice(0, 1000) })
-        .eq("company_id", req.companyId).eq("document_id", documentId);
+      if (indexingCompleted) {
+        const { error: cleanupError } = await supabase.rpc("fail_company_document_and_delete_chunks", {
+          p_company_id: Number(req.companyId),
+          p_document_id: String(documentId),
+          p_error_message: String(error.message || error).slice(0, 1000),
+        });
+        if (cleanupError) throw cleanupError;
+      } else {
+        await supabase.from("company_documents").update({ status: "failed", error_message: String(error.message || error).slice(0, 1000) })
+          .eq("company_id", req.companyId).eq("document_id", documentId);
+      }
       res.status(502).json({ error: `Document saved, but indexing failed: ${error.message}`, document_id: documentId });
     }
   })
@@ -254,17 +296,12 @@ companiesRouter.put(
   requireManager,
   asyncHandler(async (req, res) => {
     const { file_name: fileName, content_type: contentType, data_base64: dataBase64 } = req.body || {};
-    const expectedMime = "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
-    if (!String(fileName || "").toLowerCase().endsWith(".docx") || contentType !== expectedMime || !dataBase64) {
-      return res.status(400).json({ error: "A valid DOCX file is required." });
-    }
-    const buffer = Buffer.from(dataBase64, "base64");
-    if (!buffer.length || buffer.length > MAX_DOCUMENT_BYTES || buffer.subarray(0, 2).toString() !== "PK") {
-      return res.status(400).json({ error: "The DOCX file is invalid or larger than 10 MB." });
-    }
+    const validation = validateDocumentUpload(fileName, contentType, dataBase64);
+    if (validation.error) return res.status(400).json({ error: validation.error });
+    const { buffer } = validation;
 
     const { data: document, error: findError } = await supabase.from("company_documents")
-      .select("document_id, service_type, document_type, storage_bucket, storage_path")
+      .select("document_id, service_type, document_type, storage_bucket, storage_path, status, chunks_indexed, error_message, indexed_at")
       .eq("company_id", req.companyId).eq("document_id", req.params.documentId).single();
     if (findError) {
       if (isMissingCompanyDocumentsTable(findError)) return sendDocumentDatabaseError(res, findError);
@@ -280,6 +317,7 @@ companiesRouter.put(
 
     await supabase.from("company_documents").update({ status: "processing", error_message: null })
       .eq("company_id", req.companyId).eq("document_id", document.document_id);
+    let replacementIndexed = false;
     try {
       const result = await callAiBackend("/api/documents/process", {
         company_id: Number(req.companyId),
@@ -289,6 +327,7 @@ companiesRouter.put(
         storage_bucket: document.storage_bucket,
         storage_path: newStoragePath,
       });
+      replacementIndexed = true;
       const { data, error } = await supabase.from("company_documents").update({
         file_name: fileName,
         storage_path: newStoragePath,
@@ -306,10 +345,32 @@ companiesRouter.put(
       res.json(data);
     } catch (error) {
       await supabase.storage.from(document.storage_bucket).remove([newStoragePath]);
-      await supabase.from("company_documents").update({
-        status: "failed", error_message: String(error.message || error).slice(0, 1000),
+      let restored = !replacementIndexed;
+      if (replacementIndexed) {
+        try {
+          await callAiBackend("/api/documents/process", {
+            company_id: Number(req.companyId),
+            document_id: String(document.document_id),
+            document_type: document.document_type,
+            service_type: document.service_type,
+            storage_bucket: document.storage_bucket,
+            storage_path: document.storage_path,
+          });
+          restored = true;
+        } catch (restoreError) {
+          console.error("Could not restore the previous document index:", restoreError);
+        }
+      }
+      await supabase.from("company_documents").update(restored ? {
+        status: document.status,
+        chunks_indexed: document.chunks_indexed,
+        error_message: document.error_message,
+        indexed_at: document.indexed_at,
+      } : {
+        status: "failed",
+        error_message: `Replacement failed and the previous index could not be restored: ${String(error.message || error)}`.slice(0, 1000),
       }).eq("company_id", req.companyId).eq("document_id", document.document_id);
-      res.status(502).json({ error: `Replacement saved temporarily, but indexing failed: ${error.message}` });
+      res.status(502).json({ error: `Replacement failed; the previous document was retained or restored when possible: ${error.message}` });
     }
   })
 );
@@ -327,15 +388,17 @@ companiesRouter.delete(
     }
     if (!document) return res.status(404).json({ error: "Document not found." });
 
-    const { error: rpcError } = await supabase.rpc("delete_document_chunks_bge_large", {
+    const { error: rpcError } = await supabase.rpc("delete_company_document_with_chunks", {
       p_company_id: Number(req.companyId), p_document_id: String(document.document_id),
     });
     if (rpcError) return res.status(400).json({ error: rpcError.message });
     const { error: storageError } = await supabase.storage.from(document.storage_bucket).remove([document.storage_path]);
-    if (storageError) return res.status(400).json({ error: storageError.message });
-    const { error: deleteError } = await supabase.from("company_documents").delete()
-      .eq("company_id", req.companyId).eq("document_id", document.document_id);
-    if (deleteError) return res.status(400).json({ error: deleteError.message });
+    if (storageError) {
+      // The user-visible row and its vectors are already gone atomically. Keep
+      // the request successful and leave only an inaccessible orphan for
+      // operational cleanup instead of exposing a half-deleted document.
+      console.error(`Orphaned Storage object ${document.storage_bucket}/${document.storage_path}:`, storageError);
+    }
     res.status(204).end();
   })
 );
@@ -378,6 +441,12 @@ companiesRouter.patch(
         }
         req.body.settings.loyalty_earn_rate = earnRate;
       }
+      if (req.body.settings.selected_services !== undefined) {
+        const selected = req.body.settings.selected_services;
+        if (!Array.isArray(selected) || selected.some(service => !["grooming", "boarding", "daycare"].includes(service))) {
+          return res.status(400).json({ error: "selected_services contains an unsupported service." });
+        }
+      }
       const { data: current, error: fetchError } = await supabase
         .from("companies")
         .select("settings_json")
@@ -385,7 +454,11 @@ companiesRouter.patch(
         .single();
       if (fetchError) return res.status(400).json({ error: fetchError.message });
 
-      payload.settings_json = { ...(current.settings_json || {}), ...req.body.settings };
+      const nextSettings = { ...(current.settings_json || {}), ...req.body.settings };
+      // Uploaded document state belongs exclusively to company_documents.
+      // Remove the retired duplicate filename map on every settings write.
+      delete nextSettings.policies;
+      payload.settings_json = nextSettings;
     }
 
     if (Object.keys(payload).length === 0) {

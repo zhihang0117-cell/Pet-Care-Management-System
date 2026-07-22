@@ -197,7 +197,7 @@ document.addEventListener("DOMContentLoaded", async () => {
     }
 
     if (document.getElementById("settingsTabs")) {
-      initSettings();
+      await initSettings();
     }
 
     if (document.getElementById("loyaltyPendingBody")) {
@@ -7236,7 +7236,13 @@ let companyDocumentsAvailable = true;
 
 function showFilename(input, targetId) {
   const el = q(targetId);
-  if (el && input.files.length) el.innerHTML = `<img src="icon/upload.png" alt="" class="row-icon">${input.files[0].name}`;
+  if (!el || !input.files.length) return;
+  el.replaceChildren();
+  const icon = document.createElement("img");
+  icon.src = "icon/upload.png";
+  icon.alt = "";
+  icon.className = "row-icon";
+  el.append(icon, document.createTextNode(input.files[0].name));
 }
 
 function showBusinessLogoPreview(source, label) {
@@ -7271,7 +7277,11 @@ function handleBusinessLogoSelection(input) {
 
 function renderServicePolicyCards(company) {
   const settings = company?.settings_json || {};
-  const activeServices = settings.selected_services || ["grooming", "boarding", "daycare"];
+  const allowedServices = new Set(["grooming", "boarding", "daycare"]);
+  const configuredServices = Array.isArray(settings.selected_services)
+    ? settings.selected_services.filter(service => allowedServices.has(service))
+    : [];
+  const activeServices = configuredServices.length ? configuredServices : ["grooming", "boarding", "daycare"];
   const policyTypes = ["general", ...activeServices];
 
   const textEl = q("selectedServicesText");
@@ -7297,6 +7307,7 @@ function renderServicePolicyCards(company) {
         </div>
         ${currentAccountRole === "manager" ? `
           <div class="policy-document-actions">
+            <button type="button" class="policy-action-button" onclick="downloadPolicyDocument('${doc.document_id}', '${encodeURIComponent(doc.file_name)}')">Download</button>
             <label class="policy-action-button" for="replace_policy_${doc.document_id}">Replace</label>
             <input class="hidden" type="file" id="replace_policy_${doc.document_id}" accept=".docx,application/vnd.openxmlformats-officedocument.wordprocessingml.document" onchange="replacePolicyDocument('${doc.document_id}', this)">
             <button type="button" class="policy-action-button policy-action-danger" onclick="deletePolicyDocument('${doc.document_id}')">Remove</button>
@@ -7320,6 +7331,14 @@ function renderServicePolicyCards(company) {
       </div>
     `;
   }).join("");
+}
+
+async function downloadPolicyDocument(documentId, encodedFileName) {
+  try {
+    await api.downloadCompanyDocument(documentId, decodeURIComponent(encodedFileName));
+  } catch (error) {
+    alert(error.message || "Failed to download document.");
+  }
 }
 
 async function replacePolicyDocument(documentId, input) {
@@ -7388,18 +7407,9 @@ function populateSettingsForm(company) {
   q("cfg_confirmRule").value = s.confirm_rule || "";
 }
 
-function collectServicePolicyNames() {
-  const activeServices = currentCompanyRecord?.settings_json?.selected_services || ["grooming", "boarding", "daycare"];
-  const existing = currentCompanyRecord?.settings_json?.policies || {};
-  const result = {};
-  ["general", ...activeServices].forEach(type => {
-    const input = q("policy_" + type);
-    result[type] = input?.files[0]?.name || existing[type] || "";
-  });
-  return result;
-}
-
 async function saveBusinessSettings() {
+  const saveButton = q("settingsSaveButton");
+  if (saveButton?.disabled) return;
   const profilePayload = {
     company_name: q("cfg_businessName").value.trim(),
     country: q("cfg_country").value,
@@ -7429,13 +7439,16 @@ async function saveBusinessSettings() {
     currency: q("cfg_currency").value,
     weight_unit: q("cfg_weight").value,
     height_unit: q("cfg_height").value,
-    policies: collectServicePolicyNames(),
     booking_url: q("cfg_bookingUrl").value,
     whatsapp_number: q("cfg_whatsapp").value,
     confirm_rule: q("cfg_confirmRule").value,
   };
 
   try {
+    if (saveButton) {
+      saveButton.disabled = true;
+      saveButton.textContent = "Saving…";
+    }
     if (selectedBusinessLogoFile) {
       currentCompanyRecord = await api.uploadCompanyLogo(selectedBusinessLogoFile);
       selectedBusinessLogoFile = null;
@@ -7444,10 +7457,15 @@ async function saveBusinessSettings() {
       q("cfg_logo").value = "";
       showBusinessLogoPreview(currentCompanyRecord.logo_path, "Current business logo · upload complete");
     }
-    const activeServices = currentCompanyRecord?.settings_json?.selected_services || ["grooming", "boarding", "daycare"];
+    const configuredServices = (currentCompanyRecord?.settings_json?.selected_services || [])
+      .filter(service => ["grooming", "boarding", "daycare"].includes(service));
+    const activeServices = configuredServices.length ? configuredServices : ["grooming", "boarding", "daycare"];
     for (const type of ["general", ...activeServices]) {
       const file = q(`policy_${type}`)?.files?.[0];
-      if (file) await api.uploadCompanyDocument(file, type, "policies");
+      if (file) {
+        await api.uploadCompanyDocument(file, type, "policies");
+        q(`policy_${type}`).value = "";
+      }
     }
     currentCompanyRecord = await api.patch("/companies/me", { ...profilePayload, settings: settingsPayload });
     currentCompanyDocuments = await api.listCompanyDocuments();
@@ -7468,7 +7486,18 @@ async function saveBusinessSettings() {
       window.__settingsSavedTimer = setTimeout(() => { note.style.opacity = "0"; }, 2200);
     }
   } catch (error) {
+    try {
+      currentCompanyDocuments = await api.listCompanyDocuments();
+      renderServicePolicyCards(currentCompanyRecord);
+    } catch (refreshError) {
+      console.warn("Could not refresh documents after a partial save:", refreshError);
+    }
     alert(error.message || "Failed to save settings.");
+  } finally {
+    if (saveButton) {
+      saveButton.disabled = false;
+      saveButton.textContent = "Save Changes";
+    }
   }
 }
 
@@ -7598,6 +7627,10 @@ async function addTeamAccount() {
 
   if (!email || !password) {
     if (note) { note.textContent = "Enter an email and password."; note.style.color = "#DC2626"; }
+    return;
+  }
+  if (!q("newAccountEmail").checkValidity()) {
+    if (note) { note.textContent = "Enter a valid email address."; note.style.color = "#DC2626"; }
     return;
   }
   if (password.length < 8) {

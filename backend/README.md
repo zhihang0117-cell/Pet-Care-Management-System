@@ -37,7 +37,7 @@ Set `AI_BACKEND_URL` and `AI_BACKEND_INTERNAL_KEY` in `backend/.env`. Set the
 same secret as `INTERNAL_API_KEY` in `ai-backend/.env`, then start FastAPI
 before Express.
 
-Policy DOCX files use the private `company-documents` bucket with paths shaped
+Business DOCX files use the private `business-documents` bucket with paths shaped
 as `<company_id>/<document_id>/<file-name>`. Express derives `company_id` from
 the verified Supabase login, records processing state in `company_documents`,
 and asks Python to chunk, tag, embed, and atomically replace only that

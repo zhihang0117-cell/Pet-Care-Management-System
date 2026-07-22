@@ -88,7 +88,7 @@ async function uploadCompanyLogo(file) {
 async function uploadCompanyDocument(file, serviceType, documentType = "policies") {
   const docxMime = "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
   if (!file || !file.name.toLowerCase().endsWith(".docx") || (file.type && file.type !== docxMime)) {
-    throw new Error("Policy documents must be valid DOCX files.");
+    throw new Error("Business documents must be valid DOCX files.");
   }
   if (file.size > 10 * 1024 * 1024) throw new Error("Policy documents must be 10 MB or smaller.");
   return apiRequest("/companies/me/documents", {
@@ -106,7 +106,7 @@ async function uploadCompanyDocument(file, serviceType, documentType = "policies
 async function replaceCompanyDocument(documentId, file) {
   const docxMime = "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
   if (!file || !file.name.toLowerCase().endsWith(".docx") || (file.type && file.type !== docxMime)) {
-    throw new Error("Policy documents must be valid DOCX files.");
+    throw new Error("Business documents must be valid DOCX files.");
   }
   if (file.size > 10 * 1024 * 1024) throw new Error("Policy documents must be 10 MB or smaller.");
   return apiRequest(`/companies/me/documents/${encodeURIComponent(documentId)}`, {
@@ -119,6 +119,26 @@ async function replaceCompanyDocument(documentId, file) {
   });
 }
 
+async function downloadCompanyDocument(documentId, fileName) {
+  const token = await getSupabaseAccessToken();
+  if (!token) throw new Error("Not logged in — no Supabase session found.");
+  const res = await fetch(`${API_BASE_URL}/companies/me/documents/${encodeURIComponent(documentId)}/download`, {
+    headers: { "Authorization": `Bearer ${token}` },
+  });
+  if (!res.ok) {
+    const payload = await res.json().catch(() => ({}));
+    throw new Error(payload.error || `Document download failed (${res.status})`);
+  }
+  const objectUrl = URL.createObjectURL(await res.blob());
+  const link = document.createElement("a");
+  link.href = objectUrl;
+  link.download = fileName || "document";
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(objectUrl);
+}
+
 const api = {
   get: (path) => apiRequest(path),
   post: (path, body) => apiRequest(path, { method: "POST", body }),
@@ -128,6 +148,7 @@ const api = {
   uploadCompanyLogo,
   uploadCompanyDocument,
   replaceCompanyDocument,
+  downloadCompanyDocument,
   listCompanyDocuments: () => api.get("/companies/me/documents"),
   deleteCompanyDocument: (documentId) => api.del(`/companies/me/documents/${encodeURIComponent(documentId)}`),
 

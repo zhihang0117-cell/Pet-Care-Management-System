@@ -1,5 +1,13 @@
 // ── Utility ──────────────────────────────────────────────────────────────────
 function q(id) { return document.getElementById(id); }
+function escapeHtml(value) {
+    return String(value ?? '')
+        .replaceAll('&', '&amp;')
+        .replaceAll('<', '&lt;')
+        .replaceAll('>', '&gt;')
+        .replaceAll('"', '&quot;')
+        .replaceAll("'", '&#039;');
+}
 
 // ── Back to top ───────────────────────────────────────────────────────────────
 const btn = q('backToTop');
@@ -172,27 +180,29 @@ function checkPasswordStrength() {
 // Registration is atomic on the backend (POST /api/auth/register-company
 // creates the Supabase Auth user AND the company+manager account in one
 // transaction — see backend/src/routes/auth.js), but the UI collects
-// credentials here (step 1) and the business profile on reg-setup.html
-// (step 2). So this step only validates and stashes the credentials in
-// sessionStorage; the actual account is created when step 2 submits.
+// email/services here (step 1) and the password/business profile on
+// reg-setup.html (step 2). No password is persisted between pages.
 function registerBusinessAccount() {
     const email    = q('reg_email')?.value.trim();
-    const password = q('reg_password')?.value;
-    const confirm  = q('reg_confirm')?.value;
     const services = selectedServices();
     if (!email)        { alert('Please enter manager login email.'); return; }
+    if (!q('reg_email').checkValidity()) { alert('Please enter a valid manager email.'); return; }
     if (!services.length) { alert('Please select at least one service.'); return; }
-    if (!password || password.length < 8) { alert('Password must be at least 8 characters.'); return; }
-    if (password !== confirm) { alert('Password and confirm password must match.'); return; }
 
-    sessionStorage.setItem('pawfect_pending_registration', JSON.stringify({ email, password, services }));
+    sessionStorage.setItem('pawfect_pending_registration', JSON.stringify({ email, services }));
     location.href = 'reg-setup.html';
 }
 
 // ── Setup page helpers ────────────────────────────────────────────────────────
 function showFilename(input, targetId) {
     const el = q(targetId);
-    if (el && input.files.length) el.innerHTML = '<img src="icon/upload.png" alt="" class="row-icon">' + input.files[0].name;
+    if (!el || !input.files.length) return;
+    el.replaceChildren();
+    const icon = document.createElement('img');
+    icon.src = 'icon/upload.png';
+    icon.alt = '';
+    icon.className = 'row-icon';
+    el.append(icon, document.createTextNode(input.files[0].name));
 }
 // Fires the real account creation: combines the step-1 credentials (held in
 // sessionStorage) with this page's business profile fields, calls the
@@ -213,9 +223,13 @@ async function saveServiceConfiguration() {
     const state = q('state')?.value.trim();
     const postcode = q('zip')?.value.trim();
     const businessDescription = q('cfg_description')?.value.trim();
+    const password = q('reg_password')?.value || '';
+    const confirmPassword = q('reg_confirm')?.value || '';
 
     if (!businessName) { alert('Please enter your business/company name.'); return; }
     if (!postcode)     { alert('Please enter your postcode.'); return; }
+    if (password.length < 8) { alert('Password must be at least 8 characters.'); return; }
+    if (password !== confirmPassword) { alert('Password and confirm password must match.'); return; }
 
     const requiredSetupFields = [
         'hour_Mon', 'hour_Tue', 'hour_Wed', 'hour_Thu', 'hour_Fri', 'hour_Sat', 'hour_Sun',
@@ -268,10 +282,6 @@ async function saveServiceConfiguration() {
         timezone: q('timezone').value,
         currency: q('currency').value,
         height_unit: q('height').value,
-        policies: Object.fromEntries(["general", ...pending.services].map(service => [
-            service,
-            q(`policy_${service}`)?.files?.[0]?.name || '',
-        ])),
         booking_url: q('cfg_bookingUrl').value.trim(),
         whatsapp_number: q('cfg_whatsapp').value.trim(),
         confirm_rule: q('cfg_confirmRule').value,
@@ -288,7 +298,7 @@ async function saveServiceConfiguration() {
     try {
         const result = await api.registerCompany({
             email: pending.email,
-            password: pending.password,
+            password,
             businessName,
             country,
             streetAddress,
@@ -303,7 +313,7 @@ async function saveServiceConfiguration() {
 
         const { error: signInError } = await supabaseClient.auth.signInWithPassword({
             email: pending.email,
-            password: pending.password,
+            password,
         });
         if (signInError) {
             sessionStorage.removeItem('pawfect_pending_registration');
@@ -349,6 +359,8 @@ async function saveServiceConfiguration() {
         localStorage.removeItem('pawfect_existing_completed_account');
         localStorage.setItem('pawfect_first_login', 'true');
         sessionStorage.removeItem('pawfect_pending_registration');
+        q('reg_password').value = '';
+        q('reg_confirm').value = '';
         setupTeamAccounts = [];
 
         const setupWarnings = [
@@ -386,17 +398,20 @@ function renderSetupAccountsPanel() {
         ...setupTeamAccounts.map(account => ({ ...account, isSelf: false })),
     ];
 
-    tbody.innerHTML = list.map(a => {
+    tbody.innerHTML = list.map((a, index) => {
         const isSelf = a.isSelf || a.email.toLowerCase() === currentEmail;
         const roleLabel = a.role.charAt(0).toUpperCase() + a.role.slice(1).toLowerCase();
         return `
             <tr>
-                <td>${a.email}${isSelf ? ' <span class="field-note">(you)</span>' : ''}</td>
+                <td>${escapeHtml(a.email)}${isSelf ? ' <span class="field-note">(you)</span>' : ''}</td>
                 <td><span class="status-tag ${roleLabel === 'Manager' ? 'status-scheduled' : 'status-done'}">${roleLabel}</span></td>
-                <td>${isSelf ? '<span class="field-note">—</span>' : `<button class="edit-btn" onclick="removeSetupStaffAccount('${a.email}')">Remove</button>`}</td>
+                <td>${isSelf ? '<span class="field-note">—</span>' : `<button class="edit-btn setup-account-remove" data-index="${index - 1}">Remove</button>`}</td>
             </tr>
         `;
     }).join('');
+    tbody.querySelectorAll('.setup-account-remove').forEach(button => {
+        button.addEventListener('click', () => removeSetupStaffAccountByIndex(Number(button.dataset.index)));
+    });
 }
 function addSetupStaffAccount() {
     const email = q('setupAccountEmail').value.trim().toLowerCase();
@@ -406,6 +421,10 @@ function addSetupStaffAccount() {
 
     if (!email || !password) {
         if (note) { note.textContent = 'Enter an email and password.'; note.style.color = '#DC2626'; }
+        return;
+    }
+    if (!q('setupAccountEmail').checkValidity()) {
+        if (note) { note.textContent = 'Enter a valid email address.'; note.style.color = '#DC2626'; }
         return;
     }
     if (password.length < 8) {
@@ -435,6 +454,10 @@ function removeSetupStaffAccount(email) {
 
     setupTeamAccounts = setupTeamAccounts.filter(a => a.email !== normalizedEmail);
     renderSetupAccountsPanel();
+}
+function removeSetupStaffAccountByIndex(index) {
+    const account = setupTeamAccounts[index];
+    if (account) removeSetupStaffAccount(account.email);
 }
 if (q('setupAccountsTableBody')) renderSetupAccountsPanel();
 
