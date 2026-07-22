@@ -30,6 +30,22 @@ test("settings policy cards use the shared HTML escaping helper", async () => {
   assert.match(settings, /encodeURIComponent\(doc\.file_name\)\.replaceAll\("'", "%27"\)/);
 });
 
+test("policy documents have a private authenticated preview flow", async () => {
+  const settings = await source("web/common.js");
+  const apiClient = await source("web/api-client.js");
+  const routes = await source("backend/src/routes/companies.js");
+  assert.match(settings, /viewPolicyDocument\('\$\{doc\.document_id\}'\)/);
+  assert.match(apiClient, /documents\/\$\{encodeURIComponent\(documentId\)\}\/preview/);
+  assert.match(routes, /"\/me\/documents\/:documentId\/preview"/);
+  assert.match(routes, /mammoth\.extractRawText\(\{ buffer \}\)/);
+});
+
+test("Render private hostnames are normalized before AI backend fetches", async () => {
+  const routes = await source("backend/src/routes/companies.js");
+  assert.match(routes, /\^https\?:\\\/\\\//i);
+  assert.match(routes, /`http:\/\/\$\{configuredUrl\}`/);
+});
+
 test("document deletion is atomic inside Postgres", async () => {
   const migration = await source("backend/sql/company_documents_migration.sql");
   const routes = await source("backend/src/routes/companies.js");

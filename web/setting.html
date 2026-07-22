@@ -404,6 +404,19 @@
   </main>
 </div>
 
+<div class="bk-modal-backdrop policy-preview-backdrop" id="policyPreviewModal" role="dialog" aria-modal="true" aria-hidden="true" aria-labelledby="policyPreviewTitle" onclick="if (event.target === this) closePolicyPreview()">
+  <div class="bk-modal policy-preview-modal">
+    <div class="policy-preview-header">
+      <h2 id="policyPreviewTitle">Document preview</h2>
+      <button type="button" class="policy-preview-close" aria-label="Close document preview" onclick="closePolicyPreview()">&times;</button>
+    </div>
+    <pre class="policy-preview-content" id="policyPreviewContent">Loading document…</pre>
+    <div class="bk-modal-actions">
+      <button type="button" class="btn" onclick="closePolicyPreview()">Close</button>
+    </div>
+  </div>
+</div>
+
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js"></script>
 <script src="supabase-config.js"></script>
 <script src="api-client.js"></script>

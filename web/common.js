@@ -7306,13 +7306,15 @@ function renderServicePolicyCards(company) {
           </div>
           ${doc.error_message ? `<small class="policy-error">${escapeUiText(doc.error_message)}</small>` : ""}
         </div>
-        ${currentAccountRole === "manager" ? `
-          <div class="policy-document-actions">
+        <div class="policy-document-actions">
+          <button type="button" class="policy-action-button" onclick="viewPolicyDocument('${doc.document_id}')">View</button>
+          ${currentAccountRole === "manager" ? `
             <button type="button" class="policy-action-button" onclick="downloadPolicyDocument('${doc.document_id}', '${encodedFileName}')">Download</button>
             <label class="policy-action-button" for="replace_policy_${doc.document_id}">Replace</label>
             <input class="hidden" type="file" id="replace_policy_${doc.document_id}" accept=".docx,application/vnd.openxmlformats-officedocument.wordprocessingml.document" onchange="replacePolicyDocument('${doc.document_id}', this)">
             <button type="button" class="policy-action-button policy-action-danger" onclick="deletePolicyDocument('${doc.document_id}')">Remove</button>
-          </div>` : ""}
+          ` : ""}
+        </div>
       </div>`;
     }).join("") : '<div class="policy-empty-state"><strong>No policy uploaded</strong><span>Add a DOCX file to make this policy available to the knowledge base.</span></div>';
     return `
@@ -7333,6 +7335,41 @@ function renderServicePolicyCards(company) {
     `;
   }).join("");
 }
+
+async function viewPolicyDocument(documentId) {
+  const modal = q("policyPreviewModal");
+  const title = q("policyPreviewTitle");
+  const content = q("policyPreviewContent");
+  if (!modal || !title || !content) return;
+
+  title.textContent = "Document preview";
+  content.textContent = "Loading document…";
+  modal.style.display = "flex";
+  modal.setAttribute("aria-hidden", "false");
+  document.body.classList.add("modal-open");
+
+  try {
+    const preview = await api.previewCompanyDocument(documentId);
+    title.textContent = preview.file_name || "Document preview";
+    content.textContent = preview.text || "This document does not contain any readable text.";
+  } catch (error) {
+    content.textContent = error.message || "Failed to preview document.";
+  }
+}
+
+function closePolicyPreview() {
+  const modal = q("policyPreviewModal");
+  if (!modal) return;
+  modal.style.display = "none";
+  modal.setAttribute("aria-hidden", "true");
+  document.body.classList.remove("modal-open");
+}
+
+document.addEventListener("keydown", event => {
+  if (event.key === "Escape" && q("policyPreviewModal")?.style.display === "flex") {
+    closePolicyPreview();
+  }
+});
 
 async function downloadPolicyDocument(documentId, encodedFileName) {
   try {

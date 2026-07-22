@@ -1,5 +1,6 @@
 import { Router } from "express";
 import { randomUUID } from "node:crypto";
+import mammoth from "mammoth";
 import { supabase } from "../supabaseClient.js";
 import { asyncHandler } from "../middleware/auth.js";
 import { requireManager } from "../middleware/authUser.js";
@@ -82,7 +83,8 @@ function safeStorageName(name) {
 }
 
 async function callAiBackend(path, body) {
-  const baseUrl = String(process.env.AI_BACKEND_URL || "http://127.0.0.1:8000").replace(/\/$/, "");
+  const configuredUrl = String(process.env.AI_BACKEND_URL || "http://127.0.0.1:8000").replace(/\/$/, "");
+  const baseUrl = /^https?:\/\//i.test(configuredUrl) ? configuredUrl : `http://${configuredUrl}`;
   const response = await fetch(`${baseUrl}${path}`, {
     method: "POST",
     headers: {
@@ -213,6 +215,28 @@ companiesRouter.get(
     res.setHeader("Content-Type", document.mime_type || "application/octet-stream");
     res.setHeader("Content-Disposition", `attachment; filename="${fallbackName}"; filename*=UTF-8''${encodedName}`);
     res.send(bytes);
+  })
+);
+
+companiesRouter.get(
+  "/me/documents/:documentId/preview",
+  asyncHandler(async (req, res) => {
+    const { data: document, error } = await supabase.from("company_documents")
+      .select("document_id, file_name, storage_bucket, storage_path")
+      .eq("company_id", req.companyId).eq("document_id", req.params.documentId).single();
+    if (error || !document) return res.status(404).json({ error: "Document not found." });
+
+    const { data, error: downloadError } = await supabase.storage
+      .from(document.storage_bucket).download(document.storage_path);
+    if (downloadError) return res.status(400).json({ error: downloadError.message });
+
+    try {
+      const buffer = Buffer.from(await data.arrayBuffer());
+      const result = await mammoth.extractRawText({ buffer });
+      res.json({ file_name: document.file_name, text: result.value.trim() });
+    } catch (_error) {
+      res.status(422).json({ error: "This DOCX document could not be converted into a preview." });
+    }
   })
 );
 

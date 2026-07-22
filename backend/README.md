@@ -67,6 +67,21 @@ Visit `http://localhost:4000/health` — you should see `{"ok":true,"companyId":
 
 **Render.com** (or Railway — same idea), free/cheap tier, always-on Node process:
 
+The repository root includes `render.yaml`, which defines both required
+services and connects them over Render's private network:
+
+- `pawfectai` — the Express API and static frontend.
+- `pawfectai-ai` — the FastAPI document-indexing service.
+
+Create or sync a Render Blueprint from that file. During the first sync,
+provide `SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY` when prompted. Render
+copies those values to the AI service, generates the shared internal API key,
+and supplies the AI service's private hostname to Express automatically.
+
+The AI service uses a Standard instance because the local BGE-Large embedding
+model does not fit reliably in a free instance. This creates a paid Render
+service; review Render's displayed monthly price before applying the Blueprint.
+
 - Simplest mental model for a small team: it's just `npm start`, same as local.
 - Environment variables are set once in the dashboard (your Supabase service
   key never touches your frontend's hosting, e.g. Vercel/Netlify/GitHub Pages,

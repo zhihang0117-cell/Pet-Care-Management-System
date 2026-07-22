@@ -149,6 +149,7 @@ const api = {
   uploadCompanyDocument,
   replaceCompanyDocument,
   downloadCompanyDocument,
+  previewCompanyDocument: (documentId) => api.get(`/companies/me/documents/${encodeURIComponent(documentId)}/preview`),
   listCompanyDocuments: () => api.get("/companies/me/documents"),
   deleteCompanyDocument: (documentId) => api.del(`/companies/me/documents/${encodeURIComponent(documentId)}`),
 

@@ -1,0 +1,64 @@
+services:
+  - type: web
+    name: pawfectai
+    runtime: node
+    plan: free
+    region: singapore
+    rootDir: backend
+    buildCommand: npm ci
+    startCommand: npm start
+    healthCheckPath: /health
+    autoDeployTrigger: commit
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_SERVICE_ROLE_KEY
+        sync: false
+      - key: CORS_ORIGINS
+        value: https://pawfectai.onrender.com
+      - key: LLM_API_KEY
+        generateValue: true
+      - key: AI_BACKEND_URL
+        fromService:
+          type: web
+          name: pawfectai-ai
+          property: hostport
+      - key: AI_BACKEND_INTERNAL_KEY
+        fromService:
+          type: web
+          name: pawfectai-ai
+          envVarKey: INTERNAL_API_KEY
+
+  - type: web
+    name: pawfectai-ai
+    runtime: python
+    # BGE-Large is a local embedding model and needs substantially more memory
+    # than Render's free instance. Change this only if the model is externalized.
+    plan: standard
+    region: singapore
+    rootDir: ai-backend
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /health
+    autoDeployTrigger: commit
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.11
+      - key: SUPABASE_URL
+        fromService:
+          type: web
+          name: pawfectai
+          envVarKey: SUPABASE_URL
+      - key: SUPABASE_SERVICE_KEY
+        fromService:
+          type: web
+          name: pawfectai
+          envVarKey: SUPABASE_SERVICE_ROLE_KEY
+      - key: INTERNAL_API_KEY
+        generateValue: true
+      - key: HF_HOME
+        value: /opt/render/project/.cache/huggingface
+      - key: SUPABASE_STORAGE_BUCKET
+        value: business-documents

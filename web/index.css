@@ -1406,6 +1406,13 @@ select {
 .policy-document-actions { display: flex; align-items: center; gap: 6px; }
 .policy-action-button { border: 0; background: transparent; color: var(--btn-brown); padding: 5px 6px; cursor: pointer; font: inherit; font-size: .72rem !important; font-weight: 700 !important; }
 .policy-action-danger { color: #B91C1C; }
+.policy-preview-backdrop { z-index: 300; }
+.policy-preview-modal { width: min(820px, 100%); }
+.policy-preview-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 20px; }
+.policy-preview-header h2 { margin-bottom: 18px; overflow-wrap: anywhere; }
+.policy-preview-close { border: 0; background: transparent; color: var(--text-muted); cursor: pointer; font-size: 1.8rem; line-height: 1; padding: 0 4px; }
+.policy-preview-content { min-height: 240px; max-height: 58vh; overflow: auto; margin: 0; padding: 20px; border: 1px solid var(--accent-sand); border-radius: var(--radius-small); background: var(--bg-warm-cream); color: var(--text-charcoal); font: 0.88rem/1.65 var(--font-sans); white-space: pre-wrap; overflow-wrap: anywhere; }
+body.modal-open { overflow: hidden; }
 .policy-empty-state { border: 1px dashed var(--accent-sand); border-radius: 12px; padding: 18px; text-align: center; display: flex; flex-direction: column; gap: 4px; color: var(--text-muted); }
 .policy-empty-state strong { color: var(--text-charcoal); font-size: .82rem; }
 .policy-empty-state span { font-size: .72rem; }
