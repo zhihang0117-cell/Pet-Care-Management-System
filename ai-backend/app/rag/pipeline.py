@@ -18,6 +18,7 @@ def process_document(
     company_id: int,
     document_id: str,
     document_type: str,
+    service_type: str = "general",
 ) -> dict[str, Any]:
     """DOCX → chunking → metadata → BGE-Large embeddings → document-scoped Supabase replace."""
     path = Path(local_file_path)
@@ -36,6 +37,7 @@ def process_document(
         company_id=company_id,
         document_id=document_id,
         document_type=document_type,
+        service_type=service_type,
     )
 
     store = ProductionVectorStore.for_company(company_id)
@@ -45,6 +47,7 @@ def process_document(
         "company_id": company_id,
         "document_id": document_id,
         "document_type": document_type,
+        "service_type": service_type,
         "chunks_indexed": indexed_count,
         "chunk_ids": [str(c["chunk_id"]) for c in chunks],
         "model_key": PRODUCTION_MODEL_KEY,
@@ -60,6 +63,7 @@ def process_document_from_storage(
     document_type: str,
     storage_bucket: str,
     storage_path: str,
+    service_type: str = "general",
 ) -> dict[str, Any]:
     temp_path = download_storage_docx(storage_bucket, storage_path)
     try:
@@ -68,6 +72,7 @@ def process_document_from_storage(
             company_id=company_id,
             document_id=document_id,
             document_type=document_type,
+            service_type=service_type,
         )
     finally:
         if temp_path.exists():

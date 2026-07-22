@@ -8,6 +8,34 @@ function isManager(account) {
     return (account?.role || '').toLowerCase() === 'manager';
 }
 
+const PAWFECT_SERVICE_TYPES = ['grooming', 'boarding', 'daycare'];
+
+function getEnabledServices() {
+    const saved = getCurrentAccount()?.services;
+    if (!Array.isArray(saved)) return [...PAWFECT_SERVICE_TYPES];
+    const enabled = saved.filter(service => PAWFECT_SERVICE_TYPES.includes(service));
+    return enabled.length ? enabled : [...PAWFECT_SERVICE_TYPES];
+}
+
+function applyEnabledServiceVisibility() {
+    const enabled = getEnabledServices();
+    const enabledSet = new Set(enabled);
+
+    document.querySelectorAll('[data-filter]').forEach(control => {
+        const service = control.dataset.filter;
+        if (!PAWFECT_SERVICE_TYPES.includes(service)) return;
+        control.hidden = !enabledSet.has(service);
+    });
+
+    document.querySelectorAll('select option').forEach(option => {
+        if (PAWFECT_SERVICE_TYPES.includes(option.value) && !enabledSet.has(option.value)) option.remove();
+    });
+
+    document.querySelectorAll('[data-filter="all"]').forEach(control => {
+        control.hidden = enabled.length === 1;
+    });
+}
+
 async function logoutAccount(event) {
     event?.preventDefault();
     try {
@@ -64,6 +92,7 @@ function renderSidebarAccount() {
 
 document.addEventListener('DOMContentLoaded', () => {
     renderSidebarAccount();
+    applyEnabledServiceVisibility();
 
     document.getElementById('logoutBtn')?.addEventListener('click', logoutAccount);
 

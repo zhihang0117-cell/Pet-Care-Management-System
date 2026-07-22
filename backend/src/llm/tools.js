@@ -149,6 +149,21 @@ function todayStamp() {
   return { date: `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`, time: d.toTimeString().slice(0, 8) };
 }
 
+async function requireEnabledService(companyId, serviceType) {
+  const { data, error } = await supabase
+    .from("companies")
+    .select("settings_json")
+    .eq("company_id", companyId)
+    .single();
+  if (error) throw error;
+  const configured = data?.settings_json?.selected_services;
+  if (Array.isArray(configured) && configured.length && !configured.includes(serviceType)) {
+    const err = new Error(`The ${serviceType} service module is not enabled for this company.`);
+    err.status = 403;
+    throw err;
+  }
+}
+
 /** Executes one named tool call. Throws (with .status) on failure. */
 export async function executeTool(companyId, toolName, input = {}) {
   switch (toolName) {
@@ -164,6 +179,7 @@ export async function executeTool(companyId, toolName, input = {}) {
       return llmDeleteRecord(companyId, input);
 
     case "create_booking":
+      await requireEnabledService(companyId, input.type);
       return createBooking(input.type, companyId, input);
 
     case "get_payment_detail":

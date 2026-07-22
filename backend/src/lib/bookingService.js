@@ -1,33 +1,8 @@
 import { supabase } from "../supabaseClient.js";
 import { computeFinalAmount } from "./pricing.js";
+import { BOOKING_TYPES, getBookingTypeConfig } from "./bookingTypes.js";
 
-export const BOOKING_TYPES = {
-  grooming: {
-    table: "grooming_booking",
-    idColumn: "grooming_booking_id",
-    hasAddOn: true,
-    basePriceCol: "price",
-    addOnPriceCol: "add_on_price",
-    paymentIdColumn: "payment_id",
-  },
-  daycare: {
-    table: "daycare_booking",
-    idColumn: "daycare_booking_id",
-    hasAddOn: false,
-    basePriceCol: "price",
-    addOnPriceCol: null,
-    paymentIdColumn: "payment_id",
-  },
-  boarding: {
-    table: "boarding_booking",
-    idColumn: "boarding_booking_id",
-    hasAddOn: false,
-    basePriceCol: "total_price",
-    addOnPriceCol: null,
-    multiNight: true,
-    paymentIdColumn: "payment_id",
-  },
-};
+export { BOOKING_TYPES } from "./bookingTypes.js";
 
 export function todayStamp() {
   const d = new Date();
@@ -165,7 +140,7 @@ export async function findNamesForPayments(companyId, paymentIds) {
  * applied later, at verification time, via paymentService.verifyPayment).
  */
 export async function createBooking(type, companyId, body) {
-  const config = BOOKING_TYPES[type];
+  const config = getBookingTypeConfig(type);
   if (!config) {
     const err = new Error(`Unknown booking type "${type}". Use grooming, daycare, or boarding.`);
     err.status = 404;
@@ -300,7 +275,7 @@ function isUnsettledPayment(status) {
 
 /** Updates a booking and keeps its pending payment pricing/service in sync. */
 export async function updateBooking(type, companyId, bookingId, body) {
-  const config = BOOKING_TYPES[type];
+  const config = getBookingTypeConfig(type);
   const { data: existing, error: findError } = await supabase
     .from(config.table)
     .select("*")
@@ -398,7 +373,7 @@ export async function updateBooking(type, companyId, bookingId, body) {
 
 /** Deletes an unpaid booking and its linked payment, with compensation on failure. */
 export async function deleteBooking(type, companyId, bookingId) {
-  const config = BOOKING_TYPES[type];
+  const config = getBookingTypeConfig(type);
   const { data: booking, error: findError } = await supabase
     .from(config.table)
     .select("*")

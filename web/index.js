@@ -227,6 +227,9 @@ async function saveServiceConfiguration() {
     }
 
     const logoFile = q('cfg_logo')?.files?.[0] || null;
+    const policyFiles = Object.fromEntries(["general", ...pending.services].map(service => [
+        service, q(`policy_${service}`)?.files?.[0] || null,
+    ]));
     if (logoFile && !['image/png', 'image/jpeg'].includes(logoFile.type)) {
         alert('Business logo must be a PNG or JPG file.');
         return;
@@ -255,7 +258,7 @@ async function saveServiceConfiguration() {
         timezone: q('timezone').value,
         currency: q('currency').value,
         height_unit: q('height').value,
-        policies: Object.fromEntries(pending.services.map(service => [
+        policies: Object.fromEntries(["general", ...pending.services].map(service => [
             service,
             q(`policy_${service}`)?.files?.[0]?.name || '',
         ])),
@@ -307,6 +310,16 @@ async function saveServiceConfiguration() {
             }
         }
 
+        const documentWarnings = [];
+        for (const [service, file] of Object.entries(policyFiles)) {
+            if (!file) continue;
+            try {
+                await api.uploadCompanyDocument(file, service, 'policies');
+            } catch (documentError) {
+                documentWarnings.push(`${service}: ${documentError.message}`);
+            }
+        }
+
         const acc = {
             email: pending.email,
             role: result.role === 'manager' ? 'Manager' : 'Staff',
@@ -323,7 +336,11 @@ async function saveServiceConfiguration() {
         sessionStorage.removeItem('pawfect_pending_registration');
         setupTeamAccounts = [];
 
-        if (logoUploadWarning) alert(`Company created, but the logo was not saved: ${logoUploadWarning}`);
+        const setupWarnings = [
+            logoUploadWarning ? `Logo: ${logoUploadWarning}` : '',
+            ...documentWarnings,
+        ].filter(Boolean);
+        if (setupWarnings.length) alert(`Company created, but some uploads need attention:\n${setupWarnings.join('\n')}`);
 
         location.href = 'dashboard.html';
     } catch (error) {
@@ -402,3 +419,19 @@ function removeSetupStaffAccount(email) {
     renderSetupAccountsPanel();
 }
 if (q('setupAccountsTableBody')) renderSetupAccountsPanel();
+
+function configureRegistrationPolicyCards() {
+    const container = q('selectedServiceCards');
+    if (!container) return;
+    const pending = JSON.parse(sessionStorage.getItem('pawfect_pending_registration') || 'null');
+    const enabled = new Set(pending?.services || []);
+    container.querySelectorAll('[data-service]').forEach(card => {
+        const service = card.dataset.service;
+        card.hidden = service !== 'general' && !enabled.has(service);
+    });
+    const labels = { grooming: 'Grooming', boarding: 'Boarding / Hotel', daycare: 'Daycare' };
+    const text = q('selectedServicesText');
+    if (text) text.textContent = (pending?.services || []).map(service => labels[service] || service).join(' · ');
+}
+
+configureRegistrationPolicyCards();

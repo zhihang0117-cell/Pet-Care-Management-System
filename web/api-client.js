@@ -85,6 +85,24 @@ async function uploadCompanyLogo(file) {
   });
 }
 
+async function uploadCompanyDocument(file, serviceType, documentType = "policies") {
+  const docxMime = "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+  if (!file || !file.name.toLowerCase().endsWith(".docx") || file.type !== docxMime) {
+    throw new Error("Policy documents must be valid DOCX files.");
+  }
+  if (file.size > 10 * 1024 * 1024) throw new Error("Policy documents must be 10 MB or smaller.");
+  return apiRequest("/companies/me/documents", {
+    method: "POST",
+    body: {
+      file_name: file.name,
+      content_type: file.type,
+      data_base64: await fileToBase64(file),
+      service_type: serviceType,
+      document_type: documentType,
+    },
+  });
+}
+
 const api = {
   get: (path) => apiRequest(path),
   post: (path, body) => apiRequest(path, { method: "POST", body }),
@@ -92,6 +110,9 @@ const api = {
   del: (path) => apiRequest(path, { method: "DELETE" }),
   registerCompany,
   uploadCompanyLogo,
+  uploadCompanyDocument,
+  listCompanyDocuments: () => api.get("/companies/me/documents"),
+  deleteCompanyDocument: (documentId) => api.del(`/companies/me/documents/${encodeURIComponent(documentId)}`),
 
   // Convenience helpers matching the endpoints you'll use most:
   listPayments: (filters = {}) => api.get(`/payments?${new URLSearchParams(filters)}`),

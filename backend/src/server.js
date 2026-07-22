@@ -40,7 +40,8 @@ app.use(
   })
 );
 
-app.use(express.json({ limit: "3mb" }));
+// A 10 MB DOCX becomes ~13.4 MB after base64 encoding.
+app.use(express.json({ limit: "15mb" }));
 app.use(express.urlencoded({ extended: true }));
 
 app.get("/health", (_req, res) => {

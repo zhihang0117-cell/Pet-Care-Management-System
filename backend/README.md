@@ -24,10 +24,28 @@ Open your Supabase project → SQL Editor and run these files in order:
 4. `sql/crud_consistency_functions.sql`
 5. `sql/rls_policies.sql`
 6. `sql/register_company_function.sql`
+7. `sql/company_documents_migration.sql`
+8. `../ai-backend/supabase/migrations/002_add_document_id_to_chunks_bge_large.sql`
 
 These migrations add company settings/logo storage, enquiry reply audit data,
 payment verification/refund audit data, and the atomic payment functions. They
 do not delete any existing rows.
+
+### Company policy documents and RAG
+
+Set `AI_BACKEND_URL` and `AI_BACKEND_INTERNAL_KEY` in `backend/.env`. Set the
+same secret as `INTERNAL_API_KEY` in `ai-backend/.env`, then start FastAPI
+before Express.
+
+Policy DOCX files use the private `company-documents` bucket with paths shaped
+as `<company_id>/<document_id>/<file-name>`. Express derives `company_id` from
+the verified Supabase login, records processing state in `company_documents`,
+and asks Python to chunk, tag, embed, and atomically replace only that
+document's vectors. Deletion is scoped by both `company_id` and `document_id`.
+
+Logos use the public `business-assets` bucket and a company-prefixed path,
+which is suitable for images displayed publicly. Put non-public company images
+in a private bucket and return short-lived signed URLs instead.
 
 ## 2. Configure and run the backend
 

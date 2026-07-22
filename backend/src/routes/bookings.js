@@ -20,13 +20,34 @@ function requireBookingType(req, res, next) {
   next();
 }
 
+async function resolveEnabledBookingType(req, res, next) {
+  try {
+    const { data, error } = await supabase
+      .from("companies")
+      .select("settings_json")
+      .eq("company_id", req.companyId)
+      .single();
+    if (error) throw error;
+    const configured = data?.settings_json?.selected_services;
+    const enabledServices = Array.isArray(configured) && configured.length
+      ? configured
+      : Object.keys(BOOKING_TYPES);
+    req.bookingTypeEnabled = enabledServices.includes(req.params.type);
+    next();
+  } catch (error) {
+    next(error);
+  }
+}
+
 export const bookingsRouter = Router();
 bookingsRouter.use("/:type", requireBookingType);
+bookingsRouter.use("/:type", resolveEnabledBookingType);
 
 // GET /api/bookings/:type?booking_status=pending&staff_id=2&pet_id=5
 bookingsRouter.get(
   "/:type",
   asyncHandler(async (req, res) => {
+    if (!req.bookingTypeEnabled) return res.json([]);
     const { table, idColumn } = req.bookingConfig;
     let query = supabase.from(table).select("*").eq("company_id", req.companyId);
 
@@ -52,6 +73,7 @@ bookingsRouter.get(
 bookingsRouter.get(
   "/:type/:id",
   asyncHandler(async (req, res) => {
+    if (!req.bookingTypeEnabled) return res.status(404).json({ error: "This service module is not enabled." });
     const { table, idColumn } = req.bookingConfig;
     const { data, error } = await supabase
       .from(table)
@@ -73,6 +95,7 @@ bookingsRouter.get(
 bookingsRouter.post(
   "/:type",
   asyncHandler(async (req, res) => {
+    if (!req.bookingTypeEnabled) return res.status(403).json({ error: "This service module is not enabled for your company." });
     const result = await createBooking(req.params.type, req.companyId, req.body);
     res.status(201).json(result);
   })
@@ -81,6 +104,7 @@ bookingsRouter.post(
 bookingsRouter.patch(
   "/:type/:id",
   asyncHandler(async (req, res) => {
+    if (!req.bookingTypeEnabled) return res.status(403).json({ error: "This service module is not enabled for your company." });
     const data = await updateBooking(req.params.type, req.companyId, req.params.id, req.body);
     res.json(data);
   })
@@ -89,6 +113,7 @@ bookingsRouter.patch(
 bookingsRouter.delete(
   "/:type/:id",
   asyncHandler(async (req, res) => {
+    if (!req.bookingTypeEnabled) return res.status(403).json({ error: "This service module is not enabled for your company." });
     await deleteBooking(req.params.type, req.companyId, req.params.id);
     res.status(204).end();
   })

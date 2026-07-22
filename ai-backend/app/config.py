@@ -103,7 +103,7 @@ PRODUCTION_DOCUMENT_TYPES = frozenset(
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
-        env_file=str(PROJECT_ROOT / "backend" / ".env"),
+        env_file=str(PROJECT_ROOT / ".env"),
         env_file_encoding="utf-8",
         extra="ignore",
     )
@@ -111,6 +111,7 @@ class Settings(BaseSettings):
     supabase_url: str = ""
     supabase_service_key: str = ""
     openai_api_key: str = ""
+    internal_api_key: str = ""
     default_tenant_id: str = "pawfect-demo"
 
 

@@ -237,6 +237,8 @@ window.addEventListener("popstate", async () => {
 ========================= */
 
 async function initBookingPage() {
+  const enabledServices = getEnabledServices();
+  if (enabledServices.length === 1) currentServiceFilter = enabledServices[0];
   try {
     await refreshBookingPageData();
   } catch (error) {
@@ -257,10 +259,11 @@ async function refreshBookingPageData() {
 }
 
 async function fetchBookingPageData() {
+  const enabledServices = new Set(getEnabledServices());
   const [grooming, daycare, boarding, pets, customers, staffList] = await Promise.all([
-    api.get("/bookings/grooming"),
-    api.get("/bookings/daycare"),
-    api.get("/bookings/boarding"),
+    enabledServices.has("grooming") ? api.get("/bookings/grooming") : [],
+    enabledServices.has("daycare") ? api.get("/bookings/daycare") : [],
+    enabledServices.has("boarding") ? api.get("/bookings/boarding") : [],
     api.get("/pets"),
     api.get("/customers"),
     api.get("/staff"),
@@ -1042,7 +1045,7 @@ function openNewBooking() {
   const time = findFirstAvailableTime(date) || "09:00";
 
   openBookingDetails(buildNewBookingDraft(
-    "grooming",
+    getEnabledServices()[0],
     bookingPetOptions[0].pet_id,
     bookingStaffOptions[0]?.staff_id || "",
     date,
@@ -1056,7 +1059,7 @@ function createBookingFromSlot(date, time) {
     return;
   }
 
-  const type = currentServiceFilter === "all" ? "grooming" : currentServiceFilter;
+  const type = currentServiceFilter === "all" ? getEnabledServices()[0] : currentServiceFilter;
   const availableStaff = getAvailableStaffForSlot(date, time);
 
   if (getSlotBookings(date, time).length >= 3 || availableStaff.length === 0) {
@@ -2018,11 +2021,12 @@ function renderRealActionCard(card) {
 
 function renderRealServiceLoadChart() {
   const todayStr = dailyOverviewDate;
+  const enabledServices = new Set(getEnabledServices());
   const types = [
     { key: 'grooming', icon: 'grooming-scissors.png', label: 'Grooming', tone: 'info' },
     { key: 'boarding', icon: 'boarding.png', label: 'Boarding', tone: 'purple' },
     { key: 'daycare',  icon: 'dog-play.png', label: 'Daycare',  tone: 'warning' }
-  ];
+  ].filter(type => enabledServices.has(type.key));
   const counts = types.map(t => bookingRecords.filter(b => b.type === t.key && b.date === todayStr && b.status !== "cancelled" && b.status !== "no_show").length);
   const max = Math.max(...counts, 1);
   const total = counts.reduce((a, b) => a + b, 0);
@@ -2725,6 +2729,8 @@ function renderRealDailyOverview() {
 }
 
 async function initDailyOverviewReal() {
+  const enabledServices = getEnabledServices();
+  if (enabledServices.length === 1) currentFilter = enabledServices[0];
   try {
     await fetchDailyOverviewData();
   } catch (error) {
@@ -5973,7 +5979,7 @@ function computeDashboardMetrics(period) {
   const occupancyRate = computeOccupancyRate(range);
   const repeatCustomerRate = computeRepeatCustomerRate(periodBookings);
 
-  const serviceMix = ["grooming", "boarding", "daycare"].map(type => ({
+  const serviceMix = getEnabledServices().map(type => ({
     type, count: periodBookings.filter(b => b.serviceType === type).length
   }));
 
@@ -7210,8 +7216,10 @@ async function initAnalyticsDashboard() {
 // backend/sql/company_settings_migration.sql + routes/companies.js), merged
 // server-side so callers only send the keys they're changing. Business logos
 // are real JPG/PNG objects in Supabase Storage with their public URL stored in
-// companies.logo_path. Policy uploads remain filename-only for now.
+// companies.logo_path. Policy documents live in private Supabase Storage;
+// company_documents tracks processing state and links every file to company_id.
 const SERVICE_META = {
+  general: { icon: "paw-print.png", label: "General Policy" },
   grooming: { icon: "grooming-scissors.png", label: "Grooming" },
   boarding: { icon: "boarding.png", label: "Boarding / Hotel" },
   daycare: { icon: "dog-play.png", label: "Daycare" }
@@ -7223,6 +7231,7 @@ let currentAccountId = null;
 let teamAccountRecords = [];
 let selectedBusinessLogoFile = null;
 let businessLogoPreviewUrl = null;
+let currentCompanyDocuments = [];
 
 function showFilename(input, targetId) {
   const el = q(targetId);
@@ -7262,25 +7271,43 @@ function handleBusinessLogoSelection(input) {
 function renderServicePolicyCards(company) {
   const settings = company?.settings_json || {};
   const activeServices = settings.selected_services || ["grooming", "boarding", "daycare"];
+  const policyTypes = ["general", ...activeServices];
 
   const textEl = q("selectedServicesText");
   if (textEl) textEl.innerHTML = activeServices.map(type => `<img src="icon/${SERVICE_META[type]?.icon || "paw-print.png"}" alt="" class="row-icon">${SERVICE_META[type]?.label || type}`).join(" · ");
 
-  q("selectedServiceCards").innerHTML = activeServices.map(type => {
+  q("selectedServiceCards").innerHTML = policyTypes.map(type => {
     const meta = SERVICE_META[type] || { icon: "paw-print.png", label: type };
-    const savedName = settings.policies?.[type];
+    const documents = currentCompanyDocuments.filter(doc => doc.service_type === type);
+    const documentRows = documents.length ? documents.map(doc => `
+      <div class="policy-document-row" style="display:flex;gap:8px;align-items:center;justify-content:space-between;margin:8px 0;">
+        <span style="font-size:.8rem;overflow-wrap:anywhere;">${escapeHtml(doc.file_name)} · ${escapeHtml(doc.status)}${doc.chunks_indexed != null ? ` · ${doc.chunks_indexed} chunks` : ""}</span>
+        ${currentAccountRole === "manager" ? `<button type="button" class="action-btn" onclick="deletePolicyDocument('${doc.document_id}')">Delete</button>` : ""}
+      </div>`).join("") : '<p class="field-note">No policy document uploaded.</p>';
     return `
       <div class="service-config-card">
         <h3><img src="icon/${meta.icon}" alt="" class="card-icon">${meta.label}</h3>
-        <p class="muted">Upload your ${meta.label.toLowerCase()} service policy document.</p>
+        <p class="muted">Upload your ${type === "general" ? "company-wide general" : meta.label.toLowerCase() + " service"} policy document.</p>
+        <div>${documentRows}</div>
         <label class="logo-upload-label" for="policy_${type}">
           <img src="icon/upload.png" alt="" class="upload-icon">
-          <p id="policyFileName_${type}">${savedName ? `<img src="icon/upload.png" alt="" class="row-icon">${savedName}` : "Click to upload policy file<br>(PDF, TXT, DOCX — max 10 MB)"}</p>
-        <input type="file" id="policy_${type}" accept=".pdf,.txt,.docx" onchange="showFilename(this,'policyFileName_${type}')">
+          <p id="policyFileName_${type}">Choose a new policy file<br>(DOCX — max 10 MB)</p>
+        <input type="file" id="policy_${type}" accept=".docx,application/vnd.openxmlformats-officedocument.wordprocessingml.document" onchange="showFilename(this,'policyFileName_${type}')">
         </label>
       </div>
     `;
   }).join("");
+}
+
+async function deletePolicyDocument(documentId) {
+  if (!confirm("Delete this source file and all of its indexed chunks?")) return;
+  try {
+    await api.deleteCompanyDocument(documentId);
+    currentCompanyDocuments = await api.listCompanyDocuments();
+    renderServicePolicyCards(currentCompanyRecord);
+  } catch (error) {
+    alert(error.message || "Failed to delete policy document.");
+  }
 }
 
 function populateSettingsForm(company) {
@@ -7327,7 +7354,7 @@ function collectServicePolicyNames() {
   const activeServices = currentCompanyRecord?.settings_json?.selected_services || ["grooming", "boarding", "daycare"];
   const existing = currentCompanyRecord?.settings_json?.policies || {};
   const result = {};
-  activeServices.forEach(type => {
+  ["general", ...activeServices].forEach(type => {
     const input = q("policy_" + type);
     result[type] = input?.files[0]?.name || existing[type] || "";
   });
@@ -7379,7 +7406,14 @@ async function saveBusinessSettings() {
       q("cfg_logo").value = "";
       showBusinessLogoPreview(currentCompanyRecord.logo_path, "Current business logo · upload complete");
     }
+    const activeServices = currentCompanyRecord?.settings_json?.selected_services || ["grooming", "boarding", "daycare"];
+    for (const type of ["general", ...activeServices]) {
+      const file = q(`policy_${type}`)?.files?.[0];
+      if (file) await api.uploadCompanyDocument(file, type, "policies");
+    }
     currentCompanyRecord = await api.patch("/companies/me", { ...profilePayload, settings: settingsPayload });
+    currentCompanyDocuments = await api.listCompanyDocuments();
+    renderServicePolicyCards(currentCompanyRecord);
 
     const storedAccount = getCurrentAccount();
     if (storedAccount) {
@@ -7416,15 +7450,17 @@ async function initSettings() {
 
 async function refreshSettingsPageData() {
   try {
-    const [company, me, accounts] = await Promise.all([
+    const [company, me, accounts, documents] = await Promise.all([
       api.get("/companies/me"),
       api.get("/accounts/me"),
       api.get("/accounts"),
+      api.listCompanyDocuments(),
     ]);
     currentCompanyRecord = company;
     currentAccountRole = me.role;
     currentAccountId = me.account_id;
     teamAccountRecords = accounts;
+    currentCompanyDocuments = documents;
   } catch (error) {
     alert(error.message || "Failed to load settings.");
     return;

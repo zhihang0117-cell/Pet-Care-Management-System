@@ -18,6 +18,7 @@ class ProcessDocumentRequest(BaseModel):
     company_id: int = Field(..., ge=1)
     document_id: str = Field(..., min_length=1)
     document_type: ProductionDocumentType
+    service_type: Literal["grooming", "boarding", "daycare", "general"] = "general"
     storage_bucket: str = Field(..., min_length=1)
     storage_path: str = Field(..., min_length=1)
 
@@ -26,6 +27,7 @@ class ProcessDocumentResponse(BaseModel):
     company_id: int
     document_id: str
     document_type: ProductionDocumentType
+    service_type: str = "general"
     chunks_indexed: int
     chunk_ids: list[str]
     model_key: str

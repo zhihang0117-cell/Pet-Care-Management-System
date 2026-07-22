@@ -10,6 +10,19 @@ const BOOKING_TABLES = [
   { type: "boarding", table: "boarding_booking" },
 ];
 
+async function enabledBookingTables(companyId) {
+  const { data, error } = await supabase
+    .from("companies")
+    .select("settings_json")
+    .eq("company_id", companyId)
+    .single();
+  if (error) throw error;
+  const configured = data?.settings_json?.selected_services;
+  if (!Array.isArray(configured) || configured.length === 0) return BOOKING_TABLES;
+  const enabled = new Set(configured);
+  return BOOKING_TABLES.filter(({ type }) => enabled.has(type));
+}
+
 function todayStr() {
   const d = new Date();
   const pad = (n) => String(n).padStart(2, "0");
@@ -49,8 +62,9 @@ dashboardRouter.get(
 
     const bookingSummary = {};
     let todayBookingsTotal = 0;
+    const companyBookingTables = await enabledBookingTables(companyId);
 
-    for (const { type, table } of BOOKING_TABLES) {
+    for (const { type, table } of companyBookingTables) {
       bookingSummary[type] = await countByStatus(table, companyId);
 
       const dateColumn = type === "boarding" ? "check_in_date" : "booking_date";
@@ -170,21 +184,23 @@ dashboardRouter.get(
     const startIso = toIso(start);
     const endIso = toIso(end);
 
-    const [paymentsResult, groomingResult, daycareResult, boardingResult] = await Promise.all([
+    const companyBookingTables = await enabledBookingTables(companyId);
+    const [paymentsResult, ...bookingResults] = await Promise.all([
       supabase.from("payment").select("date, final_amount, status").eq("company_id", companyId).eq("status", "Paid").gte("date", startIso).lte("date", endIso),
-      supabase.from("grooming_booking").select("booking_date, booking_status").eq("company_id", companyId).gte("booking_date", startIso).lte("booking_date", endIso),
-      supabase.from("daycare_booking").select("booking_date, booking_status").eq("company_id", companyId).gte("booking_date", startIso).lte("booking_date", endIso),
-      supabase.from("boarding_booking").select("check_in_date, booking_status").eq("company_id", companyId).gte("check_in_date", startIso).lte("check_in_date", endIso),
+      ...companyBookingTables.map(({ type, table }) => {
+        const dateColumn = type === "boarding" ? "check_in_date" : "booking_date";
+        return supabase.from(table).select(`${dateColumn}, booking_status`).eq("company_id", companyId).gte(dateColumn, startIso).lte(dateColumn, endIso);
+      }),
     ]);
-    for (const r of [paymentsResult, groomingResult, daycareResult, boardingResult]) {
+    for (const r of [paymentsResult, ...bookingResults]) {
       if (r.error) return res.status(400).json({ error: r.error.message });
     }
 
-    const allBookings = [
-      ...groomingResult.data.map((b) => ({ date: b.booking_date, status: b.booking_status })),
-      ...daycareResult.data.map((b) => ({ date: b.booking_date, status: b.booking_status })),
-      ...boardingResult.data.map((b) => ({ date: b.check_in_date, status: b.booking_status })),
-    ];
+    const allBookings = bookingResults.flatMap((result, index) => {
+      const type = companyBookingTables[index].type;
+      const dateColumn = type === "boarding" ? "check_in_date" : "booking_date";
+      return result.data.map((booking) => ({ date: booking[dateColumn], status: booking.booking_status }));
+    });
 
     const bucketRanges = [];
     if (bucketBy === "day") {

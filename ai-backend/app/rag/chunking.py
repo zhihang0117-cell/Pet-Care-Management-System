@@ -47,6 +47,7 @@ def chunk_docx_pages(
     company_id: int,
     document_id: str,
     document_type: str,
+    service_type: str = "general",
 ) -> list[dict]:
     """Run existing section-aware chunking, then attach production ownership fields.
 
@@ -56,6 +57,9 @@ def chunk_docx_pages(
     they stay stable across temp download paths.
     """
     document_type = validate_document_type(document_type)
+    service_type = str(service_type or "general").strip().lower()
+    if service_type not in {"grooming", "boarding", "daycare", "general"}:
+        raise ValueError("Unsupported service_type")
     raw_chunks = chunk_from_pages(pages, str(company_id), merge_originals=False)
     if not raw_chunks:
         raise ValueError("Chunking produced zero chunks from the document.")
@@ -79,6 +83,7 @@ def chunk_docx_pages(
         enriched["document_id"] = document_id
         enriched["document_type"] = document_type
         enriched["dataset_type"] = document_type
+        enriched["service_type"] = service_type
         production_chunks.append(enriched)
 
     return production_chunks

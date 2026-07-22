@@ -1,4 +1,5 @@
 import { Router } from "express";
+import { randomUUID } from "node:crypto";
 import { supabase } from "../supabaseClient.js";
 import { asyncHandler } from "../middleware/auth.js";
 import { requireManager } from "../middleware/authUser.js";
@@ -6,7 +7,11 @@ import { requireManager } from "../middleware/authUser.js";
 export const companiesRouter = Router();
 
 const BUSINESS_ASSET_BUCKET = "business-assets";
+const COMPANY_DOCUMENT_BUCKET = "company-documents";
 const MAX_LOGO_BYTES = 2 * 1024 * 1024;
+const MAX_DOCUMENT_BYTES = 10 * 1024 * 1024;
+const DOCUMENT_TYPES = new Set(["policies", "service_information", "business_flow_booking", "veterinary"]);
+const SERVICE_TYPES = new Set(["grooming", "boarding", "daycare", "general"]);
 
 function validateLogoBytes(buffer, contentType) {
   const png = buffer.length >= 8
@@ -27,6 +32,39 @@ async function ensureBusinessAssetBucket() {
     allowedMimeTypes: ["image/png", "image/jpeg"],
   });
   if (createError && !/already exists/i.test(createError.message || "")) throw createError;
+}
+
+async function ensureCompanyDocumentBucket() {
+  const { data, error } = await supabase.storage.getBucket(COMPANY_DOCUMENT_BUCKET);
+  if (data) return;
+  if (error && !/not found/i.test(error.message || "")) throw error;
+  const { error: createError } = await supabase.storage.createBucket(COMPANY_DOCUMENT_BUCKET, {
+    public: false,
+    fileSizeLimit: MAX_DOCUMENT_BYTES,
+    allowedMimeTypes: ["application/vnd.openxmlformats-officedocument.wordprocessingml.document"],
+  });
+  if (createError && !/already exists/i.test(createError.message || "")) throw createError;
+}
+
+function safeStorageName(name) {
+  return String(name || "policy.docx").replace(/[^a-zA-Z0-9._-]+/g, "-").slice(-120);
+}
+
+async function callAiBackend(path, body) {
+  const baseUrl = String(process.env.AI_BACKEND_URL || "http://127.0.0.1:8000").replace(/\/$/, "");
+  const response = await fetch(`${baseUrl}${path}`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      ...(process.env.AI_BACKEND_INTERNAL_KEY
+        ? { "X-Internal-Key": process.env.AI_BACKEND_INTERNAL_KEY }
+        : {}),
+    },
+    body: JSON.stringify(body),
+  });
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(payload.detail || payload.error || `AI backend failed (${response.status})`);
+  return payload;
 }
 
 // GET /api/companies/me — full profile (including settings_json) for
@@ -105,6 +143,112 @@ companiesRouter.post(
     }
 
     res.json(company);
+  })
+);
+
+// Company documents are private Storage objects. company_id always comes
+// from the verified login, never from the request body.
+companiesRouter.get(
+  "/me/documents",
+  asyncHandler(async (req, res) => {
+    const { data, error } = await supabase
+      .from("company_documents")
+      .select("document_id, service_type, document_type, file_name, file_size, status, chunks_indexed, error_message, created_at, indexed_at")
+      .eq("company_id", req.companyId)
+      .order("created_at", { ascending: false });
+    if (error) return res.status(400).json({ error: error.message });
+    res.json(data || []);
+  })
+);
+
+companiesRouter.post(
+  "/me/documents",
+  requireManager,
+  asyncHandler(async (req, res) => {
+    const { file_name: fileName, content_type: contentType, data_base64: dataBase64 } = req.body || {};
+    const serviceType = String(req.body?.service_type || "general").toLowerCase();
+    const documentType = String(req.body?.document_type || "policies").toLowerCase();
+    if (!SERVICE_TYPES.has(serviceType) || !DOCUMENT_TYPES.has(documentType)) {
+      return res.status(400).json({ error: "Invalid service_type or document_type." });
+    }
+    if (!String(fileName || "").toLowerCase().endsWith(".docx")) {
+      return res.status(400).json({ error: "Policy documents must be DOCX files." });
+    }
+    const expectedMime = "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+    if (contentType !== expectedMime || !dataBase64) {
+      return res.status(400).json({ error: "A valid DOCX file is required." });
+    }
+    const buffer = Buffer.from(dataBase64, "base64");
+    if (!buffer.length || buffer.length > MAX_DOCUMENT_BYTES || buffer.subarray(0, 2).toString() !== "PK") {
+      return res.status(400).json({ error: "The DOCX file is invalid or larger than 10 MB." });
+    }
+
+    await ensureCompanyDocumentBucket();
+    const documentId = randomUUID();
+    const storagePath = `${req.companyId}/${documentId}/${safeStorageName(fileName)}`;
+    const { error: uploadError } = await supabase.storage.from(COMPANY_DOCUMENT_BUCKET)
+      .upload(storagePath, buffer, { contentType, upsert: false });
+    if (uploadError) return res.status(400).json({ error: uploadError.message });
+
+    const row = {
+      document_id: documentId,
+      company_id: req.companyId,
+      service_type: serviceType,
+      document_type: documentType,
+      file_name: fileName,
+      storage_bucket: COMPANY_DOCUMENT_BUCKET,
+      storage_path: storagePath,
+      mime_type: contentType,
+      file_size: buffer.length,
+      status: "processing",
+    };
+    const { error: insertError } = await supabase.from("company_documents").insert(row);
+    if (insertError) {
+      await supabase.storage.from(COMPANY_DOCUMENT_BUCKET).remove([storagePath]);
+      return res.status(400).json({ error: insertError.message });
+    }
+
+    try {
+      const result = await callAiBackend("/api/documents/process", {
+        company_id: Number(req.companyId),
+        document_id: documentId,
+        document_type: documentType,
+        service_type: serviceType,
+        storage_bucket: COMPANY_DOCUMENT_BUCKET,
+        storage_path: storagePath,
+      });
+      const { data, error } = await supabase.from("company_documents").update({
+        status: "indexed", chunks_indexed: result.chunks_indexed, error_message: null, indexed_at: new Date().toISOString(),
+      }).eq("company_id", req.companyId).eq("document_id", documentId).select().single();
+      if (error) throw error;
+      res.status(201).json(data);
+    } catch (error) {
+      await supabase.from("company_documents").update({ status: "failed", error_message: String(error.message || error).slice(0, 1000) })
+        .eq("company_id", req.companyId).eq("document_id", documentId);
+      res.status(502).json({ error: `Document saved, but indexing failed: ${error.message}`, document_id: documentId });
+    }
+  })
+);
+
+companiesRouter.delete(
+  "/me/documents/:documentId",
+  requireManager,
+  asyncHandler(async (req, res) => {
+    const { data: document, error } = await supabase.from("company_documents")
+      .select("document_id, storage_bucket, storage_path")
+      .eq("company_id", req.companyId).eq("document_id", req.params.documentId).single();
+    if (error || !document) return res.status(404).json({ error: "Document not found." });
+
+    const { error: rpcError } = await supabase.rpc("delete_document_chunks_bge_large", {
+      p_company_id: Number(req.companyId), p_document_id: String(document.document_id),
+    });
+    if (rpcError) return res.status(400).json({ error: rpcError.message });
+    const { error: storageError } = await supabase.storage.from(document.storage_bucket).remove([document.storage_path]);
+    if (storageError) return res.status(400).json({ error: storageError.message });
+    const { error: deleteError } = await supabase.from("company_documents").delete()
+      .eq("company_id", req.companyId).eq("document_id", document.document_id);
+    if (deleteError) return res.status(400).json({ error: deleteError.message });
+    res.status(204).end();
   })
 );
 
