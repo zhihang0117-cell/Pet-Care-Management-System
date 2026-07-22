@@ -7232,6 +7232,7 @@ let teamAccountRecords = [];
 let selectedBusinessLogoFile = null;
 let businessLogoPreviewUrl = null;
 let currentCompanyDocuments = [];
+let companyDocumentsAvailable = true;
 
 function showFilename(input, targetId) {
   const el = q(targetId);
@@ -7274,29 +7275,66 @@ function renderServicePolicyCards(company) {
   const policyTypes = ["general", ...activeServices];
 
   const textEl = q("selectedServicesText");
-  if (textEl) textEl.innerHTML = activeServices.map(type => `<img src="icon/${SERVICE_META[type]?.icon || "paw-print.png"}" alt="" class="row-icon">${SERVICE_META[type]?.label || type}`).join(" · ");
+  if (textEl) textEl.textContent = `${activeServices.length} active service${activeServices.length === 1 ? "" : "s"}`;
 
   q("selectedServiceCards").innerHTML = policyTypes.map(type => {
     const meta = SERVICE_META[type] || { icon: "paw-print.png", label: type };
     const documents = currentCompanyDocuments.filter(doc => doc.service_type === type);
-    const documentRows = documents.length ? documents.map(doc => `
-      <div class="policy-document-row" style="display:flex;gap:8px;align-items:center;justify-content:space-between;margin:8px 0;">
-        <span style="font-size:.8rem;overflow-wrap:anywhere;">${escapeHtml(doc.file_name)} · ${escapeHtml(doc.status)}${doc.chunks_indexed != null ? ` · ${doc.chunks_indexed} chunks` : ""}</span>
-        ${currentAccountRole === "manager" ? `<button type="button" class="action-btn" onclick="deletePolicyDocument('${doc.document_id}')">Delete</button>` : ""}
-      </div>`).join("") : '<p class="field-note">No policy document uploaded.</p>';
+    const documentRows = documents.length ? documents.map(doc => {
+      const status = String(doc.status || "pending").toLowerCase();
+      const statusLabel = status === "indexed" ? "Ready" : status === "failed" ? "Failed" : "Processing";
+      return `
+      <div class="policy-document-row">
+        <div class="policy-file-icon"><img src="icon/pet-medical-record.png" alt=""></div>
+        <div class="policy-document-info">
+          <strong title="${escapeHtml(doc.file_name)}">${escapeHtml(doc.file_name)}</strong>
+          <div class="policy-document-meta">
+            <span class="policy-status policy-status-${status}">${statusLabel}</span>
+            ${doc.chunks_indexed != null ? `<span>${doc.chunks_indexed} chunks</span>` : ""}
+            ${doc.indexed_at ? `<span>Updated ${new Date(doc.indexed_at).toLocaleDateString()}</span>` : ""}
+          </div>
+          ${doc.error_message ? `<small class="policy-error">${escapeHtml(doc.error_message)}</small>` : ""}
+        </div>
+        ${currentAccountRole === "manager" ? `
+          <div class="policy-document-actions">
+            <label class="policy-action-button" for="replace_policy_${doc.document_id}">Replace</label>
+            <input class="hidden" type="file" id="replace_policy_${doc.document_id}" accept=".docx,application/vnd.openxmlformats-officedocument.wordprocessingml.document" onchange="replacePolicyDocument('${doc.document_id}', this)">
+            <button type="button" class="policy-action-button policy-action-danger" onclick="deletePolicyDocument('${doc.document_id}')">Remove</button>
+          </div>` : ""}
+      </div>`;
+    }).join("") : '<div class="policy-empty-state"><strong>No policy uploaded</strong><span>Add a DOCX file to make this policy available to the knowledge base.</span></div>';
     return `
       <div class="service-config-card">
-        <h3><img src="icon/${meta.icon}" alt="" class="card-icon">${meta.label}</h3>
-        <p class="muted">Upload your ${type === "general" ? "company-wide general" : meta.label.toLowerCase() + " service"} policy document.</p>
-        <div>${documentRows}</div>
-        <label class="logo-upload-label" for="policy_${type}">
-          <img src="icon/upload.png" alt="" class="upload-icon">
-          <p id="policyFileName_${type}">Choose a new policy file<br>(DOCX — max 10 MB)</p>
-        <input type="file" id="policy_${type}" accept=".docx,application/vnd.openxmlformats-officedocument.wordprocessingml.document" onchange="showFilename(this,'policyFileName_${type}')">
+        <div class="service-policy-heading">
+          <div class="service-policy-icon"><img src="icon/${meta.icon}" alt=""></div>
+          <div><h3>${meta.label}</h3><p class="muted">${type === "general" ? "Company-wide rules and policies" : `Policies specific to ${meta.label.toLowerCase()}`}</p></div>
+          <span class="service-policy-scope">${type === "general" ? "All services" : "Service policy"}</span>
+        </div>
+        <div class="policy-document-list">${documentRows}</div>
+        <label class="policy-upload-button${companyDocumentsAvailable ? "" : " policy-upload-disabled"}" ${companyDocumentsAvailable ? `for="policy_${type}"` : ""}>
+          <img src="icon/upload.png" alt="">
+          <span id="policyFileName_${type}">${documents.length ? "Upload another policy" : "Upload policy"}</span>
+        <input type="file" id="policy_${type}" accept=".docx,application/vnd.openxmlformats-officedocument.wordprocessingml.document" onchange="showFilename(this,'policyFileName_${type}')" ${companyDocumentsAvailable ? "" : "disabled"}>
         </label>
+        <small class="policy-upload-note">DOCX only · Maximum 10 MB · Upload starts when you save changes</small>
       </div>
     `;
   }).join("");
+}
+
+async function replacePolicyDocument(documentId, input) {
+  const file = input.files?.[0];
+  if (!file) return;
+  try {
+    input.disabled = true;
+    await api.replaceCompanyDocument(documentId, file);
+    currentCompanyDocuments = await api.listCompanyDocuments();
+    renderServicePolicyCards(currentCompanyRecord);
+  } catch (error) {
+    input.value = "";
+    input.disabled = false;
+    alert(error.message || "Failed to replace policy document.");
+  }
 }
 
 async function deletePolicyDocument(documentId) {
@@ -7450,20 +7488,32 @@ async function initSettings() {
 
 async function refreshSettingsPageData() {
   try {
-    const [company, me, accounts, documents] = await Promise.all([
+    const [company, me, accounts] = await Promise.all([
       api.get("/companies/me"),
       api.get("/accounts/me"),
       api.get("/accounts"),
-      api.listCompanyDocuments(),
     ]);
     currentCompanyRecord = company;
     currentAccountRole = me.role;
     currentAccountId = me.account_id;
     teamAccountRecords = accounts;
-    currentCompanyDocuments = documents;
   } catch (error) {
     alert(error.message || "Failed to load settings.");
     return;
+  }
+
+  const policyWarning = q("policySetupWarning");
+  try {
+    currentCompanyDocuments = await api.listCompanyDocuments();
+    companyDocumentsAvailable = true;
+    policyWarning?.classList.add("hidden");
+  } catch (error) {
+    currentCompanyDocuments = [];
+    companyDocumentsAvailable = false;
+    policyWarning?.classList.remove("hidden");
+    const warningText = q("policySetupWarningText");
+    if (warningText) warningText.textContent = error.message || "Apply the required Supabase migrations, then refresh this page.";
+    console.warn("Policy documents are unavailable:", error.message || error);
   }
 
   populateSettingsForm(currentCompanyRecord);
@@ -7474,6 +7524,11 @@ async function refreshSettingsPageData() {
   q("settingsSaveBar")?.classList.toggle("hidden", !manager);
   document.querySelectorAll(".settings-panel input, .settings-panel select, .settings-panel textarea")
     .forEach(control => { control.disabled = !manager; });
+  if (!companyDocumentsAvailable) {
+    document.querySelectorAll('#selectedServiceCards input[type="file"]').forEach(control => {
+      control.disabled = true;
+    });
+  }
 }
 
 /* =========================

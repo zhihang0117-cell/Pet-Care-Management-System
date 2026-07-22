@@ -87,7 +87,7 @@ async function uploadCompanyLogo(file) {
 
 async function uploadCompanyDocument(file, serviceType, documentType = "policies") {
   const docxMime = "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
-  if (!file || !file.name.toLowerCase().endsWith(".docx") || file.type !== docxMime) {
+  if (!file || !file.name.toLowerCase().endsWith(".docx") || (file.type && file.type !== docxMime)) {
     throw new Error("Policy documents must be valid DOCX files.");
   }
   if (file.size > 10 * 1024 * 1024) throw new Error("Policy documents must be 10 MB or smaller.");
@@ -95,10 +95,26 @@ async function uploadCompanyDocument(file, serviceType, documentType = "policies
     method: "POST",
     body: {
       file_name: file.name,
-      content_type: file.type,
+      content_type: docxMime,
       data_base64: await fileToBase64(file),
       service_type: serviceType,
       document_type: documentType,
+    },
+  });
+}
+
+async function replaceCompanyDocument(documentId, file) {
+  const docxMime = "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+  if (!file || !file.name.toLowerCase().endsWith(".docx") || (file.type && file.type !== docxMime)) {
+    throw new Error("Policy documents must be valid DOCX files.");
+  }
+  if (file.size > 10 * 1024 * 1024) throw new Error("Policy documents must be 10 MB or smaller.");
+  return apiRequest(`/companies/me/documents/${encodeURIComponent(documentId)}`, {
+    method: "PUT",
+    body: {
+      file_name: file.name,
+      content_type: docxMime,
+      data_base64: await fileToBase64(file),
     },
   });
 }
@@ -111,6 +127,7 @@ const api = {
   registerCompany,
   uploadCompanyLogo,
   uploadCompanyDocument,
+  replaceCompanyDocument,
   listCompanyDocuments: () => api.get("/companies/me/documents"),
   deleteCompanyDocument: (documentId) => api.del(`/companies/me/documents/${encodeURIComponent(documentId)}`),
 

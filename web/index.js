@@ -230,6 +230,16 @@ async function saveServiceConfiguration() {
     const policyFiles = Object.fromEntries(["general", ...pending.services].map(service => [
         service, q(`policy_${service}`)?.files?.[0] || null,
     ]));
+    const invalidPolicy = Object.entries(policyFiles).find(([, file]) => file && !file.name.toLowerCase().endsWith('.docx'));
+    const oversizedPolicy = Object.entries(policyFiles).find(([, file]) => file && file.size > 10 * 1024 * 1024);
+    if (invalidPolicy) {
+        alert(`${invalidPolicy[0]} policy must be a valid DOCX file.`);
+        return;
+    }
+    if (oversizedPolicy) {
+        alert(`${oversizedPolicy[0]} policy must be 10 MB or smaller.`);
+        return;
+    }
     if (logoFile && !['image/png', 'image/jpeg'].includes(logoFile.type)) {
         alert('Business logo must be a PNG or JPG file.');
         return;
@@ -268,7 +278,11 @@ async function saveServiceConfiguration() {
     };
 
     const button = document.querySelector('.setup-actions .btn-primary');
-    if (button) button.disabled = true;
+    const originalButtonText = button?.textContent || 'Save & Enter Portal';
+    if (button) {
+        button.disabled = true;
+        button.textContent = 'Creating company…';
+    }
 
     let companyCreated = false;
     try {
@@ -314,6 +328,7 @@ async function saveServiceConfiguration() {
         for (const [service, file] of Object.entries(policyFiles)) {
             if (!file) continue;
             try {
+                if (button) button.textContent = `Indexing ${service} policy…`;
                 await api.uploadCompanyDocument(file, service, 'policies');
             } catch (documentError) {
                 documentWarnings.push(`${service}: ${documentError.message}`);
@@ -349,7 +364,10 @@ async function saveServiceConfiguration() {
             ? 'Your company was created, but setup could not finish in this browser. Please sign in from the login page.'
             : (error.message || 'Company creation failed.'));
     } finally {
-        if (button) button.disabled = false;
+        if (button) {
+            button.disabled = false;
+            button.textContent = originalButtonText;
+        }
     }
 }
 

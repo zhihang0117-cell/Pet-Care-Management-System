@@ -13,6 +13,22 @@ const MAX_DOCUMENT_BYTES = 10 * 1024 * 1024;
 const DOCUMENT_TYPES = new Set(["policies", "service_information", "business_flow_booking", "veterinary"]);
 const SERVICE_TYPES = new Set(["grooming", "boarding", "daycare", "general"]);
 
+function isMissingCompanyDocumentsTable(error) {
+  const message = String(error?.message || error || "");
+  return error?.code === "PGRST205"
+    || /company_documents/i.test(message) && /schema cache|could not find the table/i.test(message);
+}
+
+function sendDocumentDatabaseError(res, error) {
+  if (isMissingCompanyDocumentsTable(error)) {
+    return res.status(503).json({
+      code: "COMPANY_DOCUMENTS_MIGRATION_REQUIRED",
+      error: "Policy document storage is not configured yet. Apply backend/sql/company_documents_migration.sql and the BGE-Large migration in Supabase, then reload the schema cache.",
+    });
+  }
+  return res.status(400).json({ error: error?.message || "Document database request failed." });
+}
+
 function validateLogoBytes(buffer, contentType) {
   const png = buffer.length >= 8
     && buffer.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]));
@@ -156,7 +172,7 @@ companiesRouter.get(
       .select("document_id, service_type, document_type, file_name, file_size, status, chunks_indexed, error_message, created_at, indexed_at")
       .eq("company_id", req.companyId)
       .order("created_at", { ascending: false });
-    if (error) return res.status(400).json({ error: error.message });
+    if (error) return sendDocumentDatabaseError(res, error);
     res.json(data || []);
   })
 );
@@ -205,7 +221,7 @@ companiesRouter.post(
     const { error: insertError } = await supabase.from("company_documents").insert(row);
     if (insertError) {
       await supabase.storage.from(COMPANY_DOCUMENT_BUCKET).remove([storagePath]);
-      return res.status(400).json({ error: insertError.message });
+      return sendDocumentDatabaseError(res, insertError);
     }
 
     try {
@@ -230,6 +246,74 @@ companiesRouter.post(
   })
 );
 
+// Replace an existing source document while preserving its document_id. The AI
+// backend's document-scoped RPC swaps the old chunks atomically, so retrieval
+// never sees a partially indexed policy.
+companiesRouter.put(
+  "/me/documents/:documentId",
+  requireManager,
+  asyncHandler(async (req, res) => {
+    const { file_name: fileName, content_type: contentType, data_base64: dataBase64 } = req.body || {};
+    const expectedMime = "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+    if (!String(fileName || "").toLowerCase().endsWith(".docx") || contentType !== expectedMime || !dataBase64) {
+      return res.status(400).json({ error: "A valid DOCX file is required." });
+    }
+    const buffer = Buffer.from(dataBase64, "base64");
+    if (!buffer.length || buffer.length > MAX_DOCUMENT_BYTES || buffer.subarray(0, 2).toString() !== "PK") {
+      return res.status(400).json({ error: "The DOCX file is invalid or larger than 10 MB." });
+    }
+
+    const { data: document, error: findError } = await supabase.from("company_documents")
+      .select("document_id, service_type, document_type, storage_bucket, storage_path")
+      .eq("company_id", req.companyId).eq("document_id", req.params.documentId).single();
+    if (findError) {
+      if (isMissingCompanyDocumentsTable(findError)) return sendDocumentDatabaseError(res, findError);
+      return res.status(404).json({ error: "Document not found." });
+    }
+    if (!document) return res.status(404).json({ error: "Document not found." });
+
+    await ensureCompanyDocumentBucket();
+    const newStoragePath = `${req.companyId}/${document.document_id}/${Date.now()}-${safeStorageName(fileName)}`;
+    const { error: uploadError } = await supabase.storage.from(document.storage_bucket)
+      .upload(newStoragePath, buffer, { contentType, upsert: false });
+    if (uploadError) return res.status(400).json({ error: uploadError.message });
+
+    await supabase.from("company_documents").update({ status: "processing", error_message: null })
+      .eq("company_id", req.companyId).eq("document_id", document.document_id);
+    try {
+      const result = await callAiBackend("/api/documents/process", {
+        company_id: Number(req.companyId),
+        document_id: String(document.document_id),
+        document_type: document.document_type,
+        service_type: document.service_type,
+        storage_bucket: document.storage_bucket,
+        storage_path: newStoragePath,
+      });
+      const { data, error } = await supabase.from("company_documents").update({
+        file_name: fileName,
+        storage_path: newStoragePath,
+        mime_type: contentType,
+        file_size: buffer.length,
+        status: "indexed",
+        chunks_indexed: result.chunks_indexed,
+        error_message: null,
+        indexed_at: new Date().toISOString(),
+      }).eq("company_id", req.companyId).eq("document_id", document.document_id).select().single();
+      if (error) throw error;
+      if (document.storage_path !== newStoragePath) {
+        await supabase.storage.from(document.storage_bucket).remove([document.storage_path]);
+      }
+      res.json(data);
+    } catch (error) {
+      await supabase.storage.from(document.storage_bucket).remove([newStoragePath]);
+      await supabase.from("company_documents").update({
+        status: "failed", error_message: String(error.message || error).slice(0, 1000),
+      }).eq("company_id", req.companyId).eq("document_id", document.document_id);
+      res.status(502).json({ error: `Replacement saved temporarily, but indexing failed: ${error.message}` });
+    }
+  })
+);
+
 companiesRouter.delete(
   "/me/documents/:documentId",
   requireManager,
@@ -237,7 +321,11 @@ companiesRouter.delete(
     const { data: document, error } = await supabase.from("company_documents")
       .select("document_id, storage_bucket, storage_path")
       .eq("company_id", req.companyId).eq("document_id", req.params.documentId).single();
-    if (error || !document) return res.status(404).json({ error: "Document not found." });
+    if (error) {
+      if (isMissingCompanyDocumentsTable(error)) return sendDocumentDatabaseError(res, error);
+      return res.status(404).json({ error: "Document not found." });
+    }
+    if (!document) return res.status(404).json({ error: "Document not found." });
 
     const { error: rpcError } = await supabase.rpc("delete_document_chunks_bge_large", {
       p_company_id: Number(req.companyId), p_document_id: String(document.document_id),

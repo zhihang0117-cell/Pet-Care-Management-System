@@ -270,11 +270,18 @@
 
       <section class="bk-section setup-section">
         <div class="setup-section-head">
-          <h3><img src="icon/paw-print.png" alt="" class="section-icon">Active Services</h3>
+          <h3><img src="icon/paw-print.png" alt="" class="section-icon">Service Policies &amp; Knowledge Base</h3>
           <span class="field-note" id="selectedServicesText"></span>
         </div>
         <div class="setup-section-body">
-          <p class="field-note">Services are chosen at registration. Contact support to add or remove a service category.</p>
+          <div class="policy-setup-warning hidden" id="policySetupWarning" role="status">
+            <img src="icon/notification-bell.png" alt="">
+            <div>
+              <strong>Policy document storage needs database setup</strong>
+              <p id="policySetupWarningText">Apply the company document and BGE-Large migrations in Supabase, then refresh this page.</p>
+            </div>
+          </div>
+          <p class="field-note">Manage the policy documents used by your production knowledge base. General policies apply company-wide; service policies apply only to their stated service.</p>
           <div class="service-config-grid" id="selectedServiceCards"></div>
         </div>
       </section>
