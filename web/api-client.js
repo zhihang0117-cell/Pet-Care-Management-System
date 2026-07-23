@@ -16,8 +16,7 @@
  * separate LLM/agent trust model (see backend/src/middleware/auth.js).
  */
 
-const API_BASE_URL = "https://pawfect-ai-backend-620576034847.asia-southeast1.run.app/api"; // change to your deployed backend URL
-
+const API_BASE_URL = "/api";
 async function apiRequest(path, { method = "GET", body } = {}) {
   const token = await getSupabaseAccessToken();
   if (!token) {
