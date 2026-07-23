@@ -21,15 +21,10 @@ services:
       - key: LLM_API_KEY
         generateValue: true
       - key: AI_BACKEND_URL
-        fromService:
-          type: web
-          name: pawfectai-ai
-          property: hostport
+        value: https://pawfect-ai-backend-620576034847.asia-southeast1.run.app
+
       - key: AI_BACKEND_INTERNAL_KEY
-        fromService:
-          type: web
-          name: pawfectai-ai
-          envVarKey: INTERNAL_API_KEY
+        sync: false
 
   - type: web
     name: pawfectai-ai
