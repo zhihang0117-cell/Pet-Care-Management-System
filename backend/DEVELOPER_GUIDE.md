@@ -59,7 +59,8 @@ src/
     tableAllowlist.js       — which tables/actions the LLM's generic CRUD tools may touch
 sql/
   verify_payment_function.sql — atomic payment/loyalty/booking completion (see §5)
-  crud_consistency_functions.sql — transactional customer + linked-pet deletion
+  crud_consistency_functions.sql — transactional customer deletion and booking/payment CRUD
+  crud_hardening_migration.sql — points-adjustment audit and serialized account guards
 frontend-integration/
   api-client.js, payment-page.js — example of how an HTML page consumes this API
 ```

@@ -23,12 +23,14 @@ Open your Supabase project → SQL Editor and run these files in order:
 3. `sql/enquiry_refund_logo_migration.sql`
 4. `sql/crud_consistency_functions.sql`
 5. `sql/rls_policies.sql`
-6. `sql/register_company_function.sql`
-7. `sql/company_documents_migration.sql`
-8. `../ai-backend/supabase/migrations/002_add_document_id_to_chunks_bge_large.sql`
+6. `sql/crud_hardening_migration.sql`
+7. `sql/register_company_function.sql`
+8. `sql/company_documents_migration.sql`
+9. `../ai-backend/supabase/migrations/002_add_document_id_to_chunks_bge_large.sql`
 
 These migrations add company settings/logo storage, enquiry reply audit data,
-payment verification/refund audit data, and the atomic payment functions. They
+payment verification/refund audit data, atomic booking/payment functions,
+points-adjustment audit history, and guarded account functions. They
 do not delete any existing rows.
 
 ### Company policy documents and RAG

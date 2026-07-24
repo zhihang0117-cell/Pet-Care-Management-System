@@ -28,6 +28,7 @@ export function makeCrudRouter({
   deleteMiddleware = [],
   createPayload,
   updatePayload,
+  filterColumns = [],
 }) {
   const router = Router();
 
@@ -38,6 +39,9 @@ export function makeCrudRouter({
 
       for (const [key, value] of Object.entries(req.query)) {
         if (RESERVED_QUERY_KEYS.has(key)) continue;
+        if (!filterColumns.includes(key)) {
+          return res.status(400).json({ error: `Unsupported filter: ${key}` });
+        }
         query = query.eq(key, value);
       }
 
@@ -48,7 +52,11 @@ export function makeCrudRouter({
         query = query.or(orFilter);
       }
 
+      const allowedOrderColumns = new Set([idColumn, defaultOrder?.column, ...searchableColumns, ...filterColumns].filter(Boolean));
       const orderColumn = req.query.order || defaultOrder?.column;
+      if (orderColumn && !allowedOrderColumns.has(orderColumn)) {
+        return res.status(400).json({ error: `Unsupported order column: ${orderColumn}` });
+      }
       if (orderColumn) {
         const ascending =
           req.query.ascending !== undefined
@@ -57,8 +65,16 @@ export function makeCrudRouter({
         query = query.order(orderColumn, { ascending });
       }
 
-      if (req.query.limit) query = query.limit(Number(req.query.limit));
-      if (req.query.offset) query = query.range(Number(req.query.offset), Number(req.query.offset) + Number(req.query.limit || 50) - 1);
+      const requestedLimit = req.query.limit === undefined ? null : Number(req.query.limit);
+      const requestedOffset = req.query.offset === undefined ? null : Number(req.query.offset);
+      if (requestedLimit !== null && (!Number.isInteger(requestedLimit) || requestedLimit < 1 || requestedLimit > 200)) {
+        return res.status(400).json({ error: "limit must be an integer from 1 to 200." });
+      }
+      if (requestedOffset !== null && (!Number.isInteger(requestedOffset) || requestedOffset < 0)) {
+        return res.status(400).json({ error: "offset must be a non-negative integer." });
+      }
+      if (requestedLimit !== null) query = query.limit(requestedLimit);
+      if (requestedOffset !== null) query = query.range(requestedOffset, requestedOffset + (requestedLimit || 50) - 1);
 
       const { data, error } = await query;
       if (error) return res.status(400).json({ error: error.message });

@@ -127,12 +127,12 @@ authRouter.post(
       });
     } catch (err) {
       // Compensating rollback: leave neither working logins nor a partial company.
-      for (const userId of createdTeamUserIds) {
-        await supabase.auth.admin.deleteUser(userId);
-      }
       if (companyId) {
         await supabase.from("accounts").delete().eq("company_id", companyId);
         await supabase.from("companies").delete().eq("company_id", companyId);
+      }
+      for (const userId of createdTeamUserIds) {
+        await supabase.auth.admin.deleteUser(userId);
       }
       await supabase.auth.admin.deleteUser(userData.user.id);
       res.status(400).json({ error: err.message });

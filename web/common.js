@@ -1763,10 +1763,9 @@ function filterBookingsByService(filter) {
 // daycare tag), so enquiry counts are NOT scoped by the service filter
 // tabs the way booking counts are.
 //
-// "Pending Loyalty Redemption" has no real equivalent (redemptions are
-// created atomically when staff verify a payment — there's no separate
-// approval queue), so it's replaced by "Pending Payment Verification"
-// (payments with a Pending or Unpaid status, exactly what payment.html shows).
+// Point-redemption requests now have a real Pending -> Approved/Rejected
+// workflow. Payment verification remains a separate queue and is blocked
+// whenever its linked point redemption has not been approved.
 let enquiryRecords = [];        // normalized /api/chat-messages rows
 let pendingPaymentRecords = []; // raw unpaid /api/payments rows
 
@@ -1816,10 +1815,8 @@ function toneStyle(tone) {
 // "payment" is a real elapsed-time SLA (payment.created_at is a full
 // timestamp, and a pending payment can sit for hours or days) — kept
 // separate from the time-of-day kinds below, which assume same-day.
-// There's no "loyalty"/redemption entry here: a redemption row is created
-// atomically at the same instant its linked payment is verified (see
-// verify_payment_function.sql), so there's no separate pending-redemption
-// gap to measure — the payment SLA below covers it.
+// Redemption approval and payment verification are distinct workflows.
+// Only payment verification currently has a time-based SLA.
 const SLA_MINUTES = { pendingService: 15, enquiry: 180, payment: 300 };
 
 function toMinutes(hhmm) {
@@ -2318,9 +2315,8 @@ function buildActionQueue(filter, range = { start: today, end: today }) {
       });
     });
 
-  // Real redemption rows are created already-approved (see loyaltyDetailRow's
-  // comment), so this never actually matches anything — kept only so a
-  // demo/mock loyalty request with a genuine 'pending' status still renders.
+  // Pending point-redemption requests remain actionable until a manager
+  // approves or rejects them in the Loyalty detail panel.
   loyaltyRequests
     .filter(r => (filter === 'all' || r.relatedService === filter) && r.status === 'pending')
     .forEach(r => {
@@ -2513,11 +2509,7 @@ function enquiryDetailRow(e) {
   });
 }
 
-// No `sla` badge here: a redemption is created already-approved (see
-// verify_payment_function.sql), so create/approve happen at the same
-// instant — there's no pending gap on this record itself to measure. Any
-// wait the customer experienced is on the linked payment, tracked by
-// realPaymentDetailRow's payment SLA instead.
+// Redemption approval has no configured time-based SLA yet.
 function loyaltyDetailRow(r) {
   const refunded = r.status === 'refunded';
   const approvedAt = r.approvedDate ? ` · approved ${r.approvedDate}${r.approvedTime ? ' ' + r.approvedTime : ''}` : '';
@@ -2705,9 +2697,11 @@ async function confirmRealBooking(id) {
 async function resolveRealEnquiry(id) {
   const enquiry = enquiryRecords.find(e => e.id === id);
   if (!enquiry) return;
+  const replyText = prompt("Enter the reply sent to this customer:");
+  if (!replyText?.trim()) return;
   const stamp = todayStampLocal(); // reused from STAFF MANAGEMENT section (generic {date,time} helper)
   try {
-    await api.patch(`/chat-messages/${id}`, { reply_date: stamp.date, reply_time: stamp.time });
+    await api.patch(`/chat-messages/${id}`, { reply_text: replyText.trim(), reply_date: stamp.date, reply_time: stamp.time });
     closeDetailModal();
     await refreshDailyOverviewData();
   } catch (error) {
@@ -3153,10 +3147,10 @@ function renderCustomerTable(data) {
 
     row.innerHTML = `
       <td>
-        <span class="profile-name">${(start + i) % 2 === 0 ? "👨" : "👩"} ${customer.full_name}</span>
+        <span class="profile-name">${(start + i) % 2 === 0 ? "👨" : "👩"} ${escapeUiText(customer.full_name)}</span>
       </td>
 
-      <td>${customer.phone_number || "—"}</td>
+      <td>${escapeUiText(customer.phone_number || "—")}</td>
 
       <td>
         ${
@@ -3303,13 +3297,13 @@ function renderPetTable(data) {
 
     row.innerHTML = `
       <td>
-        <span class="profile-name">${getPetIcon(pet.pet_type)} ${pet.pet_name}</span>
-        <span class="profile-sub">${pet.pet_type || "—"} · ${pet.breed || "—"} · ${pet.size || "—"}</span>
+        <span class="profile-name">${getPetIcon(pet.pet_type)} ${escapeUiText(pet.pet_name)}</span>
+        <span class="profile-sub">${escapeUiText(pet.pet_type || "—")} · ${escapeUiText(pet.breed || "—")} · ${escapeUiText(pet.size || "—")}</span>
       </td>
 
       <td>
-        ${owner?.full_name || "Unknown"}
-        <span class="profile-sub">${owner?.phone_number || "—"}</span>
+        ${escapeUiText(owner?.full_name || "Unknown")}
+        <span class="profile-sub">${escapeUiText(owner?.phone_number || "—")}</span>
       </td>
 
       <td>
@@ -3319,7 +3313,7 @@ function renderPetTable(data) {
       <td>
         ${
           pet.health_notes
-            ? `<span class="key-chip">${pet.health_notes}</span>`
+            ? `<span class="key-chip">${escapeUiText(pet.health_notes)}</span>`
             : `<span class="profile-sub">No special care note</span>`
         }
       </td>
@@ -3388,17 +3382,17 @@ function openCustomerForm(customerId = null) {
 
     <div class="form-group">
       <label>Name</label>
-      <input name="full_name" value="${customer.full_name}" placeholder="Enter customer name" required />
+      <input name="full_name" value="${escapeUiText(customer.full_name)}" placeholder="Enter customer name" required />
     </div>
 
     <div class="form-group">
       <label>Mobile Number</label>
-      <input name="phone_number" value="${customer.phone_number || ""}" placeholder="+60..." required />
+      <input name="phone_number" value="${escapeUiText(customer.phone_number || "")}" placeholder="+60..." required />
     </div>
 
     <div class="form-group full">
       <label>Address</label>
-      <input name="address" value="${customer.address || ""}" placeholder="Enter address" required />
+      <input name="address" value="${escapeUiText(customer.address || "")}" placeholder="Enter address" required />
     </div>
 
     ${isEdit ? `
@@ -3410,9 +3404,9 @@ function openCustomerForm(customerId = null) {
           : linkedPets.map(pet => `
               <div class="crm-pet-card">
                 <div class="crm-pet-info">
-                  <span class="profile-name">${getPetIcon(pet.pet_type)} ${pet.pet_name}</span>
-                  <span class="profile-sub">${pet.pet_type || "—"} · ${pet.breed || "—"} · ${pet.size || "—"}</span>
-                  <span class="profile-sub">Vaccination: ${pet.vaccination_status || "Unknown"}${pet.health_notes ? ` &nbsp;|&nbsp; Care: ${pet.health_notes}` : ""}</span>
+                  <span class="profile-name">${getPetIcon(pet.pet_type)} ${escapeUiText(pet.pet_name)}</span>
+                  <span class="profile-sub">${escapeUiText(pet.pet_type || "—")} · ${escapeUiText(pet.breed || "—")} · ${escapeUiText(pet.size || "—")}</span>
+                  <span class="profile-sub">Vaccination: ${escapeUiText(pet.vaccination_status || "Unknown")}${pet.health_notes ? ` &nbsp;|&nbsp; Care: ${escapeUiText(pet.health_notes)}` : ""}</span>
                 </div>
                 <button type="button" class="action-btn" onclick="openPetForm(${pet.pet_id})"><img src="icon/view.png" alt="" class="btn-icon">View</button>
               </div>
@@ -3584,7 +3578,7 @@ function openPetForm(petId = null) {
       <select name="customer_id" required>
         ${customerRecords.map(customer => `
           <option value="${customer.customer_id}" ${String(customer.customer_id) === String(pet.customer_id) ? "selected" : ""}>
-            ${customer.full_name} · CUST-${customer.customer_id}
+            ${escapeUiText(customer.full_name)} · CUST-${customer.customer_id}
           </option>
         `).join("")}
       </select>
@@ -3592,7 +3586,7 @@ function openPetForm(petId = null) {
 
     <div class="form-group">
       <label>Pet Name</label>
-      <input name="pet_name" value="${pet.pet_name}" placeholder="Enter pet name" required />
+      <input name="pet_name" value="${escapeUiText(pet.pet_name)}" placeholder="Enter pet name" required />
     </div>
 
     <div class="form-group">
@@ -3619,7 +3613,7 @@ function openPetForm(petId = null) {
 
     <div class="form-group">
       <label>Breed</label>
-      <input name="breed" value="${pet.breed || ""}" placeholder="Enter breed" />
+      <input name="breed" value="${escapeUiText(pet.breed || "")}" placeholder="Enter breed" />
     </div>
 
     <div class="form-group">
@@ -3629,7 +3623,7 @@ function openPetForm(petId = null) {
 
     <div class="form-group">
       <label>Size</label>
-      <input name="size" value="${pet.size || ""}" placeholder="S / M / L" />
+      <input name="size" value="${escapeUiText(pet.size || "")}" placeholder="S / M / L" />
     </div>
 
     <div class="form-group">
@@ -3648,12 +3642,12 @@ function openPetForm(petId = null) {
 
     <div class="form-group full">
       <label>Health Notes</label>
-      <input name="health_notes" value="${pet.health_notes || ""}" placeholder="e.g. Mild food allergy" />
+      <input name="health_notes" value="${escapeUiText(pet.health_notes || "")}" placeholder="e.g. Mild food allergy" />
     </div>
 
     <div class="form-group full">
       <label>Service Notes</label>
-      <textarea name="service_notes" placeholder="Feeding instruction, room preference, grooming reminders">${pet.service_notes || ""}</textarea>
+      <textarea name="service_notes" placeholder="Feeding instruction, room preference, grooming reminders">${escapeUiText(pet.service_notes || "")}</textarea>
     </div>
 
     <div class="form-actions">
@@ -3815,9 +3809,8 @@ const loyaltyPendingRecordCount = document.getElementById("loyaltyPendingRecordC
 const loyaltyPendingRedemptionRecordCount = document.getElementById("loyaltyPendingRedemptionRecordCount");
 const loyaltyMemberRecordCount = document.getElementById("loyaltyMemberRecordCount");
 
-// Real backend data. A redemption row is created atomically when staff
-// verify a payment (payment.html, already wired) — this tab lists that
-// ledger straight from the `redemption` table.
+// Real backend data. Voucher requests enter as Pending; approval/rejection
+// happens here before the linked payment can consume an approved voucher.
 let loyaltyMemberRecords = [];
 let loyaltyCouponRecords = [];
 let loyaltyRedemptionRecords = [];
@@ -3985,8 +3978,11 @@ function renderLoyaltyPendingTable(searchValue) {
   }).join("");
 }
 
-function openRedemptionDetail(redemptionId) {
-  const redemption = loyaltyRedemptionRecords.find(r => String(r.redemption_id) === String(redemptionId));
+async function openRedemptionDetail(redemptionId) {
+  const redemption = await api.getRedemption(redemptionId).catch(error => {
+    alert(error.message || "Failed to load redemption.");
+    return null;
+  });
   if (!redemption) return;
   setRecordUrl("redemption_id", redemption.redemption_id);
 
@@ -4007,6 +4003,10 @@ function openRedemptionDetail(redemptionId) {
     <div class="form-group">
       <label>Status</label>
       <input value="${escapeUiText(status)}" readonly />
+    </div>
+    <div class="form-group">
+      <label>Payment ID</label>
+      <input value="${redemption.payment_id ? `PAY-${String(redemption.payment_id).padStart(4, "0")}` : "—"}" readonly />
     </div>
     <div class="form-group">
       <label>Member</label>
@@ -4034,8 +4034,48 @@ function openRedemptionDetail(redemptionId) {
     </div>
     <div class="form-actions">
       <button type="button" class="cancel-btn" onclick="closeDetailPage()"><img src="icon/close-circle.png" alt="" class="btn-icon">Close</button>
+      ${String(status).toLowerCase() === "pending" && isManager(getCurrentAccount()) ? `
+        <button type="button" class="btn btn-secondary bk-danger-btn" onclick="decidePointRedemption(${redemption.redemption_id}, 'Rejected')">Reject</button>
+        <button type="button" class="save-btn" onclick="decidePointRedemption(${redemption.redemption_id}, 'Approved')"><img src="icon/confirm-circle.png" alt="" class="btn-icon solid-btn-icon">Approve</button>
+      ` : ""}
+      ${String(status).toLowerCase() === "approved" &&
+        ["pending", "unpaid", "cancelled"].includes(String(redemption.payment_status || "").toLowerCase()) &&
+        isManager(getCurrentAccount()) ? `
+        <button type="button" class="btn btn-secondary bk-danger-btn" onclick="cancelPointRedemption(${redemption.redemption_id})">Cancel &amp; Return Points</button>
+      ` : ""}
     </div>
   `;
+}
+
+async function cancelPointRedemption(redemptionId) {
+  const reason = prompt("Why is this approved redemption being cancelled?");
+  if (!reason?.trim()) return;
+  if (!confirm(`Cancel REDM-${redemptionId} and return its spent points?`)) return;
+  const buttons = detailForm.querySelectorAll(".form-actions button");
+  buttons.forEach(button => { button.disabled = true; });
+  try {
+    await api.cancelRedemption(redemptionId, reason.trim());
+    closeDetailPage();
+    await refreshLoyaltyPageData();
+  } catch (error) {
+    alert(error.message || "Failed to cancel redemption.");
+    buttons.forEach(button => { button.disabled = false; });
+  }
+}
+
+async function decidePointRedemption(redemptionId, status) {
+  const action = status === "Approved" ? "approve" : "reject";
+  if (!confirm(`${action.charAt(0).toUpperCase() + action.slice(1)} REDM-${redemptionId}?`)) return;
+  const buttons = detailForm.querySelectorAll(".form-actions button");
+  buttons.forEach(button => { button.disabled = true; });
+  try {
+    await api.decideRedemption(redemptionId, status);
+    closeDetailPage();
+    await refreshLoyaltyPageData();
+  } catch (error) {
+    alert(error.message || `Failed to ${action} redemption.`);
+    buttons.forEach(button => { button.disabled = false; });
+  }
 }
 
 function renderLoyaltyMemberTable(searchValue) {
@@ -4552,6 +4592,34 @@ async function confirmVerifyPayment(paymentId) {
   }
 }
 
+async function confirmRequestRedemption(paymentId) {
+  const couponSelect = document.getElementById("verifyCouponSelect");
+  const couponId = couponSelect?.value ? Number(couponSelect.value) : null;
+  const note = document.getElementById("verifyVoucherNote");
+  const button = document.getElementById("requestRedemptionBtn");
+  if (!couponId) {
+    note.style.color = "#DC2626";
+    note.textContent = "Select a voucher to request point redemption.";
+    return;
+  }
+  try {
+    if (button) {
+      button.disabled = true;
+      button.textContent = "Requesting…";
+    }
+    await api.requestRedemption(paymentId, couponId);
+    await refreshPaymentPageData();
+    await openPaymentDetail(paymentId);
+  } catch (error) {
+    note.style.color = "#DC2626";
+    note.textContent = error.message || "Failed to request point redemption.";
+    if (button) {
+      button.disabled = false;
+      button.textContent = "Request Point Redemption";
+    }
+  }
+}
+
 async function confirmRefundPayment(paymentId) {
   const reason = q("refundReason")?.value.trim();
   const note = q("refundNote");
@@ -4594,6 +4662,14 @@ async function openPaymentDetail(paymentId) {
     .filter(([, key]) => paymentCompanySettings.payment_methods?.[key] !== false)
     .map(([label]) => label);
   const awaitingVerification = isPaymentAwaitingVerification(p);
+  const pointRedemption = detail.redemption;
+  const redemptionStatus = String(pointRedemption?.status || "");
+  const hasApprovedRedemption = redemptionStatus === "Approved";
+  const hasPendingRedemption = redemptionStatus === "Pending";
+  const hasUnapprovedRedemption = Boolean(pointRedemption) && !hasApprovedRedemption;
+  const approvedCoupon = hasApprovedRedemption
+    ? couponsCache.find(c => String(c.coupon_id) === String(pointRedemption.coupon_id))
+    : null;
   const canRefund = p.status === "Paid" && paymentAccountRole === "manager";
   const today = getToday();
   const availableCoupons = couponsCache.filter(c => !c.expiry_date || String(c.expiry_date).slice(0, 10) >= today);
@@ -4657,6 +4733,15 @@ async function openPaymentDetail(paymentId) {
       <input value="${p.status}" readonly />
     </div>
 
+    <div class="form-group full">
+      <label>Point Redemption</label>
+      <div class="reply-preview" style="${hasApprovedRedemption ? "background:#F0FDF4;border-color:#BBF7D0;" : "background:#FFF7ED;border-color:#FED7AA;"}">
+        ${hasApprovedRedemption
+          ? `Approved · REDM-${pointRedemption.redemption_id} · ${escapeUiText(approvedCoupon?.reward_name || "Voucher")}`
+          : `No approved point redemption${pointRedemption ? ` · REDM-${pointRedemption.redemption_id} is ${escapeUiText(redemptionStatus)}` : ""}`}
+      </div>
+    </div>
+
     ${p.status === "Refunded" ? `
     <div class="form-group full">
       <label>Refund Details</label>
@@ -4675,15 +4760,17 @@ async function openPaymentDetail(paymentId) {
         ${enabledPaymentMethods.map(method => `<option value="${method}">${method}</option>`).join("")}
       </select>
     </div>
-    <div class="form-group full">
+    ${!hasApprovedRedemption && !hasPendingRedemption ? `<div class="form-group full">
       <label>Apply Voucher (optional)</label>
       <select id="verifyCouponSelect">
         <option value="">No voucher</option>
         ${availableCoupons.map(c => `<option value="${c.coupon_id}">${c.reward_name} (${c.points_required} pts)</option>`).join("")}
       </select>
-    </div>
+    </div>` : ""}
     <div class="form-group full">
-      <p id="verifyVoucherNote" style="font-size:0.8rem;color:var(--text-muted);"></p>
+      <p id="verifyVoucherNote" style="font-size:0.8rem;color:${hasPendingRedemption ? "#B45309" : "var(--text-muted)"};">
+        ${hasPendingRedemption ? "No approved point redemption. Approve it in Loyalty → Pending Redemption before verifying this payment." : ""}
+      </p>
     </div>
     ` : ""}
 
@@ -4697,7 +4784,8 @@ async function openPaymentDetail(paymentId) {
 
     <div class="form-actions">
       <button type="button" class="cancel-btn" onclick="closeDetailPage()"><img src="icon/close-circle.png" alt="" class="btn-icon">Close</button>
-      ${awaitingVerification ? `<button type="button" class="save-btn" id="verifyConfirmBtn"><img src="icon/confirm-circle.png" alt="" class="btn-icon solid-btn-icon">Verify Payment &amp; Redemption</button>` : ""}
+      ${awaitingVerification && !hasApprovedRedemption && !hasPendingRedemption ? `<button type="button" class="btn btn-secondary" id="requestRedemptionBtn">Request Point Redemption</button>` : ""}
+      ${awaitingVerification ? `<button type="button" class="save-btn" id="verifyConfirmBtn" ${hasUnapprovedRedemption ? "disabled" : ""}><img src="icon/confirm-circle.png" alt="" class="btn-icon solid-btn-icon">Verify Payment</button>` : ""}
       ${canRefund ? `<button type="button" class="btn btn-secondary bk-danger-btn" onclick="confirmRefundPayment(${p.payment_id})">Refund Payment</button>` : ""}
     </div>
   `;
@@ -4705,7 +4793,11 @@ async function openPaymentDetail(paymentId) {
   if (awaitingVerification) {
     const couponSelect = document.getElementById("verifyCouponSelect");
     const note = document.getElementById("verifyVoucherNote");
-    couponSelect.addEventListener("change", async () => {
+    const verifyButton = document.getElementById("verifyConfirmBtn");
+    const requestButton = document.getElementById("requestRedemptionBtn");
+    couponSelect?.addEventListener("change", async () => {
+      verifyButton.disabled = hasUnapprovedRedemption || Boolean(couponSelect.value);
+      requestButton.disabled = !couponSelect.value;
       if (!couponSelect.value) { note.textContent = ""; return; }
       try {
         const quote = await api.quoteVoucher(p.payment_id, Number(couponSelect.value));
@@ -4716,7 +4808,11 @@ async function openPaymentDetail(paymentId) {
         note.textContent = error.message;
       }
     });
-    document.getElementById("verifyConfirmBtn").addEventListener("click", () => confirmVerifyPayment(p.payment_id));
+    if (requestButton) {
+      requestButton.disabled = true;
+      requestButton.addEventListener("click", () => confirmRequestRedemption(p.payment_id));
+    }
+    verifyButton.addEventListener("click", () => confirmVerifyPayment(p.payment_id));
   }
 }
 
@@ -5099,8 +5195,10 @@ async function resolveEnquiryAndRefresh(id) {
   // which target #detailModal/#actionCards etc., elements that don't exist
   // on this page (enquiries.html uses #detailPage/closeDetailPage()).
   const stamp = todayStampLocal();
+  const replyText = prompt("Enter the reply sent to this customer:");
+  if (!replyText?.trim()) return;
   try {
-    await api.patch(`/chat-messages/${id}`, { reply_date: stamp.date, reply_time: stamp.time });
+    await api.patch(`/chat-messages/${id}`, { reply_text: replyText.trim(), reply_date: stamp.date, reply_time: stamp.time });
     closeDetailPage();
     await refreshEnquiryPageData();
   } catch (error) {
@@ -5331,15 +5429,15 @@ function renderStaffListTable() {
     return `
       <tr>
         <td>
-          <span class="profile-name"><img src="icon/team.png" alt="" class="row-icon">${s.staff_name}</span>
+          <span class="profile-name"><img src="icon/team.png" alt="" class="row-icon">${escapeUiText(s.staff_name)}</span>
           <span class="profile-sub">STF-${String(s.staff_id).padStart(3, "0")}</span>
         </td>
-        <td>${s.role}</td>
+        <td>${escapeUiText(s.role)}</td>
         <td>
-          <span class="profile-sub">${s.email || "—"}</span>
-          <span class="profile-sub">${s.phone || "—"}</span>
+          <span class="profile-sub">${escapeUiText(s.email || "—")}</span>
+          <span class="profile-sub">${escapeUiText(s.phone || "—")}</span>
         </td>
-        <td>${(s.off_days_json || []).join(", ") || "—"}</td>
+        <td>${escapeUiText((s.off_days_json || []).join(", ") || "—")}</td>
         <td>${staffBookingCountsCache[s.staff_id] || 0}</td>
         <td><span class="status-tag status-${statusClass}">${statusLabel}</span></td>
         <td>
@@ -5375,13 +5473,13 @@ function openStaffForm(staffId = null) {
 
     <div class="form-group">
       <label>Name</label>
-      <input name="staff_name" value="${member.staff_name}" placeholder="Full name" ${readonly ? "readonly" : "required"} />
+      <input name="staff_name" value="${escapeUiText(member.staff_name)}" placeholder="Full name" ${readonly ? "readonly" : "required"} />
     </div>
 
     <div class="form-group">
       <label>Role</label>
       ${readonly
-        ? `<input value="${member.role}" readonly />`
+        ? `<input value="${escapeUiText(member.role)}" readonly />`
         : `<select name="role">
             <option value="Manager" ${member.role === "Manager" ? "selected" : ""}>Manager</option>
             <option value="Staff" ${member.role === "Staff" ? "selected" : ""}>Staff</option>
@@ -5391,12 +5489,12 @@ function openStaffForm(staffId = null) {
 
     <div class="form-group">
       <label>Email</label>
-      <input name="email" type="email" value="${member.email || ""}" placeholder="name@business.my" ${readonly ? "readonly" : ""} />
+      <input name="email" type="email" value="${escapeUiText(member.email || "")}" placeholder="name@business.my" ${readonly ? "readonly" : ""} />
     </div>
 
     <div class="form-group">
       <label>Phone</label>
-      <input name="phone" value="${member.phone || ""}" placeholder="+60..." ${readonly ? "readonly" : ""} />
+      <input name="phone" value="${escapeUiText(member.phone || "")}" placeholder="+60..." ${readonly ? "readonly" : ""} />
     </div>
 
     <div class="form-group">
@@ -5442,6 +5540,7 @@ function openStaffForm(staffId = null) {
       role: formData.get("role"),
       email: formData.get("email") || null,
       phone: formData.get("phone") || null,
+      status: formData.get("status") || "active",
       off_days_json: formData.getAll("offDays"),
     };
 
@@ -7506,6 +7605,10 @@ async function saveBusinessSettings() {
       }
     }
     currentCompanyRecord = await api.patch("/companies/me", { ...profilePayload, settings: settingsPayload });
+    // The Save Changes bar is shared by every Settings tab. Persist account
+    // dropdown changes made in Accounts too, instead of silently saving only
+    // the company fields when the user uses the page-level save button.
+    await saveChangedTeamAccounts();
     currentCompanyDocuments = await api.listCompanyDocuments();
     renderServicePolicyCards(currentCompanyRecord);
 
@@ -7646,14 +7749,49 @@ function renderAccountsPanel() {
   }).join("");
 }
 
+function changedTeamAccountPayloads() {
+  if (currentAccountRole !== "manager") return [];
+  return teamAccountRecords.flatMap(account => {
+    if (Number(account.account_id) === Number(currentAccountId)) return [];
+    const role = q(`accountRole_${account.account_id}`)?.value;
+    const accountStatus = q(`accountStatus_${account.account_id}`)?.value;
+    if (!role || !accountStatus
+      || (role === account.role && accountStatus === account.account_status)) return [];
+    return [{
+      accountId: account.account_id,
+      payload: { role, account_status: accountStatus },
+    }];
+  });
+}
+
+async function saveChangedTeamAccounts() {
+  const changes = changedTeamAccountPayloads();
+  for (const change of changes) {
+    const updated = await api.patch(`/accounts/${change.accountId}`, change.payload);
+    const index = teamAccountRecords.findIndex(account =>
+      Number(account.account_id) === Number(change.accountId));
+    if (index >= 0) teamAccountRecords[index] = { ...teamAccountRecords[index], ...updated };
+  }
+}
+
 async function saveTeamAccount(accountId) {
   const role = q(`accountRole_${accountId}`)?.value;
   const accountStatus = q(`accountStatus_${accountId}`)?.value;
+  const button = document.querySelector(`button[onclick="saveTeamAccount(${accountId})"]`);
   try {
+    if (button) {
+      button.disabled = true;
+      button.textContent = "Saving…";
+    }
     await api.patch(`/accounts/${accountId}`, { role, account_status: accountStatus });
     await refreshSettingsPageData();
   } catch (error) {
     alert(error.message || "Failed to update account.");
+  } finally {
+    if (button?.isConnected) {
+      button.disabled = false;
+      button.textContent = "Save";
+    }
   }
 }
 
@@ -7662,6 +7800,8 @@ async function addTeamAccount() {
   const password = q("newAccountPassword").value;
   const role = q("newAccountRole").value.toLowerCase();
   const note = q("accountsAddNote");
+  const button = q("addTeamAccountButton");
+  if (button?.disabled) return;
 
   if (!email || !password) {
     if (note) { note.textContent = "Enter an email and password."; note.style.color = "#DC2626"; }
@@ -7677,6 +7817,10 @@ async function addTeamAccount() {
   }
 
   try {
+    if (button) {
+      button.disabled = true;
+      button.textContent = "Adding…";
+    }
     await api.post("/accounts", { email, password, role });
     q("newAccountEmail").value = "";
     q("newAccountPassword").value = "";
@@ -7685,6 +7829,11 @@ async function addTeamAccount() {
     await refreshSettingsPageData();
   } catch (error) {
     if (note) { note.textContent = error.message || "Failed to add account."; note.style.color = "#DC2626"; }
+  } finally {
+    if (button) {
+      button.disabled = false;
+      button.textContent = "+ Add Account";
+    }
   }
 }
 

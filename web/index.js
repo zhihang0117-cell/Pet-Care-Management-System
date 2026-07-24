@@ -442,7 +442,10 @@ function addSetupStaffAccount() {
     q('setupAccountEmail').value = '';
     q('setupAccountPassword').value = '';
     q('setupAccountRole').value = 'Staff';
-    if (note) { note.textContent = '✓ Account added.'; note.style.color = '#059669'; }
+    if (note) {
+        note.textContent = '✓ Account queued. Save & Enter Portal will create it in Supabase.';
+        note.style.color = '#059669';
+    }
 
     renderSetupAccountsPanel();
 }

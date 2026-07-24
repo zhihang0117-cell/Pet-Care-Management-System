@@ -18,7 +18,7 @@ async function enabledBookingTables(companyId) {
     .single();
   if (error) throw error;
   const configured = data?.settings_json?.selected_services;
-  if (!Array.isArray(configured) || configured.length === 0) return BOOKING_TABLES;
+  if (!Array.isArray(configured)) return BOOKING_TABLES;
   const enabled = new Set(configured);
   return BOOKING_TABLES.filter(({ type }) => enabled.has(type));
 }

@@ -52,8 +52,8 @@ export const chatMessagesRouter = makeCrudRouter({
   },
   updatePayload: async req => {
     const stamp = localStamp();
-    const replyText = req.body.reply_text === undefined ? undefined : String(req.body.reply_text).trim();
-    if (req.body.reply_text !== undefined && !replyText) {
+    const replyText = String(req.body.reply_text || "").trim();
+    if (!replyText) {
       const error = new Error("Reply text cannot be empty.");
       error.status = 400;
       throw error;
@@ -62,7 +62,7 @@ export const chatMessagesRouter = makeCrudRouter({
       reply_date: req.body.reply_date || stamp.date,
       reply_time: req.body.reply_time || stamp.time,
     };
-    if (replyText !== undefined) payload.reply_text = replyText;
+    payload.reply_text = replyText;
 
     const { data: reviewer } = await supabase
       .from("staff")
@@ -73,4 +73,5 @@ export const chatMessagesRouter = makeCrudRouter({
     payload.replied_by_staff_id = reviewer?.staff_id || null;
     return payload;
   },
+  filterColumns: ["sender_id", "sender_type", "intent_label"],
 });

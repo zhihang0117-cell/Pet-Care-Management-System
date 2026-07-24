@@ -78,12 +78,21 @@ export async function getPaymentDetail(companyId, paymentId) {
   const { data: pet } = bookingInfo
     ? await supabase.from("pet").select("customer_id").eq("company_id", companyId).eq("pet_id", bookingInfo.booking.pet_id).maybeSingle()
     : { data: null };
+  const { data: redemption } = payment.redemption_id
+    ? await supabase
+      .from("redemption")
+      .select("*")
+      .eq("company_id", companyId)
+      .eq("redemption_id", payment.redemption_id)
+      .maybeSingle()
+    : { data: null };
 
   return {
     payment,
     bookingType: bookingInfo?.type || null,
     booking: bookingInfo?.booking || null,
     member,
+    redemption: redemption || null,
     customerId: pet?.customer_id || member?.customer_id || null,
   };
 }
@@ -120,11 +129,33 @@ export async function quoteVoucher(companyId, paymentId, couponId) {
   return computeFinalAmount(basePrice, addOnPrice, coupon);
 }
 
+export async function requestRedemption({ companyId, paymentId, couponId }) {
+  if (!Number.isInteger(Number(couponId)) || Number(couponId) <= 0) {
+    const err = new Error("Select a voucher to request point redemption.");
+    err.status = 400;
+    throw err;
+  }
+
+  // Keep the fast, user-friendly validation here. The SQL function repeats
+  // every important check while rows are locked to prevent race conditions.
+  await quoteVoucher(companyId, paymentId, Number(couponId));
+  const { data, error } = await supabase.rpc("request_redemption", {
+    p_company_id: companyId,
+    p_payment_id: Number(paymentId),
+    p_coupon_id: Number(couponId),
+  });
+  if (error) {
+    error.status = 400;
+    throw error;
+  }
+  return data;
+}
+
 /**
  * The "Verify Payment & Redemption" action: recomputes the final amount
  * (applying a voucher if chosen), then atomically deducts/earns loyalty
- * points, logs the redemption, marks the payment Paid, and marks the
- * underlying booking Done — via the verify_payment() SQL function.
+ * points, logs the redemption, and marks only the payment Paid via the
+ * verify_payment() SQL function. Booking workflow status stays independent.
  */
 export async function verifyPayment({ companyId, paymentId, couponId, staffId, paymentMethod }) {
   const bookingInfo = await findBookingByPaymentId(companyId, paymentId);
@@ -133,13 +164,18 @@ export async function verifyPayment({ companyId, paymentId, couponId, staffId, p
     err.status = 404;
     throw err;
   }
-  if (bookingInfo.booking.booking_status === "Cancelled") {
-    const err = new Error("A cancelled booking cannot be paid. Reopen the booking first.");
-    err.status = 409;
+  const member = await findMemberForPet(companyId, bookingInfo.booking.pet_id);
+  const { data: payment, error: paymentError } = await supabase
+    .from("payment")
+    .select("redemption_id")
+    .eq("company_id", companyId)
+    .eq("payment_id", paymentId)
+    .single();
+  if (paymentError) {
+    const err = new Error("Payment not found.");
+    err.status = 404;
     throw err;
   }
-
-  const member = await findMemberForPet(companyId, bookingInfo.booking.pet_id);
 
   const methodMap = {
     Cash: "cash",
@@ -166,25 +202,41 @@ export async function verifyPayment({ companyId, paymentId, couponId, staffId, p
   }
 
   let coupon = null;
-  if (couponId) {
-    if (!member) {
-      const err = new Error("A loyalty member is required to redeem a voucher.");
-      err.status = 400;
+  let approvedRedemption = null;
+  if (payment.redemption_id) {
+    const { data, error } = await supabase
+      .from("redemption")
+      .select("*")
+      .eq("company_id", companyId)
+      .eq("redemption_id", payment.redemption_id)
+      .single();
+    if (error || !data || data.status !== "Approved") {
+      const err = new Error("No approved point redemption for this payment.");
+      err.status = 409;
       throw err;
     }
-    const { data, error } = await supabase
+    approvedRedemption = data;
+    if (couponId && Number(couponId) !== Number(data.coupon_id)) {
+      const err = new Error("The selected voucher does not match the approved point redemption.");
+      err.status = 409;
+      throw err;
+    }
+    const { data: approvedCoupon, error: couponError } = await supabase
       .from("coupon")
       .select("*")
       .eq("company_id", companyId)
-      .eq("coupon_id", couponId)
+      .eq("coupon_id", data.coupon_id)
       .single();
-    if (error || !data) {
-      const err = new Error("Coupon/voucher not found.");
-      err.status = 404;
+    if (couponError || !approvedCoupon) {
+      const err = new Error("The voucher for the approved point redemption no longer exists.");
+      err.status = 409;
       throw err;
     }
-    coupon = data;
-    assertCanRedeem(member, coupon);
+    coupon = approvedCoupon;
+  } else if (couponId) {
+    const err = new Error("No approved point redemption for this payment.");
+    err.status = 409;
+    throw err;
   }
 
   const basePrice = bookingInfo.booking[bookingInfo.basePriceCol] || 0;
@@ -196,7 +248,7 @@ export async function verifyPayment({ companyId, paymentId, couponId, staffId, p
     p_company_id: companyId,
     p_payment_id: paymentId,
     p_loyalty_id: member?.loyalty_id || null,
-    p_coupon_id: couponId || null,
+    p_coupon_id: approvedRedemption?.coupon_id || null,
     p_earn_rate: earnRate,
     p_verified_by: staffId || null,
     p_payment_method: paymentMethod,

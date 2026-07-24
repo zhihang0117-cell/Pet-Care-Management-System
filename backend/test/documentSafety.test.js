@@ -61,3 +61,23 @@ test("settings save prevents duplicate submissions", async () => {
   assert.match(settings, /saveButton\.disabled = true/);
   assert.match(settings, /saveButton\.disabled = false/);
 });
+
+test("settings page-level save persists edited team accounts", async () => {
+  const settings = await source("web/common.js");
+  assert.match(settings, /await saveChangedTeamAccounts\(\)/);
+  assert.match(settings, /function changedTeamAccountPayloads\(\)/);
+  assert.match(settings, /api\.patch\(`\/accounts\/\$\{change\.accountId\}`/);
+});
+
+test("staff account creation buttons prevent duplicate submissions", async () => {
+  const settingsHtml = await source("web/setting.html");
+  const settings = await source("web/common.js");
+  assert.match(settingsHtml, /id="addTeamAccountButton"/);
+  assert.match(settings, /if \(button\?\.disabled\) return/);
+  assert.match(settings, /button\.textContent = "Adding…"/);
+});
+
+test("registration explains when staged staff accounts reach Supabase", async () => {
+  const registration = await source("web/index.js");
+  assert.match(registration, /Save & Enter Portal will create it in Supabase/);
+});

@@ -136,13 +136,12 @@ accountsRouter.patch(
         }
     }
 
-    const { data, error } = await supabase
-      .from("accounts")
-      .update(payload)
-      .eq("company_id", req.companyId)
-      .eq("account_id", req.params.accountId)
-      .select()
-      .single();
+    const { data, error } = await supabase.rpc("update_account_guarded", {
+      p_company_id: req.companyId,
+      p_account_id: Number(req.params.accountId),
+      p_role: payload.role ?? null,
+      p_status: payload.account_status ?? null,
+    });
     if (error) return res.status(400).json({ error: error.message });
     res.json(data);
   })
@@ -169,24 +168,27 @@ accountsRouter.delete(
         .from("accounts")
         .select("*", { count: "exact", head: true })
         .eq("company_id", req.companyId)
-        .eq("role", "manager");
+        .eq("role", "manager")
+        .eq("account_status", "active");
       if ((count || 0) <= 1) {
         return res.status(400).json({ error: "Can't remove the only manager account for this company." });
       }
     }
 
-    const { data: deletedAccount, error } = await supabase
-      .from("accounts")
-      .delete()
-      .eq("company_id", req.companyId)
-      .eq("account_id", req.params.accountId)
-      .select()
-      .single();
+    const { data: deletedAccount, error } = await supabase.rpc("delete_account_guarded", {
+      p_company_id: req.companyId,
+      p_account_id: Number(req.params.accountId),
+    });
     if (error) return res.status(400).json({ error: error.message });
 
     const { error: authDeleteError } = await supabase.auth.admin.deleteUser(target.auth_user_id);
     if (authDeleteError) {
-      await supabase.from("accounts").insert(deletedAccount);
+      const { error: restoreError } = await supabase.from("accounts").insert(deletedAccount);
+      if (restoreError) {
+        return res.status(500).json({
+          error: `Auth removal failed and the account row could not be restored. Auth error: ${authDeleteError.message}. Restore error: ${restoreError.message}`,
+        });
+      }
       return res.status(400).json({ error: `Account removal was rolled back: ${authDeleteError.message}` });
     }
     res.status(204).end();

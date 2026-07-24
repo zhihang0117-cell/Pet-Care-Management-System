@@ -1,7 +1,14 @@
 import { Router } from "express";
 import { supabase } from "../supabaseClient.js";
 import { asyncHandler } from "../middleware/auth.js";
-import { getPaymentDetail, quoteVoucher, verifyPayment, refundPayment } from "../lib/paymentService.js";
+import { assertAllowedQueryKeys, parsePagination } from "../lib/queryValidation.js";
+import {
+  getPaymentDetail,
+  quoteVoucher,
+  requestRedemption,
+  verifyPayment,
+  refundPayment,
+} from "../lib/paymentService.js";
 import { requireManager } from "../middleware/authUser.js";
 
 export const paymentsRouter = Router();
@@ -58,13 +65,15 @@ async function enrichPaymentsWithCustomer(payments, companyId) {
 paymentsRouter.get(
   "/",
   asyncHandler(async (req, res) => {
+    assertAllowedQueryKeys(req.query, ["search", "limit", "offset", "status", "payment_method"]);
+    const { limit, offset } = parsePagination(req.query);
     let query = supabase.from("payment").select("*").eq("company_id", req.companyId);
     for (const [key, value] of Object.entries(req.query)) {
       if (["search", "limit", "offset"].includes(key)) continue;
       query = query.eq(key, value);
     }
     query = query.order("payment_id", { ascending: false });
-    if (req.query.limit) query = query.limit(Number(req.query.limit));
+    if (limit !== null) query = query.range(offset, offset + limit - 1);
 
     const { data, error } = await query;
     if (error) return res.status(400).json({ error: error.message });
@@ -88,6 +97,18 @@ paymentsRouter.post(
   asyncHandler(async (req, res) => {
     const quote = await quoteVoucher(req.companyId, req.params.id, req.body.coupon_id);
     res.json(quote);
+  })
+);
+
+paymentsRouter.post(
+  "/:id/redemption-request",
+  asyncHandler(async (req, res) => {
+    const result = await requestRedemption({
+      companyId: req.companyId,
+      paymentId: Number(req.params.id),
+      couponId: Number(req.body.coupon_id),
+    });
+    res.status(201).json(result);
   })
 );
 

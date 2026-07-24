@@ -15,16 +15,23 @@ import { supabase } from "../supabaseClient.js";
  *   member's balance and the redemption ledger consistent with each other.
  */
 export const TABLE_ALLOWLIST = {
-  customer: { idColumn: "customer_id", create: true, update: true, delete: true },
-  pet: { idColumn: "pet_id", create: true, update: true, delete: true },
-  staff: { idColumn: "staff_id", create: true, update: true, delete: true },
-  coupon: { idColumn: "coupon_id", create: true, update: true, delete: true },
-  leave: { idColumn: "leave_id", create: true, update: true, delete: false },
-  messages: { idColumn: "message_id", create: true, update: false, delete: false },
+  customer: {
+    idColumn: "customer_id", create: true, update: true, delete: true,
+    fields: ["full_name", "phone_number", "address"],
+  },
+  pet: {
+    idColumn: "pet_id", create: true, update: true, delete: true,
+    fields: ["customer_id", "pet_name", "pet_type", "gender", "date_of_birth", "breed", "height_cm", "size",
+      "vaccination_status", "vaccination_expired_date", "health_notes", "service_notes"],
+  },
+  staff: { idColumn: "staff_id", create: false, update: false, delete: false },
+  coupon: { idColumn: "coupon_id", create: false, update: false, delete: false },
+  leave: { idColumn: "leave_id", create: false, update: false, delete: false },
+  messages: { idColumn: "message_id", create: false, update: false, delete: false },
 
-  grooming_booking: { idColumn: "grooming_booking_id", create: false, update: true, delete: false },
-  daycare_booking: { idColumn: "daycare_booking_id", create: false, update: true, delete: false },
-  boarding_booking: { idColumn: "boarding_booking_id", create: false, update: true, delete: false },
+  grooming_booking: { idColumn: "grooming_booking_id", create: false, update: false, delete: false },
+  daycare_booking: { idColumn: "daycare_booking_id", create: false, update: false, delete: false },
+  boarding_booking: { idColumn: "boarding_booking_id", create: false, update: false, delete: false },
 
   loyaltymember: { idColumn: "loyalty_id", create: false, update: false, delete: false },
   redemption: { idColumn: "redemption_id", create: false, update: false, delete: false },
@@ -45,11 +52,17 @@ function requireTable(table) {
 
 export async function llmListRecords(companyId, { table, filters = {}, limit = 50 }) {
   requireTable(table);
+  const numericLimit = Number(limit);
+  if (!Number.isInteger(numericLimit) || numericLimit < 1 || numericLimit > 200) {
+    const err = new Error("limit must be an integer from 1 to 200.");
+    err.status = 400;
+    throw err;
+  }
   let query = supabase.from(table).select("*").eq("company_id", companyId);
   for (const [key, value] of Object.entries(filters)) {
     query = query.eq(key, value);
   }
-  query = query.limit(Math.min(Number(limit) || 50, 200));
+  query = query.limit(numericLimit);
   const { data, error } = await query;
   if (error) throw error;
   return data;
@@ -67,29 +80,47 @@ export async function llmGetRecord(companyId, { table, id }) {
 }
 
 export async function llmCreateRecord(companyId, { table, data }) {
-  const { idColumn, create } = requireTable(table);
+  const { idColumn, create, fields = [] } = requireTable(table);
   if (!create) {
     const err = new Error(`Creating rows in "${table}" isn't allowed for the LLM. Use a dedicated tool instead (e.g. create_booking).`);
     err.status = 403;
     throw err;
   }
-  const payload = { ...data, company_id: companyId };
+  const payload = Object.fromEntries(Object.entries(data || {}).filter(([key]) => fields.includes(key)));
+  payload.company_id = companyId;
   delete payload[idColumn];
+  if (table === "customer" && (!String(payload.full_name || "").trim() || !String(payload.phone_number || "").trim() || !String(payload.address || "").trim())) {
+    const err = new Error("Customer name, phone number, and address are required.");
+    err.status = 400;
+    throw err;
+  }
+  if (table === "pet") await validatePetPayload(companyId, payload, { creating: true });
   const { data: row, error } = await supabase.from(table).insert(payload).select().single();
   if (error) throw error;
   return row;
 }
 
 export async function llmUpdateRecord(companyId, { table, id, data }) {
-  const { idColumn, update } = requireTable(table);
+  const { idColumn, update, fields = [] } = requireTable(table);
   if (!update) {
     const err = new Error(`Updating rows in "${table}" isn't allowed for the LLM. Use a dedicated tool instead (e.g. verify_payment).`);
     err.status = 403;
     throw err;
   }
-  const payload = { ...data };
+  const payload = Object.fromEntries(Object.entries(data || {}).filter(([key]) => fields.includes(key)));
   delete payload[idColumn];
   delete payload.company_id;
+  if (!Object.keys(payload).length) {
+    const err = new Error("No supported fields were supplied.");
+    err.status = 400;
+    throw err;
+  }
+  if (table === "customer" && Object.values(payload).some(value => !String(value || "").trim())) {
+    const err = new Error("Customer fields cannot be blank.");
+    err.status = 400;
+    throw err;
+  }
+  if (table === "pet") await validatePetPayload(companyId, payload);
   const { data: row, error } = await supabase
     .from(table)
     .update(payload)
@@ -108,7 +139,39 @@ export async function llmDeleteRecord(companyId, { table, id }) {
     err.status = 403;
     throw err;
   }
+  if (table === "customer") {
+    const { error } = await supabase.rpc("delete_customer_with_pets", {
+      p_company_id: companyId,
+      p_customer_id: Number(id),
+    });
+    if (error) throw error;
+    return { deleted: true, table, id };
+  }
   const { error } = await supabase.from(table).delete().eq("company_id", companyId).eq(idColumn, id);
   if (error) throw error;
   return { deleted: true, table, id };
+}
+
+async function validatePetPayload(companyId, payload, { creating = false } = {}) {
+  if (creating && (!payload.customer_id || !String(payload.pet_name || "").trim())) {
+    const err = new Error("A valid owner and pet name are required.");
+    err.status = 400;
+    throw err;
+  }
+  if (payload.customer_id !== undefined) {
+    const customerId = Number(payload.customer_id);
+    const { data: owner } = await supabase.from("customer").select("customer_id")
+      .eq("company_id", companyId).eq("customer_id", customerId).maybeSingle();
+    if (!owner) {
+      const err = new Error("Owner not found for this company.");
+      err.status = 404;
+      throw err;
+    }
+    payload.customer_id = customerId;
+  }
+  if (payload.pet_name !== undefined && !String(payload.pet_name).trim()) {
+    const err = new Error("Pet name cannot be blank.");
+    err.status = 400;
+    throw err;
+  }
 }

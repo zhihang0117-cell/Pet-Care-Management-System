@@ -68,6 +68,18 @@ export function assertCanRedeem(member, coupon) {
     err.status = 404;
     throw err;
   }
+  const pointsBalance = Number(member.points_balance);
+  const pointsRequired = Number(coupon.points_required);
+  if (!Number.isFinite(pointsBalance) || pointsBalance < 0) {
+    const err = new Error("Member points balance is invalid.");
+    err.status = 409;
+    throw err;
+  }
+  if (!Number.isInteger(pointsRequired) || pointsRequired < 1) {
+    const err = new Error("Voucher points requirement is invalid.");
+    err.status = 409;
+    throw err;
+  }
   const expiryDate = String(coupon.expiry_date || "").slice(0, 10);
   const today = new Date().toISOString().slice(0, 10);
   if (expiryDate && expiryDate < today) {
@@ -75,10 +87,10 @@ export function assertCanRedeem(member, coupon) {
     err.status = 400;
     throw err;
   }
-  if (member.points_balance < coupon.points_required) {
+  if (pointsBalance < pointsRequired) {
     const err = new Error(
-      `Not enough points. This voucher needs ${coupon.points_required} points, ` +
-        `member only has ${member.points_balance}.`
+      `Not enough points. This voucher needs ${pointsRequired} points, ` +
+        `member only has ${pointsBalance}.`
     );
     err.status = 400;
     throw err;

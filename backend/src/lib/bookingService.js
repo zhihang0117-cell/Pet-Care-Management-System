@@ -65,6 +65,20 @@ function validateBookingInput(type, booking, { creating = false } = {}) {
   }
 }
 
+async function assertBookingRelationsBelongToCompany(companyId, petId, staffId) {
+  const [{ data: pet, error: petError }, { data: staff, error: staffError }] = await Promise.all([
+    supabase.from("pet").select("pet_id").eq("company_id", companyId).eq("pet_id", petId).maybeSingle(),
+    supabase.from("staff").select("staff_id").eq("company_id", companyId).eq("staff_id", staffId).maybeSingle(),
+  ]);
+  if (petError || staffError) {
+    const err = petError || staffError;
+    err.status = 400;
+    throw err;
+  }
+  if (!pet) invalidBooking("Selected pet does not belong to this company.");
+  if (!staff) invalidBooking("Selected staff member does not belong to this company.");
+}
+
 /** Finds which of the 3 booking tables a payment_id belongs to. */
 export async function findBookingByPaymentId(companyId, paymentId) {
   for (const [type, cfg] of Object.entries(BOOKING_TYPES)) {
@@ -204,42 +218,30 @@ export async function createBooking(type, companyId, body) {
   }
 
   validateBookingInput(type, bookingRow, { creating: true });
+  await assertBookingRelationsBelongToCompany(companyId, bookingRow.pet_id, bookingRow.staff_id);
 
   const { finalAmount } = computeFinalAmount(basePriceForPayment, addOnPrice, null);
 
-  const { data: payment, error: paymentError } = await supabase
-    .from("payment")
-    .insert({
-      company_id: companyId,
-      service: bookingRow.service_name || bookingRow.package_type || bookingRow.room_type,
-      base_price: basePriceForPayment,
-      add_ons: config.hasAddOn && body.add_on ? `${body.add_on} (+RM${addOnPrice})` : "",
-      final_amount: finalAmount,
-      payment_method: null,
-      date: createdDate,
-      status: "Pending",
-    })
-    .select()
-    .single();
-
-  if (paymentError) {
-    paymentError.status = 400;
-    throw paymentError;
+  const paymentRow = {
+    service: bookingRow.service_name || bookingRow.package_type || bookingRow.room_type,
+    base_price: basePriceForPayment,
+    add_ons: config.hasAddOn && body.add_on ? `${body.add_on} (+RM${addOnPrice})` : "",
+    final_amount: finalAmount,
+    payment_method: null,
+    date: createdDate,
+    status: "Pending",
+  };
+  const { data, error } = await supabase.rpc("create_booking_atomic", {
+    p_company_id: companyId,
+    p_booking_type: type,
+    p_booking: bookingRow,
+    p_payment: paymentRow,
+  });
+  if (error) {
+    error.status = 400;
+    throw error;
   }
-
-  const { data: booking, error: bookingError } = await supabase
-    .from(config.table)
-    .insert({ ...bookingRow, [config.paymentIdColumn]: payment.payment_id })
-    .select()
-    .single();
-
-  if (bookingError) {
-    await supabase.from("payment").delete().eq("company_id", companyId).eq("payment_id", payment.payment_id);
-    bookingError.status = 400;
-    throw bookingError;
-  }
-
-  return { booking, payment };
+  return data;
 }
 
 function paymentPayloadForBooking(type, booking) {
@@ -265,15 +267,14 @@ function paymentPayloadForBooking(type, booking) {
   return { service, base_price: basePrice, add_ons: addOns, final_amount: finalAmount };
 }
 
-function isAwaitingPayment(status) {
-  return status === "Pending" || status === "Unpaid";
-}
-
 function isUnsettledPayment(status) {
-  return isAwaitingPayment(status) || status === "Cancelled";
+  return status === "Pending" || status === "Unpaid" || status === "Cancelled";
 }
 
-/** Updates a booking and keeps its pending payment pricing/service in sync. */
+/**
+ * Updates a booking. A linked unsettled payment may receive refreshed service
+ * and pricing details, but its status is deliberately independent.
+ */
 export async function updateBooking(type, companyId, bookingId, body) {
   const config = getBookingTypeConfig(type);
   const { data: existing, error: findError } = await supabase
@@ -301,73 +302,50 @@ export async function updateBooking(type, companyId, bookingId, body) {
     payload.total_price = next.total_price;
   }
   validateBookingInput(type, next);
+  await assertBookingRelationsBelongToCompany(companyId, next.pet_id, next.staff_id);
 
-  const { data: payment, error: paymentFindError } = await supabase
-    .from("payment")
-    .select("*")
-    .eq("company_id", companyId)
-    .eq("payment_id", existing[config.paymentIdColumn])
-    .single();
-  if (paymentFindError || !payment) {
-    const err = new Error("Linked payment not found");
-    err.status = 409;
-    throw err;
-  }
-  if (payload.booking_status === "Done" && payment.status !== "Paid") {
-    const err = new Error("Verify the linked payment before marking this booking Done.");
-    err.status = 409;
-    throw err;
-  }
-  if (payment.status === "Paid" && payload.booking_status && payload.booking_status !== "Done") {
-    const err = new Error("A paid booking must remain Done. Refund handling is required before changing its status.");
-    err.status = 409;
-    throw err;
-  }
-
+  const currentPaymentDetails = paymentPayloadForBooking(type, existing);
   const nextPayment = paymentPayloadForBooking(type, next);
   const pricingChanged = ["service", "base_price", "add_ons", "final_amount"]
-    .some((key) => String(nextPayment[key] ?? "") !== String(payment[key] ?? ""));
-  if (!isUnsettledPayment(payment.status) && pricingChanged) {
-    const err = new Error("A completed or refunded booking's service or price cannot be changed.");
-    err.status = 409;
-    throw err;
-  }
+    .some((key) => String(nextPayment[key] ?? "") !== String(currentPaymentDetails[key] ?? ""));
 
-  const { data: updated, error: bookingError } = await supabase
-    .from(config.table)
-    .update(payload)
-    .eq("company_id", companyId)
-    .eq(config.idColumn, bookingId)
-    .select()
-    .single();
-  if (bookingError) {
-    bookingError.status = 400;
-    throw bookingError;
-  }
-
-  const paymentUpdate = isUnsettledPayment(payment.status) && pricingChanged ? { ...nextPayment } : {};
-  if (payload.booking_status === "Cancelled" && isAwaitingPayment(payment.status)) {
-    paymentUpdate.status = "Cancelled";
-  } else if (payment.status === "Cancelled" && payload.booking_status && payload.booking_status !== "Cancelled") {
-    paymentUpdate.status = "Unpaid";
-  }
-
-  if (Object.keys(paymentUpdate).length > 0) {
-    const { error: paymentError } = await supabase
+  // A status/date/staff/note-only booking edit must remain a booking-only
+  // operation. Look up the linked payment only when billable details changed.
+  let payment = null;
+  if (pricingChanged) {
+    const { data, error: paymentFindError } = await supabase
       .from("payment")
-      .update(paymentUpdate)
+      .select("*")
       .eq("company_id", companyId)
-      .eq("payment_id", payment.payment_id);
-    if (paymentError) {
-      const rollback = { ...existing };
-      delete rollback[config.idColumn];
-      delete rollback.company_id;
-      await supabase.from(config.table).update(rollback).eq("company_id", companyId).eq(config.idColumn, bookingId);
-      paymentError.status = 400;
-      throw paymentError;
+      .eq("payment_id", existing[config.paymentIdColumn])
+      .single();
+    if (paymentFindError || !data) {
+      const err = new Error("Linked payment not found");
+      err.status = 409;
+      throw err;
+    }
+    payment = data;
+    if (!isUnsettledPayment(payment.status)) {
+      const err = new Error("A completed or refunded booking's service or price cannot be changed.");
+      err.status = 409;
+      throw err;
     }
   }
 
+  // Booking workflow status, payment settlement status, and redemption status
+  // are separate state machines. Never copy booking_status into payment.status.
+  const paymentUpdate = payment ? { ...nextPayment } : {};
+  const { data: updated, error: updateError } = await supabase.rpc("update_booking_atomic", {
+    p_company_id: companyId,
+    p_booking_type: type,
+    p_booking_id: Number(bookingId),
+    p_booking_patch: payload,
+    p_payment_patch: paymentUpdate,
+  });
+  if (updateError) {
+    updateError.status = 400;
+    throw updateError;
+  }
   return updated;
 }
 
@@ -403,25 +381,35 @@ export async function deleteBooking(type, companyId, bookingId) {
     err.status = 409;
     throw err;
   }
-
-  const { error: bookingError } = await supabase
-    .from(config.table)
-    .delete()
-    .eq("company_id", companyId)
-    .eq(config.idColumn, bookingId);
-  if (bookingError) {
-    bookingError.status = 400;
-    throw bookingError;
+  if (payment.redemption_id) {
+    const { data: redemption, error: redemptionError } = await supabase
+      .from("redemption")
+      .select("status")
+      .eq("company_id", companyId)
+      .eq("redemption_id", payment.redemption_id)
+      .maybeSingle();
+    if (redemptionError) {
+      redemptionError.status = 400;
+      throw redemptionError;
+    }
+    if (redemption && redemption.status !== "Rejected") {
+      const err = new Error(
+        redemption.status === "Approved"
+          ? "This booking has an approved point redemption. Cancel and refund the redemption before deleting it."
+          : "This booking has a pending point redemption. Reject it before deleting the booking.",
+      );
+      err.status = 409;
+      throw err;
+    }
   }
 
-  const { error: paymentError } = await supabase
-    .from("payment")
-    .delete()
-    .eq("company_id", companyId)
-    .eq("payment_id", paymentId);
-  if (paymentError) {
-    await supabase.from(config.table).insert(booking);
-    paymentError.status = 400;
-    throw paymentError;
+  const { error } = await supabase.rpc("delete_booking_atomic", {
+    p_company_id: companyId,
+    p_booking_type: type,
+    p_booking_id: Number(bookingId),
+  });
+  if (error) {
+    error.status = 400;
+    throw error;
   }
 }

@@ -64,4 +64,5 @@ export const couponsRouter = makeCrudRouter({
   deleteMiddleware: [requireManager],
   createPayload: (req) => validateCouponPayload(req.body, { creating: true }),
   updatePayload: (req) => validateCouponPayload(req.body),
+  filterColumns: ["reward_type"],
 });

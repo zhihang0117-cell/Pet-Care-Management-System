@@ -3,6 +3,7 @@ import { supabase } from "../supabaseClient.js";
 import { asyncHandler } from "../middleware/auth.js";
 import { getLoyaltyTier } from "../lib/pricing.js";
 import { requireManager } from "../middleware/authUser.js";
+import { assertAllowedQueryKeys, parsePagination } from "../lib/queryValidation.js";
 
 export const memberInfoRouter = Router();
 
@@ -10,12 +11,14 @@ export const memberInfoRouter = Router();
 memberInfoRouter.get(
   "/",
   asyncHandler(async (req, res) => {
+    assertAllowedQueryKeys(req.query, ["search", "limit", "offset", "tier", "customer_id"]);
+    const { limit, offset } = parsePagination(req.query);
     let query = supabase.from("loyaltymember").select("*").eq("company_id", req.companyId);
     for (const [key, value] of Object.entries(req.query)) {
       if (["search", "limit", "offset"].includes(key)) continue;
       query = query.eq(key, value);
     }
-    if (req.query.limit) query = query.limit(Number(req.query.limit));
+    if (limit !== null) query = query.range(offset, offset + limit - 1);
 
     const { data, error } = await query;
     if (error) return res.status(400).json({ error: error.message });
@@ -53,26 +56,38 @@ memberInfoRouter.post(
     if (!customerId) {
       return res.status(400).json({ error: "customer_id is required." });
     }
+    const numericCustomerId = Number(customerId);
+    if (!Number.isInteger(numericCustomerId) || numericCustomerId <= 0) {
+      return res.status(400).json({ error: "customer_id must be a positive integer." });
+    }
+    const { data: companyCustomer, error: customerError } = await supabase
+      .from("customer")
+      .select("customer_id")
+      .eq("company_id", req.companyId)
+      .eq("customer_id", numericCustomerId)
+      .maybeSingle();
+    if (customerError) return res.status(400).json({ error: customerError.message });
+    if (!companyCustomer) return res.status(404).json({ error: "Customer not found for this company." });
 
     const { data: existing } = await supabase
       .from("loyaltymember")
       .select("loyalty_id")
       .eq("company_id", req.companyId)
-      .eq("customer_id", customerId)
+      .eq("customer_id", numericCustomerId)
       .maybeSingle();
     if (existing) {
       return res.status(400).json({ error: "This customer is already a loyalty member." });
     }
 
     const balance = pointsBalance === undefined ? 0 : Number(pointsBalance);
-    if (!Number.isFinite(balance) || balance < 0) {
-      return res.status(400).json({ error: "points_balance must be a non-negative number." });
+    if (!Number.isInteger(balance) || balance < 0) {
+      return res.status(400).json({ error: "points_balance must be a non-negative integer." });
     }
     const { data, error } = await supabase
       .from("loyaltymember")
       .insert({
         company_id: req.companyId,
-        customer_id: customerId,
+        customer_id: numericCustomerId,
         points_balance: balance,
         tier: getLoyaltyTier(balance),
         redemption_made: 0,
@@ -102,20 +117,22 @@ memberInfoRouter.patch(
       return res.status(400).json({ error: "points_balance is required." });
     }
     const numericBalance = Number(pointsBalance);
-    if (!Number.isFinite(numericBalance) || numericBalance < 0) {
-      return res.status(400).json({ error: "points_balance must be a non-negative number." });
+    const normalizedReason = String(reason || "").trim();
+    if (!normalizedReason) {
+      return res.status(400).json({ error: "A reason is required for every manual points adjustment." });
     }
-    const tier = getLoyaltyTier(numericBalance);
-
-    const { data, error } = await supabase
-      .from("loyaltymember")
-      .update({ points_balance: numericBalance, tier })
-      .eq("company_id", req.companyId)
-      .eq("loyalty_id", req.params.loyaltyId)
-      .select()
-      .single();
+    if (!Number.isInteger(numericBalance) || numericBalance < 0) {
+      return res.status(400).json({ error: "points_balance must be a non-negative integer." });
+    }
+    const { data, error } = await supabase.rpc("adjust_loyalty_points", {
+      p_company_id: req.companyId,
+      p_loyalty_id: Number(req.params.loyaltyId),
+      p_new_balance: numericBalance,
+      p_reason: normalizedReason,
+      p_account_id: req.accountId,
+    });
 
     if (error) return res.status(400).json({ error: error.message });
-    res.json({ ...data, adjustment_reason: reason || null });
+    res.json(data);
   })
 );

@@ -70,8 +70,8 @@ export async function quoteVoucher(companyId, paymentId, couponId) {
 /**
  * The "Verify Payment & Redemption" action: recomputes the final amount
  * (applying a voucher if chosen), then atomically deducts/earns loyalty
- * points, logs the redemption, marks the payment Paid, and marks the
- * underlying booking Done — via the verify_payment() SQL function.
+ * points, logs the redemption, and marks only the payment Paid. Booking
+ * workflow status stays independent.
  */
 export async function verifyPayment({ companyId, paymentId, couponId, staffId }) {
   const bookingInfo = await findBookingByPaymentId(companyId, paymentId);
@@ -125,12 +125,6 @@ export async function verifyPayment({ companyId, paymentId, couponId, staffId })
     rpcError.status = 400;
     throw rpcError;
   }
-
-  await supabase
-    .from(bookingInfo.table)
-    .update({ booking_status: "Done" })
-    .eq("company_id", companyId)
-    .eq(bookingInfo.idColumn, bookingInfo.booking[bookingInfo.idColumn]);
 
   return result;
 }

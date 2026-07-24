@@ -2,11 +2,17 @@ import { Router } from "express";
 import { supabase } from "../supabaseClient.js";
 import { asyncHandler } from "../middleware/auth.js";
 import { BOOKING_TYPES, createBooking, updateBooking, deleteBooking } from "../lib/bookingService.js";
+import { assertAllowedQueryKeys, parsePagination } from "../lib/queryValidation.js";
 
 const SEARCHABLE = {
   grooming: ["service_name", "notes"],
   daycare: ["package_type", "special_instruction"],
   boarding: ["room_type", "notes"],
+};
+const FILTERABLE = {
+  grooming: ["booking_status", "staff_id", "pet_id", "booking_date", "service_name"],
+  daycare: ["booking_status", "staff_id", "pet_id", "booking_date", "package_type"],
+  boarding: ["booking_status", "staff_id", "pet_id", "check_in_date", "check_out_date", "room_type"],
 };
 
 function requireBookingType(req, res, next) {
@@ -29,7 +35,8 @@ async function resolveEnabledBookingType(req, res, next) {
       .single();
     if (error) throw error;
     const configured = data?.settings_json?.selected_services;
-    const enabledServices = Array.isArray(configured) && configured.length
+    // Missing legacy setting means all services; an explicit [] means none.
+    const enabledServices = Array.isArray(configured)
       ? configured
       : Object.keys(BOOKING_TYPES);
     req.bookingTypeEnabled = enabledServices.includes(req.params.type);
@@ -49,6 +56,9 @@ bookingsRouter.get(
   asyncHandler(async (req, res) => {
     if (!req.bookingTypeEnabled) return res.json([]);
     const { table, idColumn } = req.bookingConfig;
+    const filterable = FILTERABLE[req.params.type] || [];
+    assertAllowedQueryKeys(req.query, ["search", "limit", "offset", "order", ...filterable]);
+    const { limit, offset } = parsePagination(req.query);
     let query = supabase.from(table).select("*").eq("company_id", req.companyId);
 
     for (const [key, value] of Object.entries(req.query)) {
@@ -61,8 +71,12 @@ bookingsRouter.get(
       query = query.or(searchableColumns.map((c) => `${c}.ilike.%${req.query.search}%`).join(","));
     }
 
-    query = query.order(req.query.order || idColumn, { ascending: false });
-    if (req.query.limit) query = query.limit(Number(req.query.limit));
+    const orderColumn = req.query.order || idColumn;
+    if (![idColumn, ...filterable, ...searchableColumns].includes(orderColumn)) {
+      return res.status(400).json({ error: `Unsupported order column: ${orderColumn}` });
+    }
+    query = query.order(orderColumn, { ascending: false });
+    if (limit !== null) query = query.range(offset, offset + limit - 1);
 
     const { data, error } = await query;
     if (error) return res.status(400).json({ error: error.message });

@@ -2,11 +2,32 @@ import { makeCrudRouter } from "../lib/crudFactory.js";
 import { supabase } from "../supabaseClient.js";
 import { asyncHandler } from "../middleware/auth.js";
 
+function customerPayload(req, { creating = false } = {}) {
+  const payload = {};
+  for (const [key, source] of [["full_name", "full_name"], ["phone_number", "phone_number"], ["address", "address"]]) {
+    if (req.body[source] !== undefined) payload[key] = String(req.body[source] || "").trim();
+  }
+  if ((creating && Object.keys(payload).length !== 3) || Object.values(payload).some(value => !value)) {
+    const error = new Error("Customer name, phone number, and address are required.");
+    error.status = 400;
+    throw error;
+  }
+  if (!creating && Object.keys(payload).length === 0) {
+    const error = new Error("Nothing to update.");
+    error.status = 400;
+    throw error;
+  }
+  return payload;
+}
+
 export const customersRouter = makeCrudRouter({
   table: "customer",
   idColumn: "customer_id",
   searchableColumns: ["full_name", "phone_number", "address"],
   defaultOrder: { column: "customer_id", ascending: true },
+  createPayload: req => customerPayload(req, { creating: true }),
+  updatePayload: customerPayload,
+  filterColumns: [],
 });
 
 // Deletes the customer and linked pets in one database transaction. Any

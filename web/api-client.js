@@ -156,6 +156,8 @@ const api = {
   listPayments: (filters = {}) => api.get(`/payments?${new URLSearchParams(filters)}`),
   getPaymentDetail: (paymentId) => api.get(`/payments/${paymentId}`),
   quoteVoucher: (paymentId, couponId) => api.post(`/payments/${paymentId}/quote-voucher`, { coupon_id: couponId }),
+  requestRedemption: (paymentId, couponId) =>
+    api.post(`/payments/${paymentId}/redemption-request`, { coupon_id: couponId }),
   verifyPayment: (paymentId, { couponId, staffId, paymentMethod } = {}) =>
     api.post(`/payments/${paymentId}/verify`, { coupon_id: couponId, staff_id: staffId, payment_method: paymentMethod }),
   refundPayment: (paymentId, reason) => api.post(`/payments/${paymentId}/refund`, { reason }),
@@ -173,6 +175,11 @@ const api = {
 
   listMembers: (filters = {}) => api.get(`/member-info?${new URLSearchParams(filters)}`),
   listRedemptions: (filters = {}) => api.get(`/redemptions?${new URLSearchParams(filters)}`),
+  getRedemption: (redemptionId) => api.get(`/redemptions/${redemptionId}`),
+  decideRedemption: (redemptionId, status) =>
+    api.post(`/redemptions/${redemptionId}/decision`, { status }),
+  cancelRedemption: (redemptionId, reason) =>
+    api.post(`/redemptions/${redemptionId}/cancel`, { reason }),
 
   listPets: (filters = {}) => api.get(`/pets?${new URLSearchParams(filters)}`),
   createPet: (data) => api.post("/pets", data),

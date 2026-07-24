@@ -1,5 +1,5 @@
 import { supabase } from "../supabaseClient.js";
-import { createBooking } from "../lib/bookingService.js";
+import { createBooking, updateBooking } from "../lib/bookingService.js";
 import { getPaymentDetail, quoteVoucher, verifyPayment } from "../lib/paymentService.js";
 import {
   TABLE_ALLOWLIST,
@@ -106,6 +106,19 @@ export const TOOL_SCHEMA = [
     input_schema: { type: "object", properties: { payment_id: { type: "number" } }, required: ["payment_id"] },
   },
   {
+    name: "update_booking",
+    description: "Safely update a booking while keeping billable payment fields consistent. Payment and redemption statuses remain independent.",
+    input_schema: {
+      type: "object",
+      properties: {
+        type: { type: "string", enum: ["grooming", "daycare", "boarding"] },
+        booking_id: { type: "number" },
+        data: { type: "object" },
+      },
+      required: ["type", "booking_id", "data"],
+    },
+  },
+  {
     name: "quote_voucher",
     description: "Preview the final amount if a given coupon were applied to a payment, and whether the member has enough points. Does not change anything.",
     input_schema: {
@@ -117,7 +130,7 @@ export const TOOL_SCHEMA = [
   {
     name: "verify_payment",
     description:
-      "Verify a payment (and optionally redeem a voucher on it) in one atomic step: deducts/earns loyalty points, logs the redemption, marks the payment Paid with a paid_at timestamp, and marks the booking Done.",
+      "Verify a payment and mark it Paid with a paid_at timestamp. A voucher is applied only when this payment already has an Approved point-redemption request; Pending or Rejected requests block voucher payment. Booking status is unchanged.",
     input_schema: {
       type: "object",
       properties: {
@@ -157,7 +170,7 @@ async function requireEnabledService(companyId, serviceType) {
     .single();
   if (error) throw error;
   const configured = data?.settings_json?.selected_services;
-  if (Array.isArray(configured) && configured.length && !configured.includes(serviceType)) {
+  if (Array.isArray(configured) && !configured.includes(serviceType)) {
     const err = new Error(`The ${serviceType} service module is not enabled for this company.`);
     err.status = 403;
     throw err;
@@ -182,6 +195,10 @@ export async function executeTool(companyId, toolName, input = {}) {
       await requireEnabledService(companyId, input.type);
       return createBooking(input.type, companyId, input);
 
+    case "update_booking":
+      await requireEnabledService(companyId, input.type);
+      return updateBooking(input.type, companyId, input.booking_id, input.data || {});
+
     case "get_payment_detail":
       return getPaymentDetail(companyId, input.payment_id);
 
@@ -202,6 +219,15 @@ export async function executeTool(companyId, toolName, input = {}) {
         err.status = 400;
         throw err;
       }
+      if (input.reviewed_by_staff_id != null) {
+        const { data: reviewer } = await supabase.from("staff").select("staff_id")
+          .eq("company_id", companyId).eq("staff_id", input.reviewed_by_staff_id).maybeSingle();
+        if (!reviewer) {
+          const err = new Error("Reviewer does not belong to this company.");
+          err.status = 400;
+          throw err;
+        }
+      }
       const { date, time } = todayStamp();
       const { data, error } = await supabase
         .from("leave")
@@ -213,6 +239,7 @@ export async function executeTool(companyId, toolName, input = {}) {
         })
         .eq("company_id", companyId)
         .eq("leave_id", input.leave_id)
+        .eq("status", "Pending")
         .select()
         .single();
       if (error) throw error;

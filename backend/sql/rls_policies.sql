@@ -115,8 +115,9 @@ create policy manager_write on accounts
 
 
 -- ----------------------------------------------------------------------------
--- 4. Ordinary tenant tables — standard company-scoped CRUD for any
---    authenticated member of that company.
+-- 4. Ordinary tenant tables — tenant-scoped READ for authenticated members.
+--    All writes go through the authenticated backend (service_role), where
+--    manager permissions, payload allowlists and workflow rules are enforced.
 -- ----------------------------------------------------------------------------
 do $$
 declare
@@ -140,22 +141,8 @@ begin
     );
 
     execute format('drop policy if exists tenant_insert on %I;', t);
-    execute format(
-      'create policy tenant_insert on %I for insert with check (company_id = current_company_id());',
-      t
-    );
-
     execute format('drop policy if exists tenant_update on %I;', t);
-    execute format(
-      'create policy tenant_update on %I for update using (company_id = current_company_id()) with check (company_id = current_company_id());',
-      t
-    );
-
     execute format('drop policy if exists tenant_delete on %I;', t);
-    execute format(
-      'create policy tenant_delete on %I for delete using (company_id = current_company_id());',
-      t
-    );
   end loop;
 end $$;
 
@@ -166,7 +153,8 @@ end $$;
 --    (create_booking), which also writes the linked payment row with
 --    the correct computed price — an authenticated user inserting a raw
 --    booking row directly would create a booking with no matching payment.
---    UPDATE is allowed (staff changing booking_status, adding notes, etc.).
+--    UPDATE is also backend-only so price, payment links and state machines
+--    cannot be changed independently.
 -- ----------------------------------------------------------------------------
 do $$
 declare
@@ -183,10 +171,6 @@ begin
     );
 
     execute format('drop policy if exists tenant_update on %I;', t);
-    execute format(
-      'create policy tenant_update on %I for update using (company_id = current_company_id()) with check (company_id = current_company_id());',
-      t
-    );
 
     -- No insert/delete policy for `authenticated` — service_role only (via the backend).
   end loop;

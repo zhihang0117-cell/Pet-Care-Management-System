@@ -10,6 +10,11 @@ export const leaveRequestsRouter = makeCrudRouter({
   defaultOrder: { column: "leave_id", ascending: false },
   updateMiddleware: [requireManager],
   deleteMiddleware: [requireManager],
+  updatePayload: async () => {
+    const err = new Error("Leave requests must be reviewed through the decision operation.");
+    err.status = 405;
+    throw err;
+  },
   createPayload: async (req) => {
     let staffId = Number(req.body.staff_id);
     if (req.accountRole !== "manager") {
@@ -65,6 +70,7 @@ export const leaveRequestsRouter = makeCrudRouter({
       reviewed_time: null,
     };
   },
+  filterColumns: ["staff_id", "status"],
 });
 
 function todayStamp() {

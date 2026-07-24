@@ -117,7 +117,7 @@ export const TOOL_SCHEMA = [
   {
     name: "verify_payment",
     description:
-      "Verify a payment (and optionally redeem a voucher on it) in one atomic step: deducts/earns loyalty points, logs the redemption, marks the payment Paid with a paid_at timestamp, and marks the booking Done.",
+      "Verify a payment and mark it Paid with a paid_at timestamp. A voucher is applied only when this payment already has an Approved point-redemption request; Pending or Rejected requests block voucher payment. Booking status is unchanged.",
     input_schema: {
       type: "object",
       properties: {
