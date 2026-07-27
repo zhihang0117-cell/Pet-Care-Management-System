@@ -9,3 +9,41 @@ ai-backend/.pytest_cache/
 ai-backend/.cache/
 ai-backend/**/*.pyc
 ai-backend/.env
+
+# Secrets
+.env
+.env.*
+!.env.example
+
+# Python
+.venv/
+venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# Runtime outputs
+outputs/
+results/
+logs/
+*.log
+
+# Local data and experiments
+data/
+archive/
+frontend-test/
+docs/
+tools/
+notebooks/
+.ipynb_checkpoints/
+
+# IDE
+.vscode/
+.idea/
+.cursor/
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+ai-backend/scripts/
