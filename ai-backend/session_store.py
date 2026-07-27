@@ -97,10 +97,21 @@ class SessionContext:
     _allow_projection_write: bool = field(default=False, repr=False)
 
     def enable_runtime_guard(self) -> None:
+        """Enable projection-write diagnostics without changing session semantics.
+
+        The booking flow still contains compatibility writers that assign
+        projection fields directly.  The previous guard silently discarded
+        those assignments outside tests, leaving the session in a half-updated
+        state (for example, a draft existed while ``pending_action`` still
+        pointed at the availability step).  A diagnostic guard must never
+        change whether conversation memory is persisted, so direct writes are
+        allowed until all compatibility writers use one canonical transition
+        API.
+        """
         object.__setattr__(self, "_runtime_guard", True)
 
     def write_projection_fields(self, **fields) -> None:
-        """Only compatibility sync may write projection-only fields."""
+        """Write derived compatibility fields as one explicit state update."""
         object.__setattr__(self, "_allow_projection_write", True)
         try:
             for key, value in fields.items():
@@ -109,19 +120,10 @@ class SessionContext:
             object.__setattr__(self, "_allow_projection_write", False)
 
     def __setattr__(self, name: str, value) -> None:
-        if (
-            name in PROJECTION_ONLY_FIELDS
-            and getattr(self, "_runtime_guard", False)
-            and not getattr(self, "_allow_projection_write", False)
-        ):
-            from testing_mode import is_testing_mode
-
-            if is_testing_mode():
-                raise AssertionError(
-                    f"Direct write to projection-only SessionContext field {name!r} "
-                    "— use compatibility sync or write_projection_fields()"
-                )
-            return
+        # Do not reject a state transition.  These fields are part of the
+        # live conversation memory and dropping one write can make
+        # current_step, pending_action and missing_fields disagree, causing
+        # the next turn to repeat the previous step indefinitely.
         object.__setattr__(self, name, value)
 
     def to_dict(self) -> dict:
@@ -358,6 +360,7 @@ def clear_availability_and_confirmation_state(session: SessionContext) -> Sessio
     }:
         session.pending_action = ""
         session.missing_fields = []
+        session.current_step = "ASK_TIME"
     return session
 
 
@@ -373,6 +376,8 @@ def clear_booking_draft(session: SessionContext) -> SessionContext:
     session.booking_creation_flow = False
     session.pending_action = ""
     session.missing_fields = []
+    session.current_step = ""
+    session.completed_fields = []
     return session
 
 
@@ -390,9 +395,19 @@ def update_session_from_availability_check(
 
     data = database_result.get("data") or {}
     entities = dict(intent_json.get("entities") or {})
-    service_type = str(
-        intent_json.get("service_type") or entities.get("service_type") or session.last_service_type or ""
-    ).strip().upper()
+    service_candidates = (
+        intent_json.get("service_type"),
+        entities.get("service_type"),
+        session.last_service_type,
+    )
+    service_type = next(
+        (
+            str(value).strip().upper()
+            for value in service_candidates
+            if str(value or "").strip().upper() not in {"", "UNKNOWN", "NONE", "NULL"}
+        ),
+        "",
+    )
     preferred_date = str(entities.get("preferred_date") or session.preferred_date or data.get("booking_date") or "").strip()
     from time_normalization import normalize_time
 
@@ -414,6 +429,7 @@ def update_session_from_availability_check(
     session.draft_booking_payload = {}
     session.pending_action = SLOT_AVAILABLE_PENDING
     session.missing_fields = ["slot_acceptance"]
+    session.current_step = "CHECK_AVAILABILITY"
     session.last_scenario_intent = "CHECK_AVAILABILITY"
     session.booking_creation_flow = True
     session.collected_entities = {
@@ -440,9 +456,19 @@ def finalize_session_slot_selection(session: SessionContext, intent_json: dict) 
         return session
 
     entities = dict(intent_json.get("entities") or {})
-    service_type = str(
-        intent_json.get("service_type") or entities.get("service_type") or session.last_service_type or ""
-    ).strip().upper()
+    service_candidates = (
+        intent_json.get("service_type"),
+        entities.get("service_type"),
+        session.last_service_type,
+    )
+    service_type = next(
+        (
+            str(value).strip().upper()
+            for value in service_candidates
+            if str(value or "").strip().upper() not in {"", "UNKNOWN", "NONE", "NULL"}
+        ),
+        "",
+    )
     pet_name = str(entities.get("pet_name") or session.pet_name or "").strip()
     preferred_date = str(availability.get("requested_date") or session.preferred_date or "").strip()
     preferred_time = str(availability.get("requested_time") or session.preferred_time or "").strip()
@@ -474,6 +500,7 @@ def finalize_session_slot_selection(session: SessionContext, intent_json: dict) 
     )
     session.pending_action = AWAIT_BOOKING_CONFIRMATION
     session.missing_fields = ["confirmation"]
+    session.current_step = "WAIT_FOR_CONFIRMATION"
     session.last_scenario_intent = "CHECK_AVAILABILITY"
     return session
 

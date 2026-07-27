@@ -1072,6 +1072,21 @@ def generate_final_response(
             provider_logged="booking_price_pending_info_template",
         )
 
+    if (
+        session is not None
+        and intent_json.get("slot_just_accepted")
+        and getattr(session, "draft_booking_payload", None)
+    ):
+        from booking_draft import build_draft_confirmation_reply
+
+        reply = build_draft_confirmation_reply(session)
+        return _done(
+            reply,
+            provider_used="rule_based",
+            model_used="booking_draft_confirmation_template",
+            provider_logged="booking_draft_confirmation_template",
+        )
+
     if route == "ASK_MISSING_INFO" and scenario_intent == "MAKE_BOOKING":
         if intent_json.get("new_customer_booking_collection") and not session.existing_customer:
             from booking_flow import build_new_customer_booking_collection_reply
@@ -1153,19 +1168,6 @@ def generate_final_response(
             provider_used="rule_based",
             model_used="booking_orphan_confirm_template",
             provider_logged="booking_orphan_confirm_template",
-        )
-
-    if (
-        session is not None
-        and intent_json.get("slot_just_accepted")
-        and getattr(session, "draft_booking_payload", None)
-    ):
-        reply = build_draft_confirmation_reply(session)
-        return _done(
-            reply,
-            provider_used="rule_based",
-            model_used="booking_draft_confirmation_template",
-            provider_logged="booking_draft_confirmation_template",
         )
 
     response_plan = intent_json.get("response_plan") or {}

@@ -32,8 +32,8 @@ revoke all on function delete_customer_with_pets(int, int)
 grant execute on function delete_customer_with_pets(int, int)
   to service_role;
 
--- Booking and its bill are one aggregate. These functions prevent partial
--- writes when either side fails.
+-- Create the booking first, then its pending payment, and finally link the
+-- payment back to the booking. Any failure rolls back all three steps.
 create or replace function create_booking_atomic(
   p_company_id int,
   p_booking_type text,
@@ -52,56 +52,43 @@ declare
   v_boarding boarding_booking%rowtype;
   v_booking jsonb;
 begin
-  insert into payment (
-    company_id, service, base_price, add_ons, final_amount,
-    payment_method, date, status
-  ) values (
-    p_company_id, p_payment->>'service', (p_payment->>'base_price')::numeric,
-    p_payment->>'add_ons', (p_payment->>'final_amount')::numeric,
-    nullif(p_payment->>'payment_method', ''), (p_payment->>'date')::date,
-    p_payment->>'status'
-  )
-  returning * into v_payment;
-
   if p_booking_type = 'grooming' then
     insert into grooming_booking (
-      company_id, pet_id, staff_id, payment_id, service_name, booking_date,
+      company_id, pet_id, staff_id, service_name, booking_date,
       booking_time, price, add_on, add_on_price, notes, booking_status,
       created_date, created_time
     ) values (
       p_company_id, (p_booking->>'pet_id')::int, (p_booking->>'staff_id')::int,
-      v_payment.payment_id, p_booking->>'service_name', (p_booking->>'booking_date')::date,
+      p_booking->>'service_name', (p_booking->>'booking_date')::date,
       (p_booking->>'booking_time')::time, (p_booking->>'price')::numeric,
       p_booking->>'add_on', (p_booking->>'add_on_price')::numeric, p_booking->>'notes',
       p_booking->>'booking_status', (p_booking->>'created_date')::date,
       (p_booking->>'created_time')::time
     )
     returning * into v_grooming;
-    v_booking := to_jsonb(v_grooming);
   elsif p_booking_type = 'daycare' then
     insert into daycare_booking (
-      company_id, pet_id, staff_id, payment_id, booking_date, check_in_time,
+      company_id, pet_id, staff_id, booking_date, check_in_time,
       check_out_time, package_type, price, special_instruction, booking_status,
       created_date, created_time
     ) values (
       p_company_id, (p_booking->>'pet_id')::int, (p_booking->>'staff_id')::int,
-      v_payment.payment_id, (p_booking->>'booking_date')::date,
+      (p_booking->>'booking_date')::date,
       (p_booking->>'check_in_time')::time, (p_booking->>'check_out_time')::time,
       p_booking->>'package_type', (p_booking->>'price')::numeric,
       p_booking->>'special_instruction', p_booking->>'booking_status',
       (p_booking->>'created_date')::date, (p_booking->>'created_time')::time
     )
     returning * into v_daycare;
-    v_booking := to_jsonb(v_daycare);
   elsif p_booking_type = 'boarding' then
     insert into boarding_booking (
-      company_id, pet_id, staff_id, payment_id, check_in_date, check_in_time,
+      company_id, pet_id, staff_id, check_in_date, check_in_time,
       check_out_date, check_out_time, room_type, price_per_night, total_price,
       feeding_instruction, medical_instruction, notes, booking_status,
       created_date, created_time
     ) values (
       p_company_id, (p_booking->>'pet_id')::int, (p_booking->>'staff_id')::int,
-      v_payment.payment_id, (p_booking->>'check_in_date')::date,
+      (p_booking->>'check_in_date')::date,
       (p_booking->>'check_in_time')::time, (p_booking->>'check_out_date')::date,
       (p_booking->>'check_out_time')::time, p_booking->>'room_type',
       (p_booking->>'price_per_night')::numeric, (p_booking->>'total_price')::numeric,
@@ -110,9 +97,42 @@ begin
       (p_booking->>'created_date')::date, (p_booking->>'created_time')::time
     )
     returning * into v_boarding;
-    v_booking := to_jsonb(v_boarding);
   else
     raise exception 'Unknown booking type %', p_booking_type using errcode = 'P0001';
+  end if;
+
+  insert into payment (
+    company_id, service, base_price, add_ons, final_amount,
+    payment_method, date, status
+  ) values (
+    p_company_id, p_payment->>'service', (p_payment->>'base_price')::numeric,
+    p_payment->>'add_ons', (p_payment->>'final_amount')::numeric,
+    nullif(p_payment->>'payment_method', ''), (p_payment->>'date')::date,
+    coalesce(nullif(p_payment->>'status', ''), 'Pending')
+  )
+  returning * into v_payment;
+
+  if p_booking_type = 'grooming' then
+    update grooming_booking
+    set payment_id = v_payment.payment_id
+    where company_id = p_company_id
+      and grooming_booking_id = v_grooming.grooming_booking_id
+    returning * into v_grooming;
+    v_booking := to_jsonb(v_grooming);
+  elsif p_booking_type = 'daycare' then
+    update daycare_booking
+    set payment_id = v_payment.payment_id
+    where company_id = p_company_id
+      and daycare_booking_id = v_daycare.daycare_booking_id
+    returning * into v_daycare;
+    v_booking := to_jsonb(v_daycare);
+  else
+    update boarding_booking
+    set payment_id = v_payment.payment_id
+    where company_id = p_company_id
+      and boarding_booking_id = v_boarding.boarding_booking_id
+    returning * into v_boarding;
+    v_booking := to_jsonb(v_boarding);
   end if;
 
   return jsonb_build_object('booking', v_booking, 'payment', to_jsonb(v_payment));

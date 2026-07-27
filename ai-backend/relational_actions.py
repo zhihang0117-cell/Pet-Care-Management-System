@@ -658,7 +658,17 @@ def check_booking_status(context: CustomerContext, intent_json: dict) -> dict:
                 "daycare_booking": _serialize_daycare_booking,
                 "boarding_booking": _serialize_boarding_booking,
             }[table]
-            return _result("check_booking_status", "success", serializer(row))
+            booking = serializer(row)
+            if context.resolved_customer_id is None:
+                return missing_identity_result("check_booking_status")
+            if not _verify_booking_belongs_to_customer(context, booking):
+                return _result(
+                    "check_booking_status",
+                    "not_found",
+                    {"booking_id": booking_id},
+                    "Booking does not belong to this customer",
+                )
+            return _result("check_booking_status", "success", booking)
 
         if context.resolved_customer_id is None:
             if not context.has_phone:
@@ -750,16 +760,77 @@ def _staff_available_on_date(staff_row: dict, target_date: date, leave_rows: lis
     return True
 
 
-def _occupied_grooming_slots(bookings: list[dict]) -> set[str]:
-    occupied: set[str] = set()
+def _time_to_minutes(value: object) -> int | None:
+    text = _normalize_time_value(str(value or ""))
+    try:
+        parsed = datetime.strptime(text, "%H:%M")
+    except ValueError:
+        return None
+    return parsed.hour * 60 + parsed.minute
+
+
+def _booking_interval(row: dict, service_type: str) -> tuple[int, int] | None:
+    """Return the occupied [start, end) interval for one booking row."""
+    service = str(service_type or "").strip().upper()
+    start = _time_to_minutes(
+        row.get("booking_time") if service == "GROOMING" else row.get("check_in_time")
+    )
+    if start is None:
+        return None
+    if service == "DAYCARE":
+        end = _time_to_minutes(row.get("check_out_time"))
+        if end is not None and end > start:
+            return start, end
+        return start, start + 180
+    if service == "GROOMING":
+        return start, start + 90
+    return start, start + 60
+
+
+def _booking_blocks_availability(row: dict) -> bool:
+    status = _normalize_booking_status(row.get("booking_status"))
+    return status not in {
+        "cancelled",
+        "canceled",
+        "done",
+        "completed",
+        "no show",
+        "no-show",
+        "rejected",
+        "deleted",
+        "failed",
+    }
+
+
+def _slot_has_available_staff(
+    slot: str,
+    *,
+    duration_minutes: int,
+    available_staff: list[dict],
+    bookings: list[dict],
+    service_type: str,
+) -> bool:
+    start = _time_to_minutes(slot)
+    if start is None:
+        return False
+    end = start + duration_minutes
+    bookings_by_staff: dict[int, list[tuple[int, int]]] = {}
     for row in bookings:
-        status = _normalize_booking_status(row.get("booking_status"))
-        if status in {"done", "no show"}:
+        if not _booking_blocks_availability(row):
             continue
-        booking_time = str(row.get("booking_time") or "").strip()
-        if booking_time:
-            occupied.add(booking_time)
-    return occupied
+        raw_staff_id = row.get("staff_id")
+        interval = _booking_interval(row, service_type)
+        if raw_staff_id is None or interval is None:
+            continue
+        bookings_by_staff.setdefault(int(raw_staff_id), []).append(interval)
+    for staff in available_staff:
+        raw_staff_id = staff.get("staff_id")
+        if raw_staff_id is None:
+            continue
+        intervals = bookings_by_staff.get(int(raw_staff_id), [])
+        if all(end <= booked_start or start >= booked_end for booked_start, booked_end in intervals):
+            return True
+    return False
 
 
 def check_available_slots(context: CustomerContext, intent_json: dict) -> dict:
@@ -825,9 +896,26 @@ def check_available_slots(context: CustomerContext, intent_json: dict) -> dict:
             booking_query = booking_query.eq("booking_date", date_str)
         bookings = (booking_query.execute().data) or []
 
-        all_slots = _time_slots_for_day()
-        occupied = _occupied_grooming_slots(bookings)
-        free_slots = [slot for slot in all_slots if slot not in occupied]
+        from availability_service import service_duration_minutes
+
+        duration_minutes = service_duration_minutes(service_type)
+        close_minutes = _time_to_minutes(DEFAULT_CLOSE_TIME) or 18 * 60
+        all_slots = [
+            slot
+            for slot in _time_slots_for_day()
+            if (_time_to_minutes(slot) or 0) + duration_minutes <= close_minutes
+        ]
+        free_slots = [
+            slot
+            for slot in all_slots
+            if _slot_has_available_staff(
+                slot,
+                duration_minutes=duration_minutes,
+                available_staff=available_staff,
+                bookings=bookings,
+                service_type=service_type,
+            )
+        ]
 
         entities = intent_json.get("entities") or {}
         from time_normalization import normalize_time
@@ -849,7 +937,7 @@ def check_available_slots(context: CustomerContext, intent_json: dict) -> dict:
                 ],
                 "requested_time": requested_time,
                 "requested_date": date_str,
-                "service_duration_minutes": 90 if service_type == "GROOMING" else 60,
+                "service_duration_minutes": duration_minutes,
             },
         )
     except Exception as exc:
@@ -1065,6 +1153,9 @@ def update_pet(context: CustomerContext, pet_id: int, updates: dict) -> dict:
 
 
 def get_booking_by_id(context: CustomerContext, booking_id: int, service_type: str = "GROOMING") -> dict:
+    resolve_customer_context(context)
+    if context.resolved_customer_id is None:
+        return missing_identity_result("get_booking_by_id")
     try:
         client = get_supabase_client()
         table, id_column = _booking_table_meta(service_type)
@@ -1080,6 +1171,13 @@ def get_booking_by_id(context: CustomerContext, booking_id: int, service_type: s
         if not rows:
             return _result("get_booking_by_id", "not_found", {"booking_id": booking_id})
         booking = _serialize_booking_row(table, rows[0])
+        if not _verify_booking_belongs_to_customer(context, booking):
+            return _result(
+                "get_booking_by_id",
+                "not_found",
+                {"booking_id": booking_id},
+                "Booking does not belong to this customer",
+            )
         return _result("get_booking_by_id", "success", booking)
     except Exception as exc:
         return _result("get_booking_by_id", "error", {}, str(exc))
@@ -1156,6 +1254,20 @@ def create_booking(context: CustomerContext, intent_json: dict) -> dict:
     if missing:
         return _result("create_booking", "error", {"missing_fields": missing}, "Missing required booking fields")
 
+    owned_pets = get_pets_by_customer_id(context)
+    owned_pet_ids = {
+        int(pet.get("pet_id"))
+        for pet in (owned_pets.get("data") or {}).get("pets", [])
+        if pet.get("pet_id") is not None
+    }
+    if pet_id not in owned_pet_ids:
+        return _result(
+            "create_booking",
+            "error",
+            {"pet_id": pet_id},
+            "Pet does not belong to this customer",
+        )
+
     if not _slot_is_available(context, intent_json, booking_date=booking_date, booking_time=booking_time):
         return _result(
             "create_booking",
@@ -1171,55 +1283,180 @@ def create_booking(context: CustomerContext, intent_json: dict) -> dict:
 
     try:
         client = get_supabase_client()
-        table, id_column = _booking_table_meta(service_type)
-        booking_id = _next_table_id(client, table, id_column)
+        table, _ = _booking_table_meta(service_type)
         created_date, created_time = _today_parts()
         status = "Pending"
+        price = draft.get("price_quote")
+        if price is None:
+            price = entities.get("price")
+        # Current Supabase monetary columns are int8, so keep the Python
+        # payload integral until the schema is migrated to numeric/decimal.
+        numeric_price = int(round(float(price or 0)))
 
         if table == "grooming_booking":
             row = {
-                "company_id": context.company_id,
-                "grooming_booking_id": booking_id,
                 "pet_id": pet_id,
                 "staff_id": staff_id,
                 "service_name": service_name,
                 "booking_date": booking_date,
                 "booking_time": booking_time,
                 "booking_status": status,
-                "price": draft.get("price_quote") or entities.get("price") or None,
+                "price": numeric_price,
+                "add_on": str(entities.get("add_on") or "-"),
+                "add_on_price": int(round(float(entities.get("add_on_price") or 0))),
+                "notes": str(entities.get("notes") or "-"),
                 "created_date": created_date,
                 "created_time": created_time,
             }
         elif table == "daycare_booking":
+            check_out_time = _normalize_time_value(str(entities.get("check_out_time") or ""))
+            if not check_out_time:
+                start_minutes = _time_to_minutes(booking_time) or 0
+                check_out_time = f"{(start_minutes + 180) // 60:02d}:{(start_minutes + 180) % 60:02d}:00"
             row = {
-                "company_id": context.company_id,
-                "daycare_booking_id": booking_id,
                 "pet_id": pet_id,
                 "staff_id": staff_id,
                 "booking_date": booking_date,
                 "check_in_time": booking_time,
+                "check_out_time": check_out_time,
                 "package_type": service_name,
                 "booking_status": status,
-                "price": draft.get("price_quote") or None,
+                "price": numeric_price,
+                "special_instruction": str(entities.get("special_instruction") or "-"),
                 "created_date": created_date,
                 "created_time": created_time,
             }
         else:
+            parsed_check_in = _parse_date(booking_date)
+            check_out_date = _resolve_booking_date(
+                {"preferred_date": entities.get("check_out_date")}
+            )
+            if not check_out_date and parsed_check_in:
+                check_out_date = (parsed_check_in + timedelta(days=1)).isoformat()
+            check_out_time = _normalize_time_value(
+                str(entities.get("check_out_time") or booking_time)
+            )
+            price_per_night = int(
+                round(float(entities.get("price_per_night") or numeric_price or 0))
+            )
+            nights = max(
+                1,
+                (
+                    (_parse_date(check_out_date) or parsed_check_in)
+                    - parsed_check_in
+                ).days
+                if parsed_check_in
+                else 1,
+            )
             row = {
-                "company_id": context.company_id,
-                "boarding_booking_id": booking_id,
                 "pet_id": pet_id,
                 "staff_id": staff_id,
                 "check_in_date": booking_date,
                 "check_in_time": booking_time,
+                "check_out_date": check_out_date,
+                "check_out_time": check_out_time,
                 "room_type": service_name,
                 "booking_status": status,
+                "price_per_night": price_per_night,
+                "total_price": int(
+                    round(float(entities.get("total_price") or price_per_night * nights))
+                ),
+                "feeding_instruction": str(entities.get("feeding_instruction") or "-"),
+                "medical_instruction": str(entities.get("medical_instruction") or "-"),
+                "notes": str(entities.get("notes") or "-"),
                 "created_date": created_date,
                 "created_time": created_time,
             }
 
-        inserted = client.table(table).insert(row).execute().data or []
-        record = inserted[0] if inserted else row
+        payment = {
+            "service": service_name,
+            "base_price": (
+                row.get("total_price")
+                if table == "boarding_booking"
+                else row.get("price")
+            ) or 0,
+            "add_ons": row.get("add_on") if table == "grooming_booking" else "",
+            "final_amount": (
+                (row.get("price") or 0) + (row.get("add_on_price") or 0)
+                if table == "grooming_booking"
+                else (row.get("total_price") if table == "boarding_booking" else row.get("price"))
+            ) or 0,
+            "payment_method": "",
+            "date": created_date,
+            "status": "Pending",
+        }
+        booking_type = service_type.lower()
+        used_compensating_fallback = False
+        try:
+            atomic = client.rpc(
+                "create_booking_atomic",
+                {
+                    "p_company_id": context.company_id,
+                    "p_booking_type": booking_type,
+                    "p_booking": row,
+                    "p_payment": payment,
+                },
+            ).execute().data or {}
+            record = dict(atomic.get("booking") or {})
+        except Exception as rpc_exc:
+            # Some deployed projects have not applied crud_consistency_functions.sql
+            # yet. Preserve the booking/payment relationship with compensating
+            # cleanup instead of silently reverting to an unlinked booking insert.
+            if "PGRST202" not in str(rpc_exc) and "create_booking_atomic" not in str(rpc_exc):
+                raise
+            used_compensating_fallback = True
+            table, id_column = _booking_table_meta(service_type)
+            fallback_row = {
+                "company_id": context.company_id,
+                id_column: _next_table_id(client, table, id_column),
+                **row,
+            }
+            inserted = client.table(table).insert(fallback_row).execute().data or []
+            if not inserted:
+                raise RuntimeError("Booking insert returned no row")
+            record = dict(inserted[0])
+            booking_id = record.get(id_column)
+            payment_id = None
+            try:
+                payment_rows = (
+                    client.table("payment")
+                    .insert({"company_id": context.company_id, **payment})
+                    .execute()
+                    .data
+                    or []
+                )
+                if not payment_rows:
+                    raise RuntimeError("Payment insert returned no row")
+                payment_id = payment_rows[0].get("payment_id")
+                linked = (
+                    client.table(table)
+                    .update({"payment_id": payment_id})
+                    .eq("company_id", context.company_id)
+                    .eq(id_column, booking_id)
+                    .execute()
+                    .data
+                    or []
+                )
+                if not linked:
+                    raise RuntimeError("Booking payment link update returned no row")
+                record = dict(linked[0])
+            except Exception:
+                if payment_id is not None:
+                    (
+                        client.table("payment")
+                        .delete()
+                        .eq("company_id", context.company_id)
+                        .eq("payment_id", payment_id)
+                        .execute()
+                    )
+                (
+                    client.table(table)
+                    .delete()
+                    .eq("company_id", context.company_id)
+                    .eq(id_column, booking_id)
+                    .execute()
+                )
+                raise
         serialized = _serialize_booking_row(table, record)
         booking_id = int(serialized.get("booking_id"))
         expected = {
@@ -1236,6 +1473,23 @@ def create_booking(context: CustomerContext, intent_json: dict) -> dict:
             expected,
         )
         if not verified:
+            if used_compensating_fallback:
+                (
+                    client.table(table)
+                    .delete()
+                    .eq("company_id", context.company_id)
+                    .eq(_booking_table_meta(service_type)[1], booking_id)
+                    .execute()
+                )
+                payment_id = record.get("payment_id")
+                if payment_id is not None:
+                    (
+                        client.table("payment")
+                        .delete()
+                        .eq("company_id", context.company_id)
+                        .eq("payment_id", payment_id)
+                        .execute()
+                    )
             return _result(
                 "create_booking",
                 "error",
@@ -1256,6 +1510,7 @@ def create_booking(context: CustomerContext, intent_json: dict) -> dict:
                 **persisted,
                 "customer_id": customer_id,
                 "pet_id": pet_id,
+                "payment_id": record.get("payment_id"),
                 "verified": True,
             },
         )
@@ -1646,14 +1901,13 @@ def merge_session_booking_context(intent_json: dict, session) -> dict:
 
 
 def relational_database_action(intent_json: dict, context: CustomerContext) -> dict:
-    """Dispatch relational read/write actions based on scenario_intent."""
+    """Dispatch from the normalized scenario; never trust an LLM write-action override."""
     scenario_intent = str(intent_json.get("scenario_intent") or "UNKNOWN").strip().upper()
-    database_action = str(intent_json.get("database_action") or "").strip().lower()
 
-    if scenario_intent == "CONFIRM_BOOKING" or database_action in {"confirm_booking", "create_booking"}:
+    if scenario_intent == "CONFIRM_BOOKING":
         return create_booking(context, intent_json)
 
-    if scenario_intent == "CREATE_CUSTOMER" or database_action == "create_customer":
+    if scenario_intent == "CREATE_CUSTOMER":
         entities = intent_json.get("entities") or {}
         return create_customer(
             context,
@@ -1662,7 +1916,7 @@ def relational_database_action(intent_json: dict, context: CustomerContext) -> d
             str(entities.get("address") or "-").strip(),
         )
 
-    if scenario_intent == "CREATE_PET" or database_action == "create_pet":
+    if scenario_intent == "CREATE_PET":
         entities = intent_json.get("entities") or {}
         height_raw = entities.get("pet_height") or entities.get("height_cm")
         height_cm = None
@@ -1677,30 +1931,27 @@ def relational_database_action(intent_json: dict, context: CustomerContext) -> d
             breed=str(entities.get("breed") or "").strip(),
         )
 
-    if scenario_intent == "CANCEL_BOOKING" or database_action == "cancel_booking":
+    if scenario_intent == "CANCEL_BOOKING":
         return cancel_booking(context, intent_json)
 
-    if scenario_intent == "RESCHEDULE_BOOKING" or database_action == "reschedule_booking":
+    if scenario_intent == "RESCHEDULE_BOOKING":
         return reschedule_booking(context, intent_json)
 
-    if scenario_intent == "REDEEM_REWARD" or database_action == "redeem_reward":
+    if scenario_intent == "REDEEM_REWARD":
         return redeem_reward(context, intent_json)
-
-    if scenario_intent == "MAKE_BOOKING" and database_action == "create_booking":
-        return create_booking(context, intent_json)
 
     if scenario_intent == "MAKE_BOOKING":
         return check_available_slots(context, intent_json)
 
-    if scenario_intent == "VIEW_BOOKING_STATUS" or database_action == "check_booking_status":
+    if scenario_intent == "VIEW_BOOKING_STATUS":
         return check_booking_status(context, intent_json)
-    if scenario_intent == "CHECK_AVAILABILITY" or database_action == "check_availability":
+    if scenario_intent == "CHECK_AVAILABILITY":
         return check_available_slots(context, intent_json)
-    if scenario_intent == "CHECK_MEMBERSHIP_STATUS" or database_action == "check_membership_status":
+    if scenario_intent == "CHECK_MEMBERSHIP_STATUS":
         return check_membership_status(context)
-    if scenario_intent == "CHECK_LOYALTY_POINTS" or database_action == "check_loyalty_points":
+    if scenario_intent == "CHECK_LOYALTY_POINTS":
         return check_loyalty_points(context)
-    if scenario_intent == "LOYALTY_ACCOUNT_INQUIRY" or database_action == "check_loyalty_account":
+    if scenario_intent == "LOYALTY_ACCOUNT_INQUIRY":
         return get_loyalty_account(context)
 
     if scenario_intent == "CUSTOMER_GREETING":

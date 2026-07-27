@@ -846,6 +846,8 @@ def apply_booking_entry_rules(session, intent_json: dict, user_message: str, con
     """Gate generic booking requests before slot-filling for new/existing customers."""
     del conv_ctx
     updated = copy.deepcopy(intent_json)
+    if updated.get("slot_just_accepted"):
+        return updated
     if updated.get("booking_supporting_service_info") or updated.get("booking_service_info_handled"):
         return updated
     if updated.get("booking_supporting_info_needed"):
@@ -1218,6 +1220,8 @@ def apply_booking_collection_rules(
     """Gate slot lookup until required booking fields are collected."""
     del conv_ctx
     updated = copy.deepcopy(intent_json)
+    if updated.get("slot_just_accepted"):
+        return updated
     if updated.get("standalone_service_info"):
         return updated
     if str(updated.get("scenario_intent") or "").strip() == "SERVICE_INFORMATION":
@@ -1351,6 +1355,14 @@ def extract_pet_confirmation(message: str, pets: list[dict]) -> str:
 
 def apply_booking_confirmation_safety(session, intent_json: dict, user_message: str) -> dict:
     """Block CONFIRM_BOOKING unless draft + await_booking_confirmation + explicit YES."""
+    # A single affirmative turn may accept the offered slot OR confirm the
+    # resulting booking summary, never both.  handle_session_before_routing()
+    # marks the slot-acceptance turn after it creates the draft.  Promoting
+    # that same "yes" to CONFIRM_BOOKING here skips the summary and leaves the
+    # next turn liable to fall back into availability again.
+    if intent_json.get("slot_just_accepted"):
+        return intent_json
+
     scenario = str(intent_json.get("scenario_intent") or "").strip()
     if scenario != "CONFIRM_BOOKING" and not is_safe_booking_confirmation_message(user_message):
         return intent_json

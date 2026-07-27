@@ -402,6 +402,8 @@ def clear_booking_flow_state(session) -> None:
     session.resume_after_response = False
     session.interruption_type = ""
     session.interruption_depth = 0
+    session.current_step = ""
+    session.completed_fields = []
 
 
 def clear_stale_booking_session_state(session) -> None:
@@ -813,12 +815,19 @@ def handle_session_before_routing(session, user_message: str, intent_json: dict,
         if is_slot_acceptance_message(user_message):
             session = finalize_session_slot_selection(session, intent_json)
             updated = copy.deepcopy(intent_json)
-            updated["scenario_intent"] = "CHECK_AVAILABILITY"
+            updated["main_intent"] = "BOOKING_INTENT"
+            updated["scenario_intent"] = "MAKE_BOOKING"
             updated["database_action_needed"] = False
             updated["database_action"] = ""
             updated["next_action"] = "await_confirmation"
             updated["slot_just_accepted"] = True
-            updated["missing_information"] = []
+            updated["missing_information"] = ["confirmation"]
+            updated["confidence"] = max(float(updated.get("confidence") or 0.0), 0.95)
+            # Intent classifiers may label a bare "yes" as a generic returning
+            # customer booking entry.  Once the active flow has consumed it as
+            # slot acceptance, that stale entry flag must not trigger a
+            # last-booking lookup later in main._process_chat().
+            updated["returning_customer_booking_entry"] = False
             return updated, session
         alt_time = _extract_preferred_time(user_message)
         if alt_time:
@@ -929,6 +938,19 @@ def update_session_after_turn(
         "COLLECT_CUSTOMER_NAME",
         "SERVICE_INFORMATION",
     }:
+        if intent_json.get("slot_just_accepted") and getattr(
+            session, "draft_booking_payload", None
+        ):
+            from booking_draft import AWAIT_BOOKING_CONFIRMATION
+
+            session.write_projection_fields(
+                pending_action=AWAIT_BOOKING_CONFIRMATION,
+                missing_fields=["confirmation"],
+                booking_creation_flow=True,
+            )
+            session.current_step = "WAIT_FOR_CONFIRMATION"
+            return session
+
         missing = list(intent_json.get("missing_information") or [])
         if intent_json.get("standalone_service_info") or intent_json.get("sub_flow") == SERVICE_PRICE_PENDING_ACTION:
             session.sub_flow = SERVICE_PRICE_PENDING_ACTION

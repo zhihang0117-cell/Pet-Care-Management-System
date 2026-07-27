@@ -396,6 +396,7 @@ def mock_database_action(intent_json: dict, customer_id: str, phone_number: str)
         )
 
     if scenario_intent == "CONFIRM_BOOKING":
+        entities = intent_json.get("entities") or {}
         return _mock_result(
             "create_booking",
             "success",
@@ -403,6 +404,14 @@ def mock_database_action(intent_json: dict, customer_id: str, phone_number: str)
                 "booking_id": 9001,
                 "booking_status": "Pending",
                 "service_type": intent_json.get("service_type") or "GROOMING",
+                "pet_id": entities.get("pet_id"),
+                "pet_name": entities.get("pet_name"),
+                "booking_date": entities.get("preferred_date"),
+                "booking_time": entities.get("preferred_time"),
+                "service_name": entities.get("service_package")
+                or entities.get("service_name")
+                or "Full Grooming",
+                "verified": True,
             },
         )
 
