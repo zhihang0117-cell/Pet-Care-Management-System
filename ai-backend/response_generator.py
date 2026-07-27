@@ -254,6 +254,32 @@ _REPEATED_GREETING_PREFIX = re.compile(
     re.IGNORECASE,
 )
 
+_GREETING_REPLY_PREFIX = re.compile(r"^\s*(?:hi|hello|hey)\b", re.IGNORECASE)
+
+
+def add_first_turn_greeting(reply: str, intent_json: dict, session=None) -> str:
+    """Welcome the customer once at the start of every new conversation."""
+    text = str(reply or "").strip()
+    if not text or session is None:
+        return text
+    if intent_json.get("_session_greeted_before_turn") is not False:
+        return text
+    if str(intent_json.get("scenario_intent") or "").strip() == "CUSTOMER_GREETING":
+        return text
+
+    session.greeted_this_session = True
+    if _GREETING_REPLY_PREFIX.match(text):
+        return text
+
+    name = str(getattr(session, "customer_name", "") or "").strip()
+    if bool(getattr(session, "existing_customer", False)) and name:
+        greeting = f"Hi {name}, welcome back to Pawfect! 😊"
+    elif bool(getattr(session, "existing_customer", False)):
+        greeting = "Hi, welcome back to Pawfect! 😊"
+    else:
+        greeting = "Hi, welcome to Pawfect! 😊"
+    return f"{greeting}\n\n{text}"
+
 
 def strip_repeated_session_greeting(reply: str, intent_json: dict) -> str:
     """Remove an LLM-added salutation after this session was already greeted."""
@@ -310,10 +336,11 @@ def finalize_customer_reply(
     user_message: str = "",
     route_result: dict | None = None,
 ) -> str:
-    del session, user_message, route_result
+    del user_message, route_result
     apply_response_flags(intent_json)
     text = strip_repeated_session_greeting(reply, intent_json)
     text = strip_unwanted_booking_cta(text, offer_booking_transition=False)
+    text = add_first_turn_greeting(text, intent_json, session=session)
     return validate_final_reply(text, intent_json=intent_json)
 
 
@@ -647,6 +674,122 @@ def _build_booking_service_options_reply(database_result: dict, session=None) ->
         + "\n\nChoose one and send your preferred date in the same message. "
         "For example: “Option 2, 3 August.”"
     )
+
+
+def _enforce_service_option_conversation_contract(reply: str, session=None) -> str:
+    """Keep LLM wording natural while enforcing the date-before-time workflow."""
+    text = str(reply or "").strip()
+    text = re.sub(
+        r"\b(?:your\s+)?preferred\s+date\s+(?:and|&)\s+(?:your\s+)?(?:preferred\s+)?time\b",
+        "your preferred date",
+        text,
+        flags=re.I,
+    )
+    text = re.sub(
+        r"\bdate\s+(?:and|&)\s+time\b",
+        "date",
+        text,
+        flags=re.I,
+    )
+    text = re.sub(
+        r"^(?:I can help(?: you)? with that|I'd be happy to help(?: with that)?)[^\n]*\n{2,}",
+        "",
+        text,
+        count=1,
+        flags=re.I,
+    )
+    if re.match(r"^Hi,\s*welcome\s+to\s+Pawfect", text, re.I):
+        text = re.sub(
+            r"\n{2,}(?:I can help(?: you)? with that|I'd be happy to help(?: with that)?)[^\n]*\n{2,}",
+            "\n\n",
+            text,
+            count=1,
+            flags=re.I,
+        )
+    is_new_customer = session is not None and not bool(
+        getattr(session, "existing_customer", False)
+    )
+    customer_name = str(getattr(session, "customer_name", "") or "").strip()
+    if (
+        is_new_customer
+        and not customer_name
+        and not re.search(r"\b(?:your|customer)\s+(?:full\s+)?name\b", text, re.I)
+    ):
+        text, direct_name_insertions = re.subn(
+            r"\bMay I have\s+(?:your\s+)?pet(?:'s)?\s+name\b",
+            "May I have your name, your pet's name",
+            text,
+            count=1,
+            flags=re.I,
+        )
+        if not direct_name_insertions:
+            text, direct_name_insertions = re.subn(
+                r"\bprovide\s+(?:me\s+with\s+)?(?:your\s+)?pet(?:'s)?\s+name\b",
+                "provide your name, your pet's name",
+                text,
+                count=1,
+                flags=re.I,
+            )
+        if direct_name_insertions:
+            customer_name = "__requested__"
+        details_intro = list(
+            re.finditer(
+                r"(?:provide|send|have|need)[^\n]{0,100}\bdetails?\b|\bdetails?\s+to\s+proceed\b",
+                text,
+                re.I,
+            )
+        )
+        search_start = details_intro[-1].end() if details_intro else len(text)
+        first_bullet = re.search(r"(?m)^[•*-]\s+", text[search_start:])
+        if first_bullet and not customer_name:
+            insert_at = search_start + first_bullet.start()
+            text = (
+                text[:insert_at]
+                + "• Your name\n"
+                + text[insert_at:]
+            )
+
+    if session is not None and bool(getattr(session, "existing_customer", False)):
+        pets = list(getattr(session, "customer_pets", []) or [])
+        selected_pet = str(getattr(session, "pet_name", "") or "").strip()
+        if len(pets) > 1 and not selected_pet:
+            # Replace an open-ended pet-name request with registered choices.
+            text = re.sub(
+                r"(?:^|\n{2,})[^\n]*(?:provide|tell|share|which|what)[^\n]*"
+                r"\bpet(?:'s)?\s+name\b[^\n]*(?=$|\n{2,})",
+                "",
+                text,
+                count=1,
+                flags=re.I,
+            ).strip()
+            names: list[str] = []
+            for pet in pets:
+                name = str(pet.get("pet_name") or "").strip()
+                if not name or name in names:
+                    continue
+                names.append(name)
+            last_pet = str(
+                (getattr(session, "last_booking_snapshot", {}) or {}).get("pet_name")
+                or ""
+            ).strip()
+            recommendation = ""
+            if last_pet and last_pet.lower() in {name.lower() for name in names}:
+                recommendation = (
+                    f"I'd recommend {last_pet}, since your latest booking was for {last_pet}. "
+                )
+            if names:
+                if len(names) == 2:
+                    pet_choices = f"{names[0]} or {names[1]}"
+                else:
+                    pet_choices = ", ".join(names[:-1]) + f", or {names[-1]}"
+                text += (
+                    "\n\n"
+                    + recommendation
+                    + f"Would you like to make the booking for {pet_choices}? "
+                    "You can include the service option and preferred date in the same reply."
+                )
+    text = re.sub(r"(?m)^([•*-]\s+)your preferred date\b", r"\1Preferred date", text, flags=re.I)
+    return text.strip()
 
 
 def _format_service_type_label(service_type: str) -> str:
@@ -1393,6 +1536,8 @@ def generate_final_response(
                     reply = build_mixed_booking_rag_reply(reply, session, intent_json)
                 else:
                     reply = append_service_info_follow_up(reply, session, intent_json)
+                if scenario_intent == "GET_BOOKING_SERVICE_OPTIONS":
+                    reply = _enforce_service_option_conversation_contract(reply, session)
                 return _done(
                     reply,
                     provider_used="openai",

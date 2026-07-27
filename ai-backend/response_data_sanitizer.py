@@ -11,6 +11,11 @@ def _is_staff_id_field(field_name: object) -> bool:
     return normalized == "staff_id" or normalized.endswith("_staff_id")
 
 
+def _is_internal_identity_field(field_name: object) -> bool:
+    normalized = str(field_name or "").strip().lower()
+    return normalized in {"auth_user_id", "manager_user_id"}
+
+
 def sanitize_response_data(value: Any) -> Any:
     """
     Return a recursively sanitized copy of response-grounding data.
@@ -24,7 +29,7 @@ def sanitize_response_data(value: Any) -> Any:
         return {
             key: sanitize_response_data(item)
             for key, item in value.items()
-            if not _is_staff_id_field(key)
+            if not _is_staff_id_field(key) and not _is_internal_identity_field(key)
         }
     if isinstance(value, list):
         return [sanitize_response_data(item) for item in value]

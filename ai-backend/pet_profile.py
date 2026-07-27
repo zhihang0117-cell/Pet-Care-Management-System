@@ -95,7 +95,17 @@ def fetch_customer_pets(session) -> list[dict]:
     """Return active pet rows for the session customer (cached on session when possible)."""
     cached = list(getattr(session, "customer_pets", None) or [])
     if cached:
-        return cached
+        from pet_extraction import is_rejected_pet_name_token, is_valid_stored_pet_name
+
+        valid_cached = [
+            pet
+            for pet in cached
+            if _is_active_pet_row(pet)
+            and is_valid_stored_pet_name(str(pet.get("pet_name") or ""))
+            and not is_rejected_pet_name_token(str(pet.get("pet_name") or ""))
+        ]
+        session.customer_pets = valid_cached
+        return valid_cached
 
     if session.customer_id is None:
         return []
@@ -122,7 +132,15 @@ def fetch_customer_pets(session) -> list[dict]:
         )
         pets = list(result.get("data", {}).get("pets") or [])
 
-    active_pets = [pet for pet in pets if _is_active_pet_row(pet)]
+    from pet_extraction import is_rejected_pet_name_token, is_valid_stored_pet_name
+
+    active_pets = [
+        pet
+        for pet in pets
+        if _is_active_pet_row(pet)
+        and is_valid_stored_pet_name(str(pet.get("pet_name") or ""))
+        and not is_rejected_pet_name_token(str(pet.get("pet_name") or ""))
+    ]
     session.customer_pets = active_pets
     return active_pets
 

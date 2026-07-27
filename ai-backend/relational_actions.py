@@ -10,7 +10,12 @@ from __future__ import annotations
 from datetime import date, datetime, timedelta
 from typing import Any
 
-from customer_context import CustomerContext, missing_identity_result, phones_match
+from customer_context import (
+    CustomerContext,
+    missing_identity_result,
+    normalize_phone_digits,
+    phones_match,
+)
 from supabase_client import get_supabase_client
 
 READ_ONLY_SCENARIOS = {
@@ -23,6 +28,12 @@ READ_ONLY_SCENARIOS = {
     "GET_BOOKING_SERVICE_OPTIONS",
     "CUSTOMER_GREETING",
     "REPEAT_LAST_BOOKING",
+    "VIEW_PAYMENT_HISTORY",
+    "VIEW_REDEMPTION_HISTORY",
+    "VIEW_MESSAGE_HISTORY",
+    "VIEW_COMPANY_INFORMATION",
+    "VIEW_STAFF_DIRECTORY",
+    "VIEW_ACCOUNT_STATUS",
 }
 
 WRITE_SCENARIOS = {
@@ -89,7 +100,6 @@ _LOYALTY_LOOKUP_ACTIONS = frozenset(
         "check_loyalty_account",
         "get_loyalty_account",
         "check_coupon_eligibility",
-        "get_booking_service_options",
         "redeem_reward",
     }
 )
@@ -118,6 +128,10 @@ def _derive_handoff_meta(action: str, status: str, *, data_found: bool) -> tuple
     if status == "error":
         return True, "DATABASE_ERROR"
     if status == "not_found" or (status == "success" and not data_found):
+        # A phone number that is not registered is the normal entry point for
+        # new-customer onboarding, not an operational failure or HITL case.
+        if action == "check_customer_by_phone":
+            return False, None
         if action in _BOOKING_LOOKUP_ACTIONS:
             return True, "BOOKING_NOT_FOUND"
         if action in _LOYALTY_LOOKUP_ACTIONS:
@@ -277,10 +291,18 @@ def check_customer_by_phone(context: CustomerContext) -> dict:
 
     try:
         client = get_supabase_client()
+        # Keep phone matching inside Postgres instead of downloading every
+        # customer in the company. The wildcard pattern tolerates legacy
+        # formatting such as "+60 12-345 6701" while the final phones_match
+        # check below prevents a loose SQL match from resolving the wrong row.
+        phone_digits = normalize_phone_digits(context.phone_number)
+        phone_pattern = "%" + "%".join(phone_digits) + "%"
         response = (
             client.table("customer")
             .select("customer_id, company_id, full_name, phone_number, address")
             .eq("company_id", context.company_id)
+            .ilike("phone_number", phone_pattern)
+            .limit(10)
             .execute()
         )
         rows = response.data or []
@@ -810,15 +832,9 @@ def check_booking_status(context: CustomerContext, intent_json: dict) -> dict:
 
 
 def _parse_date(value: str | None) -> date | None:
-    if not value:
-        return None
-    text = str(value).strip()
-    for fmt in ("%Y-%m-%d", "%d/%m/%Y", "%m/%d/%Y"):
-        try:
-            return datetime.strptime(text, fmt).date()
-        except ValueError:
-            continue
-    return None
+    from date_normalization import parse_customer_date
+
+    return parse_customer_date(value)
 
 
 def _time_slots_for_day(open_time: str = DEFAULT_OPEN_TIME, close_time: str = DEFAULT_CLOSE_TIME) -> list[str]:
@@ -2066,6 +2082,214 @@ def merge_session_booking_context(intent_json: dict, session) -> dict:
     return updated
 
 
+def _resolved_customer_pet_ids(context: CustomerContext) -> list[int]:
+    pets_result = get_pets_by_customer_id(context)
+    if pets_result.get("status") != "success":
+        return []
+    return [
+        int(pet["pet_id"])
+        for pet in (pets_result.get("data", {}).get("pets") or [])
+        if pet.get("pet_id") is not None
+    ]
+
+
+def get_payment_history(context: CustomerContext) -> dict:
+    """Retrieve payments referenced by this customer's own bookings."""
+    resolve_customer_context(context)
+    if context.resolved_customer_id is None:
+        return missing_identity_result("get_payment_history")
+    try:
+        client = get_supabase_client()
+        pet_ids = _resolved_customer_pet_ids(context)
+        payment_ids: set[int] = set()
+        for table in SERVICE_TYPE_TO_BOOKING_TABLE.values():
+            if not pet_ids:
+                break
+            rows = (
+                client.table(table)
+                .select("payment_id")
+                .eq("company_id", context.company_id)
+                .in_("pet_id", pet_ids)
+                .execute()
+                .data
+                or []
+            )
+            payment_ids.update(
+                int(row["payment_id"])
+                for row in rows
+                if row.get("payment_id") is not None
+            )
+        if not payment_ids:
+            return _result("get_payment_history", "success", {"payments": [], "count": 0})
+        payments = (
+            client.table("payment")
+            .select(
+                "payment_id, service, base_price, add_ons, final_amount, "
+                "payment_method, date, status, paid_at"
+            )
+            .eq("company_id", context.company_id)
+            .in_("payment_id", sorted(payment_ids))
+            .order("date", desc=True)
+            .execute()
+            .data
+            or []
+        )
+        return _result(
+            "get_payment_history",
+            "success",
+            {"payments": payments[:10], "count": len(payments)},
+        )
+    except Exception as exc:
+        return _result("get_payment_history", "error", {}, str(exc))
+
+
+def get_redemption_history(context: CustomerContext) -> dict:
+    """Retrieve redemptions through the authenticated customer's loyalty row."""
+    resolve_customer_context(context)
+    if context.resolved_customer_id is None:
+        return missing_identity_result("get_redemption_history")
+    try:
+        client = get_supabase_client()
+        members = (
+            client.table("loyaltymember")
+            .select("loyalty_id")
+            .eq("company_id", context.company_id)
+            .eq("customer_id", context.resolved_customer_id)
+            .limit(1)
+            .execute()
+            .data
+            or []
+        )
+        if not members:
+            return _result("get_redemption_history", "success", {"redemptions": [], "count": 0})
+        rows = (
+            client.table("redemption")
+            .select(
+                "redemption_id, coupon_id, loyalty_earn, loyalty_spend, "
+                "create_date, create_time, status, approved_date, approved_time"
+            )
+            .eq("company_id", context.company_id)
+            .eq("loyalty_id", members[0].get("loyalty_id"))
+            .order("create_date", desc=True)
+            .execute()
+            .data
+            or []
+        )
+        coupon_ids = sorted(
+            {int(row["coupon_id"]) for row in rows if row.get("coupon_id") is not None}
+        )
+        coupon_names: dict[int, str] = {}
+        if coupon_ids:
+            coupons = (
+                client.table("coupon")
+                .select("coupon_id, reward_name")
+                .eq("company_id", context.company_id)
+                .in_("coupon_id", coupon_ids)
+                .execute()
+                .data
+                or []
+            )
+            coupon_names = {
+                int(row["coupon_id"]): str(row.get("reward_name") or "")
+                for row in coupons
+                if row.get("coupon_id") is not None
+            }
+        redemptions = [
+            {
+                **row,
+                "reward_name": coupon_names.get(int(row["coupon_id"]), "")
+                if row.get("coupon_id") is not None
+                else "",
+            }
+            for row in rows[:10]
+        ]
+        return _result(
+            "get_redemption_history",
+            "success",
+            {"redemptions": redemptions, "count": len(rows)},
+        )
+    except Exception as exc:
+        return _result("get_redemption_history", "error", {}, str(exc))
+
+
+def get_message_history(context: CustomerContext) -> dict:
+    """Retrieve only messages sent by the authenticated customer."""
+    resolve_customer_context(context)
+    if context.resolved_customer_id is None:
+        return missing_identity_result("get_message_history")
+    try:
+        rows = (
+            get_supabase_client()
+            .table("messages")
+            .select(
+                "message_id, sender_type, message_text, intent_label, "
+                "receive_date, receive_time, reply_date, reply_time"
+            )
+            .eq("company_id", context.company_id)
+            .eq("sender_type", "customer")
+            .eq("sender_id", context.resolved_customer_id)
+            .order("receive_date", desc=True)
+            .order("receive_time", desc=True)
+            .limit(20)
+            .execute()
+            .data
+            or []
+        )
+        return _result(
+            "get_message_history",
+            "success",
+            {"messages": rows, "count": len(rows)},
+        )
+    except Exception as exc:
+        return _result("get_message_history", "error", {}, str(exc))
+
+
+def get_company_information(context: CustomerContext) -> dict:
+    """Return safe public business fields from companies."""
+    try:
+        rows = (
+            get_supabase_client()
+            .table("companies")
+            .select(
+                "company_name, country, street_address, city, state, postcode, "
+                "business_description"
+            )
+            .eq("company_id", context.company_id)
+            .limit(1)
+            .execute()
+            .data
+            or []
+        )
+        return _result(
+            "get_company_information",
+            "success" if rows else "not_found",
+            {"company": rows[0] if rows else None},
+        )
+    except Exception as exc:
+        return _result("get_company_information", "error", {}, str(exc))
+
+
+def get_staff_directory(context: CustomerContext) -> dict:
+    """Return staff-facing business fields while excluding every identifier."""
+    try:
+        rows = (
+            get_supabase_client()
+            .table("staff")
+            .select("staff_name, role, status")
+            .eq("company_id", context.company_id)
+            .execute()
+            .data
+            or []
+        )
+        return _result(
+            "get_staff_directory",
+            "success",
+            {"staff": rows, "count": len(rows)},
+        )
+    except Exception as exc:
+        return _result("get_staff_directory", "error", {}, str(exc))
+
+
 def relational_database_action(intent_json: dict, context: CustomerContext) -> dict:
     """Dispatch from the normalized scenario; never trust an LLM write-action override."""
     scenario_intent = str(intent_json.get("scenario_intent") or "UNKNOWN").strip().upper()
@@ -2134,6 +2358,19 @@ def relational_database_action(intent_json: dict, context: CustomerContext) -> d
         if pet_name:
             return get_pet_by_customer_and_name(context, pet_name)
         return get_pets_by_customer_id(context)
+
+    if scenario_intent == "VIEW_PAYMENT_HISTORY":
+        return get_payment_history(context)
+    if scenario_intent == "VIEW_REDEMPTION_HISTORY":
+        return get_redemption_history(context)
+    if scenario_intent == "VIEW_MESSAGE_HISTORY":
+        return get_message_history(context)
+    if scenario_intent == "VIEW_COMPANY_INFORMATION":
+        return get_company_information(context)
+    if scenario_intent == "VIEW_STAFF_DIRECTORY":
+        return get_staff_directory(context)
+    if scenario_intent == "VIEW_ACCOUNT_STATUS":
+        return check_customer_by_phone(context)
 
     if scenario_intent == "CUSTOMER_GREETING":
         return check_customer_by_phone(context)

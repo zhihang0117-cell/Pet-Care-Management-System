@@ -1421,7 +1421,11 @@ def build_service_info_retrieval_query(user_message: str, intent_json: dict, ses
         if service == "BOARDING":
             species = "Cat Hotel Price room types capacity price" if pet_type == "CAT" else "Dog Hotel Price room types capacity price"
             return f"service information boarding {species}"
-        species = "cat" if pet_type == "CAT" else "dog"
+        species = (
+            "cat"
+            if pet_type == "CAT"
+            else ("dog" if pet_type == "DOG" else "cat and dog")
+        )
         return (
             f"service information {species} grooming bathing packages trimming "
             "Standard Bath Premium Bath Luxury Bath prices"

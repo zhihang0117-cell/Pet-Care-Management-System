@@ -25,7 +25,18 @@ def test_customer_identity_preloads_pets_and_latest_booking_once():
 
     with (
         patch("customer_identity.lookup_customer_by_phone", return_value=identity),
-        patch("pet_profile.enrich_session_pet_profile") as enrich_pets,
+        patch(
+            "pet_profile.enrich_session_pet_profile",
+            return_value={
+                "status": "matched",
+                "matched_pet": {
+                    "pet_id": 3,
+                    "pet_name": "Milo",
+                    "pet_type": "Cat",
+                },
+                "pet_names": ["Milo"],
+            },
+        ) as enrich_pets,
         patch("database_service.fetch_latest_booking_for_entry", return_value=latest) as fetch_latest,
     ):
         first = resolve_customer_at_request_start(session, session.phone_number)
@@ -37,6 +48,13 @@ def test_customer_identity_preloads_pets_and_latest_booking_once():
     assert session.last_booking_snapshot["pet_name"] == "Milo"
     assert first["data"]["last_booking"]["service_type"] == "GROOMING"
     assert second["data"]["last_booking"]["pet_name"] == "Milo"
+    assert first["data"]["selected_pet_profile"]["pet_name"] == "Milo"
+    assert first["data"]["pet_selection_status"] == "matched"
+    assert first["data"]["profile_bundle"]["automatic_actions"] == [
+        "get_customer_profile",
+        "get_pet_profiles",
+        "get_latest_booking",
+    ]
 
 
 def test_booking_date_without_time_queries_availability_instead_of_asking_time():
@@ -226,6 +244,37 @@ def test_new_customer_name_follow_up_does_not_repeat_welcome():
     assert "welcome" not in second.lower()
 
 
+def test_pending_customer_name_overrides_unknown_llm_intent():
+    from booking_flow import handle_collect_customer_name
+    from session_store import COLLECT_CUSTOMER_NAME
+
+    session = SessionContext(
+        phone_number="01262736272",
+        existing_customer=False,
+        new_customer_session=True,
+        greeted_this_session=True,
+        pending_action=COLLECT_CUSTOMER_NAME,
+        missing_fields=["full_name"],
+    )
+    result = handle_collect_customer_name(
+        session,
+        "hung wei",
+        {
+            "main_intent": "UNKNOWN",
+            "scenario_intent": "UNKNOWN",
+            "confidence": 0.0,
+            "entities": {},
+        },
+    )
+
+    assert session.customer_name == "hung wei"
+    assert result["main_intent"] == "GREETING_INTENT"
+    assert result["scenario_intent"] == "COLLECT_CUSTOMER_NAME"
+    assert result["database_action_needed"] is False
+    assert result["retrieval_needed"] is False
+    assert result["confidence"] == 0.99
+
+
 def test_llm_reply_cannot_add_greeting_after_session_was_already_greeted():
     from response_generator import finalize_customer_reply
 
@@ -239,6 +288,50 @@ def test_llm_reply_cannot_add_greeting_after_session_was_already_greeted():
 
     assert reply.startswith("You have 544 loyalty points.")
     assert "Hi Jason" not in reply
+
+
+def test_first_non_greeting_message_gets_one_conversation_greeting():
+    from response_generator import finalize_customer_reply
+
+    session = SessionContext(existing_customer=True, customer_name="Alicia Lee")
+    first = finalize_customer_reply(
+        "You currently have 407 loyalty points 😊",
+        {
+            "scenario_intent": "CHECK_LOYALTY_POINTS",
+            "_session_greeted_before_turn": False,
+        },
+        session=session,
+    )
+    second = finalize_customer_reply(
+        "Your next booking is tomorrow at 2:00 PM.",
+        {
+            "scenario_intent": "VIEW_BOOKING_STATUS",
+            "_session_greeted_before_turn": True,
+        },
+        session=session,
+    )
+
+    assert first.startswith("Hi Alicia Lee, welcome back to Pawfect! 😊")
+    assert "407 loyalty points" in first
+    assert session.greeted_this_session is True
+    assert not second.startswith(("Hi", "Hello", "Hey"))
+
+
+def test_first_turn_does_not_duplicate_a_flow_specific_greeting():
+    from response_generator import finalize_customer_reply
+
+    session = SessionContext(existing_customer=True, customer_name="Alicia Lee")
+    reply = finalize_customer_reply(
+        "Hi Alicia Lee, welcome back to Pawfect! 😊\n\nWhich service would you like to book?",
+        {
+            "scenario_intent": "MAKE_BOOKING",
+            "_session_greeted_before_turn": False,
+        },
+        session=session,
+    )
+
+    assert reply.count("Hi Alicia Lee") == 1
+    assert session.greeted_this_session is True
 
 
 def test_coupon_question_with_booking_routes_to_coupon_database_read_first():
@@ -620,3 +713,179 @@ def test_grooming_policy_price_rows_translate_normalized_session_size():
     assert len(rows) == 1
     assert "For M size cats" in rows[0][1]
     assert "RM151" in rows[0][1]
+
+
+def test_service_option_follow_up_accepts_natural_partial_name():
+    from session_continuation import extract_fields_from_message
+
+    session = SessionContext(
+        pet_type="CAT",
+        service_options=[
+            {"service_name": "Premium Bath (HYPONIC)"},
+            {"service_name": "Dog Trimming Packages"},
+        ],
+    )
+
+    extracted = extract_fields_from_message(
+        "Premium Bath sounds good.",
+        ["service_package"],
+        session,
+    )
+
+    assert extracted["service_package"] == "Premium Bath (HYPONIC)"
+
+
+def test_cached_grooming_options_are_filtered_after_pet_species_is_known():
+    session = SessionContext(
+        pet_type="CAT",
+        last_service_type="GROOMING",
+        service_options_for="GROOMING",
+        service_options=[
+            {"service_name": "Premium Bath (HYPONIC)", "price_display": "RM120"},
+            {"service_name": "Cat Trimming Packages", "price_display": "RM125 - RM363"},
+            {"service_name": "Dog Trimming Packages", "price_display": "RM88 - RM352"},
+        ],
+    )
+
+    reply = build_missing_field_reply(
+        ["service_package"],
+        session,
+        {"service_type": "GROOMING"},
+    )
+
+    assert "Cat Trimming Packages" in reply
+    assert "Dog Trimming Packages" not in reply
+
+
+def test_customer_friendly_date_normalizes_for_availability():
+    from datetime import date
+
+    from date_normalization import parse_customer_date
+
+    assert parse_customer_date("6 August", today=date(2026, 7, 27)) == date(2026, 8, 6)
+    assert parse_customer_date("6th August 2026", today=date(2026, 7, 27)) == date(
+        2026, 8, 6
+    )
+
+
+def test_service_option_reply_never_asks_for_time_before_availability():
+    from response_generator import _enforce_service_option_conversation_contract
+
+    reply = _enforce_service_option_conversation_contract(
+        "Hi, welcome to Pawfect! 😊\n\n"
+        "I can help with that! 😊\n\n"
+        "Please send your pet name and your preferred date and time."
+    )
+
+    assert reply.count("I can help with that") == 0
+    assert "date and time" not in reply.lower()
+    assert "preferred date" in reply.lower()
+
+
+def test_new_customer_service_options_collect_name_without_duplicate_intro():
+    from response_generator import _enforce_service_option_conversation_contract
+
+    session = SessionContext(existing_customer=False, customer_name="")
+    reply = _enforce_service_option_conversation_contract(
+        "Hi, welcome to Pawfect! 😊\n\n"
+        "I can help with that! 😊\n\n"
+        "Please provide these details:\n\n"
+        "• Pet name\n"
+        "• Pet type\n"
+        "• your preferred date",
+        session,
+    )
+
+    assert "I can help with that" not in reply
+    assert "• Your name" in reply
+    assert "• Preferred date" in reply
+
+
+def test_new_customer_natural_question_still_collects_customer_name():
+    from response_generator import _enforce_service_option_conversation_contract
+
+    reply = _enforce_service_option_conversation_contract(
+        "May I have your pet's name, type, and preferred date?",
+        SessionContext(existing_customer=False, customer_name=""),
+    )
+
+    assert "your name, your pet's name" in reply
+
+    second_wording = _enforce_service_option_conversation_contract(
+        "Could you please provide your pet's name, type, and preferred date?",
+        SessionContext(existing_customer=False, customer_name=""),
+    )
+    assert "provide your name, your pet's name" in second_wording
+
+
+def test_existing_customer_with_multiple_pets_gets_natural_named_choice():
+    from response_generator import _enforce_service_option_conversation_contract
+
+    session = SessionContext(existing_customer=True, customer_name="Jamie")
+    session.customer_pets = [
+        {"pet_name": "Milo", "pet_type": "Cat"},
+        {"pet_name": "Coco", "pet_type": "Dog"},
+    ]
+    session.last_booking_snapshot = {"pet_name": "Milo"}
+
+    reply = _enforce_service_option_conversation_contract(
+        "Could you please provide your pet's name, type, and preferred date?",
+        session,
+    )
+
+    assert "Would you like to make the booking for Milo or Coco?" in reply
+    assert "I'd recommend Milo" in reply
+    assert "provide your pet's name" not in reply
+    assert "• Milo" not in reply
+
+
+def test_unknown_pet_type_grooming_query_targets_both_species():
+    from booking_service_info import build_service_info_retrieval_query
+
+    query = build_service_info_retrieval_query(
+        "I want to book grooming",
+        {
+            "scenario_intent": "GET_BOOKING_SERVICE_OPTIONS",
+            "service_type": "GROOMING",
+            "entities": {"service_type": "GROOMING"},
+        },
+    )
+
+    assert "cat and dog grooming" in query
+
+
+def test_booking_asks_pet_type_before_retrieving_species_specific_packages():
+    from booking_flow import apply_booking_collection_rules
+
+    session = SessionContext(
+        customer_name="Hung Wei",
+        existing_customer=False,
+        new_customer_session=True,
+        booking_creation_flow=True,
+        pending_action="make_booking_pending_info",
+        last_scenario_intent="MAKE_BOOKING",
+        last_service_type="GROOMING",
+        pet_name="Coco",
+        preferred_date="3 August",
+        collected_entities={
+            "customer_name": "Hung Wei",
+            "service_type": "GROOMING",
+            "pet_name": "Coco",
+            "preferred_date": "3 August",
+        },
+    )
+    intent = apply_booking_collection_rules(
+        session,
+        {
+            "main_intent": "BOOKING_INTENT",
+            "scenario_intent": "MAKE_BOOKING",
+            "service_type": "GROOMING",
+            "entities": dict(session.collected_entities),
+            "confidence": 0.99,
+        },
+        "grooming for Coco on 3 August",
+    )
+
+    assert intent["scenario_intent"] == "MAKE_BOOKING"
+    assert "pet_type" in intent["missing_information"]
+    assert intent.get("database_action") != "get_booking_service_options"

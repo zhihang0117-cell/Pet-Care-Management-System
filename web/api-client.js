@@ -16,7 +16,11 @@
  * separate LLM/agent trust model (see backend/src/middleware/auth.js).
  */
 
-const API_BASE_URL = "/api";
+const LOCAL_BACKEND_ORIGIN = "http://127.0.0.1:4000";
+const API_BASE_URL =
+  window.location.port === "5500"
+    ? `${LOCAL_BACKEND_ORIGIN}/api`
+    : "/api";
 async function apiRequest(path, { method = "GET", body } = {}) {
   const token = await getSupabaseAccessToken();
   if (!token) {

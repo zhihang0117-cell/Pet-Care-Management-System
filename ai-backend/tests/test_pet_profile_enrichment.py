@@ -141,3 +141,38 @@ def test_identity_resolution_loads_pets():
     assert session.pet_id is not None
     assert session.pet_type in {"DOG", "CAT"}
     assert len(session.customer_pets) >= 1
+
+
+def test_invalid_confirmation_token_pet_row_is_ignored_and_real_pet_autoselected():
+    from pet_profile import enrich_session_pet_profile
+    from session_store import SessionContext
+
+    session = SessionContext(
+        customer_id=1,
+        existing_customer=True,
+        customer_pets=[
+            {
+                "pet_id": 1,
+                "pet_name": "Milo",
+                "pet_type": "Cat",
+                "size": "M",
+                "height_cm": 37,
+            },
+            {
+                "pet_id": 23,
+                "pet_name": "correct",
+                "pet_type": "Cat",
+                "size": "M",
+            },
+        ],
+    )
+
+    result = enrich_session_pet_profile(
+        session,
+        "I want to book grooming for my pet.",
+    )
+
+    assert result["status"] == "matched"
+    assert [pet["pet_name"] for pet in session.customer_pets] == ["Milo"]
+    assert session.pet_name == "Milo"
+    assert session.pet_id == 1

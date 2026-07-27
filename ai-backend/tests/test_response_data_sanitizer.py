@@ -39,6 +39,24 @@ def test_sanitizer_recursively_removes_all_staff_identifier_variants():
     assert source["draft"]["selected_staff_id"] == 14
 
 
+def test_sanitizer_removes_internal_auth_identity_fields():
+    sanitized = sanitize_response_data(
+        {
+            "account_status": "active",
+            "auth_user_id": "private-auth-id",
+            "company": {
+                "company_name": "Pawfect",
+                "manager_user_id": "private-manager-id",
+            },
+        }
+    )
+
+    assert sanitized == {
+        "account_status": "active",
+        "company": {"company_name": "Pawfect"},
+    }
+
+
 def test_chat_does_not_expose_staff_ids_in_database_or_session(app, monkeypatch):
     monkeypatch.setattr("main.update_session_after_turn", lambda session, *_args: session)
     monkeypatch.setattr("session_store.SessionContext.enable_runtime_guard", lambda self: None)

@@ -35,6 +35,52 @@ READ_ONLY_PENDING_ACTIONS = {
 
 LOYALTY_SCENARIOS = {"CHECK_LOYALTY_POINTS", "CHECK_MEMBERSHIP_STATUS"}
 
+_INTERRUPTION_SCENARIOS = {
+    *POLICY_RAG_SCENARIOS,
+    "CHECK_LOYALTY_POINTS",
+    "CHECK_MEMBERSHIP_STATUS",
+    "LOYALTY_ACCOUNT_INQUIRY",
+    "CHECK_COUPON_ELIGIBILITY",
+    "VIEW_BOOKING_STATUS",
+    "VIEW_PAYMENT_HISTORY",
+    "VIEW_REDEMPTION_HISTORY",
+    "VIEW_MESSAGE_HISTORY",
+    "VIEW_COMPANY_INFORMATION",
+    "VIEW_STAFF_DIRECTORY",
+    "VIEW_ACCOUNT_STATUS",
+}
+
+_PENDING_FLOW_FIELDS = (
+    "pending_action",
+    "missing_fields",
+    "collected_entities",
+    "sub_flow",
+    "booking_missing_snapshot",
+    "booking_scenario_snapshot",
+    "booking_creation_flow",
+    "last_intent",
+    "last_scenario_intent",
+    "last_service_type",
+    "pet_name",
+    "pet_id",
+    "pet_type",
+    "pet_size",
+    "pet_height",
+    "service_package",
+    "service_options",
+    "service_options_for",
+    "selected_package",
+    "selected_addons",
+    "preferred_date",
+    "preferred_time",
+    "selected_slot",
+    "price_quote",
+    "draft_booking_payload",
+    "availability_result",
+    "current_step",
+    "completed_fields",
+)
+
 _TOPIC_SHIFT_PHRASES = re.compile(
     r"\b("
     r"actually|instead|never\s+mind|forget\s+(that|it)|"
@@ -56,7 +102,11 @@ _DATE_HINT = re.compile(
     r"\b("
     r"today|tomorrow|next\s+week|"
     r"monday|tuesday|wednesday|thursday|friday|saturday|sunday|"
-    r"\d{4}-\d{2}-\d{2}|\d{1,2}/\d{1,2}/\d{2,4}"
+    r"\d{4}-\d{2}-\d{2}|\d{1,2}/\d{1,2}/\d{2,4}|"
+    r"\d{1,2}(?:st|nd|rd|th)?\s+"
+    r"(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|"
+    r"jul(?:y)?|aug(?:ust)?|sep(?:tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)"
+    r"(?:\s+\d{4})?"
     r")\b",
     re.I,
 )
@@ -119,6 +169,17 @@ def extract_fields_from_message(message: str, target_fields: list[str], session=
                 extracted[field] = value
         elif field == "service_package":
             options = list(getattr(session, "service_options", []) or []) if session is not None else []
+            pet_kind = str(getattr(session, "pet_type", "") or "").strip().upper()
+            if pet_kind in {"CAT", "DOG"}:
+                opposite = "dog " if pet_kind == "CAT" else "cat "
+                options = [
+                    option
+                    for option in options
+                    if not str(option.get("service_name") or "")
+                    .strip()
+                    .lower()
+                    .startswith(opposite)
+                ]
             text = str(message or "").strip()
             selected = None
             number_match = re.fullmatch(r"(?:option\s*)?(\d+)[.!]?", text, re.I)
@@ -132,9 +193,17 @@ def extract_fields_from_message(message: str, target_fields: list[str], session=
                     (
                         option
                         for option in options
-                        if str(option.get("service_name") or "").strip().lower() in lowered
-                        or lowered
-                        in str(option.get("service_name") or "").strip().lower()
+                        if (
+                            str(option.get("service_name") or "").strip().lower()
+                            in lowered
+                            or lowered
+                            in str(option.get("service_name") or "").strip().lower()
+                            or str(option.get("service_name") or "")
+                            .split("(", 1)[0]
+                            .strip()
+                            .lower()
+                            in lowered
+                        )
                     ),
                     None,
                 )
@@ -190,6 +259,112 @@ def extract_fields_from_message(message: str, target_fields: list[str], session=
     if profile:
         extracted.update({k: v for k, v in profile.items() if k not in extracted})
     return extracted
+
+
+def resolve_pending_intent_before_llm(session, user_message: str) -> dict | None:
+    """Use the active memory step for definite follow-up answers before calling an LLM."""
+    pending = str(getattr(session, "pending_action", "") or "").strip()
+    missing = list(getattr(session, "missing_fields", []) or [])
+    if not pending:
+        return None
+
+    from booking_draft import is_booking_confirmation_message
+    from booking_flow import (
+        extract_customer_name_from_message,
+        parse_repeat_or_new_choice,
+    )
+    from session_store import AWAIT_BOOKING_CONFIRMATION, SLOT_AVAILABLE_PENDING
+
+    definite = False
+    scenario = str(getattr(session, "last_scenario_intent", "") or "MAKE_BOOKING").strip()
+    main_intent = "BOOKING_INTENT"
+
+    if pending == COLLECT_CUSTOMER_NAME:
+        definite = bool(extract_customer_name_from_message(user_message, expect_name=True))
+        scenario = "COLLECT_CUSTOMER_NAME"
+        main_intent = "GREETING_INTENT"
+    elif pending == BOOKING_CHOOSE_REPEAT_OR_NEW:
+        definite = bool(parse_repeat_or_new_choice(user_message))
+        scenario = "MAKE_BOOKING"
+    elif pending == AWAIT_BOOKING_CONFIRMATION:
+        definite = bool(is_booking_confirmation_message(user_message))
+        scenario = "CONFIRM_BOOKING"
+    elif pending == SLOT_AVAILABLE_PENDING:
+        from booking_draft import is_slot_acceptance_message
+
+        definite = bool(
+            is_slot_acceptance_message(user_message)
+            or _extract_preferred_time(user_message)
+        )
+        scenario = "MAKE_BOOKING"
+    elif missing:
+        definite = bool(extract_fields_from_message(user_message, missing, session))
+
+    if not definite:
+        return None
+    if scenario in LOYALTY_SCENARIOS:
+        main_intent = "LOYALTY_INTENT"
+    return {
+        "main_intent": main_intent,
+        "scenario_intent": scenario,
+        "service_type": str(getattr(session, "last_service_type", "") or "UNKNOWN"),
+        "entities": {},
+        "missing_information": missing,
+        "retrieval_needed": False,
+        "retrieval_source": [],
+        "database_action_needed": False,
+        "database_action": "",
+        "next_action": "continue_pending_flow",
+        "confidence": 0.99,
+        "reason": "Definite answer to the active conversation-memory step",
+    }
+
+
+def capture_pending_flow(session) -> dict:
+    """Snapshot an unfinished flow so a read-only interruption cannot erase it."""
+    import copy
+
+    if not str(getattr(session, "pending_action", "") or "").strip():
+        return {}
+    return {
+        field: copy.deepcopy(getattr(session, field))
+        for field in _PENDING_FLOW_FIELDS
+    }
+
+
+def should_resume_pending_flow(snapshot: dict, intent_json: dict) -> bool:
+    """Return True when this turn temporarily answered another supported question."""
+    if not snapshot:
+        return False
+    scenario = str(intent_json.get("scenario_intent") or "").strip()
+    return scenario in _INTERRUPTION_SCENARIOS and not bool(
+        intent_json.get("booking_supporting_service_info")
+        or intent_json.get("booking_supporting_info_needed")
+    )
+
+
+def restore_pending_flow(session, snapshot: dict) -> None:
+    """Restore only flow state; identity/profile memory remains current."""
+    import copy
+
+    for field, value in snapshot.items():
+        setattr(session, field, copy.deepcopy(value))
+
+
+def append_pending_resume_prompt(reply: str, session, intent_json: dict) -> str:
+    """Bring the customer back to the exact unfinished step after an interruption."""
+    from booking_flow import build_missing_field_reply
+
+    missing = list(getattr(session, "missing_fields", []) or [])
+    if not missing:
+        return str(reply or "").strip()
+    question = build_missing_field_reply(missing, session, intent_json)
+    if not question:
+        return str(reply or "").strip()
+    text = str(reply or "").strip()
+    if question.lower() in text.lower():
+        return text
+    return f"{text}\n\nTo continue where we left off: {question}".strip()
 
 
 def apply_read_only_entity_rules(intent_json: dict, user_message: str) -> dict:

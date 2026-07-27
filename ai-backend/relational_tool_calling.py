@@ -18,6 +18,11 @@ READ_ONLY_TOOL_SCENARIOS = {
     "get_loyalty_points": "CHECK_LOYALTY_POINTS",
     "get_membership_status": "CHECK_MEMBERSHIP_STATUS",
     "get_loyalty_account": "LOYALTY_ACCOUNT_INQUIRY",
+    "get_payment_history": "VIEW_PAYMENT_HISTORY",
+    "get_redemption_history": "VIEW_REDEMPTION_HISTORY",
+    "get_message_history": "VIEW_MESSAGE_HISTORY",
+    "get_company_information": "VIEW_COMPANY_INFORMATION",
+    "get_staff_directory": "VIEW_STAFF_DIRECTORY",
 }
 
 RELATIONAL_READ_TOOLS = [
@@ -152,6 +157,44 @@ RELATIONAL_READ_TOOLS = [
             },
         },
     },
+    *[
+        {
+            "type": "function",
+            "function": {
+                "name": name,
+                "description": description,
+                "strict": True,
+                "parameters": {
+                    "type": "object",
+                    "properties": {},
+                    "required": [],
+                    "additionalProperties": False,
+                },
+            },
+        }
+        for name, description in (
+            (
+                "get_payment_history",
+                "Retrieve payments linked to the authenticated customer's bookings.",
+            ),
+            (
+                "get_redemption_history",
+                "Retrieve the authenticated customer's loyalty redemption history.",
+            ),
+            (
+                "get_message_history",
+                "Retrieve messages belonging to the authenticated customer.",
+            ),
+            (
+                "get_company_information",
+                "Retrieve safe public company information.",
+            ),
+            (
+                "get_staff_directory",
+                "Retrieve staff names, roles, and statuses without identifiers.",
+            ),
+        )
+    ],
 ]
 
 
@@ -191,7 +234,18 @@ def plan_relational_tool_calls(user_message: str, intent_json: dict) -> list[dic
                 "content": (
                     "Select only the relational read tools needed to answer the user. "
                     "Never request data unrelated to the question. Customer and company "
-                    "identity are enforced by the server; do not ask for their IDs."
+                    "identity are enforced by the server; do not ask for their IDs. "
+                    "Use get_customer_profile for the customer's profile/account status; "
+                    "get_pet_profiles for their registered pets; get_booking_status for "
+                    "booking status; get_latest_booking for their most recent booking; "
+                    "check_availability only for a supplied date; get_loyalty_points, "
+                    "get_membership_status, or get_loyalty_account for personal loyalty data; "
+                    "get_payment_history for payments; get_redemption_history for redeemed "
+                    "rewards; get_message_history for the customer's messages; "
+                    "get_company_information for company/address details; and "
+                    "get_staff_directory for staff names/roles/status. Never select a tool "
+                    "just because related words appear in supplied context. Never request "
+                    "staff identifiers, auth identifiers, SQL, arbitrary tables, or write tools."
                 ),
             },
             {

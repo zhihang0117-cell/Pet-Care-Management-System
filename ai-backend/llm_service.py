@@ -25,6 +25,45 @@ from testing_mode import should_reraise_on_error
 load_dotenv(override=True)
 
 
+def _single_llm_intent_result(user_message: str) -> dict | None:
+    """
+    Resolve high-confidence intents locally so the one remote LLM call left in
+    the turn can write the grounded final response after DB/RAG tools finish.
+
+    Ambiguous language still uses the semantic intent LLM. Evaluation/testing
+    also keeps the original LLM path so failures and model behaviour remain
+    observable.
+    """
+    enabled = os.getenv("SINGLE_LLM_PER_TURN", "true").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+    if not enabled or os.getenv("_EVAL_OVERRIDE_ACTIVE"):
+        return None
+    if os.getenv("TESTING", "").strip().lower() in {"1", "true", "yes", "on"}:
+        return None
+
+    from intent_schema import apply_message_pattern_overrides
+
+    intent_json = apply_message_pattern_overrides(
+        user_message,
+        mock_llm_intent_detection(user_message),
+    )
+    scenario = str(intent_json.get("scenario_intent") or "").strip().upper()
+    confidence = float(intent_json.get("confidence") or 0.0)
+    if scenario == "UNKNOWN" or confidence < 0.90:
+        return None
+    return {
+        "intent_json": intent_json,
+        "provider_used": "deterministic",
+        "query_json_model_used": "deterministic_intent",
+        "query_json_provider_used": "deterministic",
+        "query_json_base_url_used": "",
+    }
+
+
 def detect_intent(user_message: str) -> dict:
     """
     Detect customer intent using configured LLM provider with safe mock fallback.
@@ -43,6 +82,10 @@ def detect_intent(user_message: str) -> dict:
     provider = os.getenv("LLM_PROVIDER", "mock").strip().lower()
 
     if provider == "openai":
+        single_llm_result = _single_llm_intent_result(user_message)
+        if single_llm_result is not None:
+            return single_llm_result
+
         api_key = os.getenv("OPENAI_API_KEY", "").strip()
         if not api_key:
             if should_reraise_on_error():

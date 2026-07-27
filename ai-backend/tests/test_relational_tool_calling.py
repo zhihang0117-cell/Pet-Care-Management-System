@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from unittest.mock import patch
 
-from relational_tool_calling import execute_relational_tool_calls
+from relational_tool_calling import RELATIONAL_READ_TOOLS, execute_relational_tool_calls
 
 
 def test_tool_executor_uses_scoped_database_dispatcher_and_keeps_arguments():
@@ -58,3 +58,32 @@ def test_unknown_or_write_tool_is_never_executed():
 
     assert result == {}
     execute.assert_not_called()
+
+
+def test_extended_relational_tables_have_read_tools():
+    names = {tool["function"]["name"] for tool in RELATIONAL_READ_TOOLS}
+
+    assert {
+        "get_payment_history",
+        "get_redemption_history",
+        "get_message_history",
+        "get_company_information",
+        "get_staff_directory",
+    }.issubset(names)
+
+
+def test_payment_question_routes_to_customer_scoped_database_action():
+    from intent_schema import apply_message_pattern_overrides
+
+    intent = apply_message_pattern_overrides(
+        "Can I see my payment history?",
+        {
+            "main_intent": "UNKNOWN",
+            "scenario_intent": "UNKNOWN",
+            "confidence": 0.1,
+        },
+    )
+
+    assert intent["main_intent"] == "ACCOUNT_INTENT"
+    assert intent["scenario_intent"] == "VIEW_PAYMENT_HISTORY"
+    assert intent["database_action"] == "get_payment_history"

@@ -513,6 +513,17 @@ def build_missing_field_reply(
         ).strip().upper()
         options = list(getattr(session, "service_options", []) or [])
         if options and str(getattr(session, "service_options_for", "") or "").upper() == service:
+            pet_kind = str(getattr(session, "pet_type", "") or "").strip().upper()
+            if pet_kind in {"CAT", "DOG"}:
+                opposite = "dog " if pet_kind == "CAT" else "cat "
+                options = [
+                    item
+                    for item in options
+                    if not str(item.get("service_name") or "")
+                    .strip()
+                    .lower()
+                    .startswith(opposite)
+                ]
             lines = [
                 f"• {item.get('service_name')}"
                 + (f" — {item.get('price_display')}" if item.get("price_display") else "")
@@ -905,9 +916,20 @@ def handle_collect_customer_name(session, user_message: str, intent_json: dict, 
 
     return {
         **copy.deepcopy(intent_json),
+        # The active collect-name state is authoritative. A short personal
+        # name is often classified as UNKNOWN by the semantic model, but it is
+        # still a valid answer to the question the assistant just asked.
+        "main_intent": "GREETING_INTENT",
         "scenario_intent": "COLLECT_CUSTOMER_NAME",
         "missing_information": [],
         "collect_name_for_booking": False,
+        "database_action_needed": False,
+        "database_action": "",
+        "retrieval_needed": False,
+        "retrieval_source": [],
+        "next_action": "ask_missing_information",
+        "confidence": max(float(intent_json.get("confidence") or 0.0), 0.99),
+        "reason": "Customer supplied the requested name in the active onboarding flow",
         "entities": entities,
     }
 
@@ -1353,6 +1375,7 @@ def apply_booking_collection_rules(
     if missing:
         if (
             "service_package" in missing
+            and "pet_type" not in missing
             and str(getattr(session, "service_options_for", "") or "").upper()
             != str(updated.get("service_type") or (updated.get("entities") or {}).get("service_type") or "").upper()
         ):

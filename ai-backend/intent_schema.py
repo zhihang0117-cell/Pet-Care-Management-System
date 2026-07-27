@@ -37,6 +37,12 @@ DATABASE_SCENARIOS = {
     "CONFIRM_BOOKING",
     "CREATE_CUSTOMER",
     "CREATE_PET",
+    "VIEW_PAYMENT_HISTORY",
+    "VIEW_REDEMPTION_HISTORY",
+    "VIEW_MESSAGE_HISTORY",
+    "VIEW_COMPANY_INFORMATION",
+    "VIEW_STAFF_DIRECTORY",
+    "VIEW_ACCOUNT_STATUS",
 }
 
 # Legacy labels kept for mock fallback compatibility
@@ -85,6 +91,7 @@ ALLOWED_MAIN_INTENTS = {
     "POLICY_INTENT",
     "LOYALTY_INTENT",
     "GREETING_INTENT",
+    "ACCOUNT_INTENT",
     "UNKNOWN",
 }
 
@@ -347,6 +354,52 @@ def apply_message_pattern_overrides(user_message: str, intent: dict) -> dict:
         result["retrieval_source"] = []
         result["database_action"] = "check_customer_by_phone"
         result["next_action"] = "check_customer_by_phone"
+        result["confidence"] = max(float(result.get("confidence") or 0.0), 0.95)
+        result["missing_information"] = []
+        return result
+
+    relational_read_patterns = (
+        (
+            r"\b(my\s+)?(payment|payments|receipt|receipts|payment\s+history|paid)\b",
+            "VIEW_PAYMENT_HISTORY",
+            "get_payment_history",
+        ),
+        (
+            r"\b(my\s+)?(redemption|redemptions|redeemed\s+rewards?|reward\s+history)\b",
+            "VIEW_REDEMPTION_HISTORY",
+            "get_redemption_history",
+        ),
+        (
+            r"\b(my\s+)?(message|messages|chat|conversation)\s+history\b",
+            "VIEW_MESSAGE_HISTORY",
+            "get_message_history",
+        ),
+        (
+            r"\b(company|business)\s+(information|details|address|location)\b",
+            "VIEW_COMPANY_INFORMATION",
+            "get_company_information",
+        ),
+        (
+            r"\b(staff|team|groomers?)\b",
+            "VIEW_STAFF_DIRECTORY",
+            "get_staff_directory",
+        ),
+        (
+            r"\b(my\s+)?(account|profile)\s+(status|details|information)\b",
+            "VIEW_ACCOUNT_STATUS",
+            "get_customer_profile",
+        ),
+    )
+    for pattern, relational_scenario, action in relational_read_patterns:
+        if not re.search(pattern, effective_message, re.I):
+            continue
+        result["main_intent"] = "ACCOUNT_INTENT"
+        result["scenario_intent"] = relational_scenario
+        result["database_action_needed"] = True
+        result["retrieval_needed"] = False
+        result["retrieval_source"] = []
+        result["database_action"] = action
+        result["next_action"] = action
         result["confidence"] = max(float(result.get("confidence") or 0.0), 0.95)
         result["missing_information"] = []
         return result
@@ -675,12 +728,37 @@ def normalize_intent_result(raw_result: dict) -> dict:
         database_action_needed = True
         retrieval_needed = False
         retrieval_source = []
-        if not database_action:
-            database_action = (
-                "check_coupon_eligibility"
-                if scenario_intent == "CHECK_COUPON_ELIGIBILITY"
-                else "check_loyalty_points"
-            )
+        loyalty_actions = {
+            "CHECK_LOYALTY_POINTS": "check_loyalty_points",
+            "CHECK_MEMBERSHIP_STATUS": "check_membership_status",
+            "LOYALTY_ACCOUNT_INQUIRY": "get_loyalty_account",
+            "CHECK_COUPON_ELIGIBILITY": "check_coupon_eligibility",
+        }
+        database_action = loyalty_actions[scenario_intent]
+        next_action = database_action
+
+    if scenario_intent in {
+        "VIEW_PAYMENT_HISTORY",
+        "VIEW_REDEMPTION_HISTORY",
+        "VIEW_MESSAGE_HISTORY",
+        "VIEW_COMPANY_INFORMATION",
+        "VIEW_STAFF_DIRECTORY",
+        "VIEW_ACCOUNT_STATUS",
+    }:
+        main_intent = "ACCOUNT_INTENT"
+        database_action_needed = True
+        retrieval_needed = False
+        retrieval_source = []
+        account_actions = {
+            "VIEW_PAYMENT_HISTORY": "get_payment_history",
+            "VIEW_REDEMPTION_HISTORY": "get_redemption_history",
+            "VIEW_MESSAGE_HISTORY": "get_message_history",
+            "VIEW_COMPANY_INFORMATION": "get_company_information",
+            "VIEW_STAFF_DIRECTORY": "get_staff_directory",
+            "VIEW_ACCOUNT_STATUS": "get_customer_profile",
+        }
+        database_action = account_actions[scenario_intent]
+        next_action = database_action
 
     if scenario_intent == "CUSTOMER_GREETING":
         main_intent = "GREETING_INTENT"

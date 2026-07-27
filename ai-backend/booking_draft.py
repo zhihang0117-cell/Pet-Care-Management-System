@@ -88,19 +88,9 @@ def _format_service_label(service_type: str) -> str:
 
 
 def _parse_iso_date(value: str | None) -> date | None:
-    if not value:
-        return None
-    text = str(value).strip().lower()
-    if text == "tomorrow":
-        return date.today() + timedelta(days=1)
-    if text == "today":
-        return date.today()
-    for fmt in ("%Y-%m-%d", "%d/%m/%Y", "%m/%d/%Y"):
-        try:
-            return datetime.strptime(text, fmt).date()
-        except ValueError:
-            continue
-    return None
+    from date_normalization import parse_customer_date
+
+    return parse_customer_date(value)
 
 
 def format_date_for_display(value: str | None) -> str:

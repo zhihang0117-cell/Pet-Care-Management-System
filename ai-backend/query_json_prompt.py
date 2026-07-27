@@ -44,7 +44,36 @@ Allowed main_intent values:
 
 - LOYALTY_INTENT
 
+- ACCOUNT_INTENT
+
 - UNKNOWN
+
+
+
+ACCOUNT_INTENT is for authenticated relational reads:
+
+- VIEW_PAYMENT_HISTORY
+
+- VIEW_REDEMPTION_HISTORY
+
+- VIEW_MESSAGE_HISTORY
+
+- VIEW_COMPANY_INFORMATION
+
+- VIEW_STAFF_DIRECTORY
+
+- VIEW_ACCOUNT_STATUS
+
+These scenarios use the relational database only. Never invent records or use RAG
+as a substitute for customer-specific data.
+
+ACCOUNT routing:
+- my payments, receipts, amount paid → VIEW_PAYMENT_HISTORY / get_payment_history
+- my redeemed coupons or redemption history → VIEW_REDEMPTION_HISTORY / get_redemption_history
+- my chat or message history → VIEW_MESSAGE_HISTORY / get_message_history
+- company address/details → VIEW_COMPANY_INFORMATION / get_company_information
+- staff/team/groomers → VIEW_STAFF_DIRECTORY / get_staff_directory
+- my profile/account details → VIEW_ACCOUNT_STATUS / get_customer_profile
 
 
 
@@ -103,6 +132,17 @@ General business knowledge → RAG (retrieval_needed = true, database_action_nee
 
 
 Never use SERVICE_INFORMATION or LOYALTY_POLICY for the customer's own booking or account data.
+
+Never invent a date or time:
+- If the message does not contain a date, entities.preferred_date must be empty.
+- If the message does not contain a time, entities.preferred_time must be empty.
+- A date without a time is sufficient to continue a booking; the backend will
+  retrieve real slots for that date.
+
+For messages containing more than one request, preserve both needs in the output
+when supported by the schema. Example: a coupon eligibility question plus a
+booking request must route to CHECK_COUPON_ELIGIBILITY and retain the booking
+continuation signal; it must not invent missing booking fields.
 
 
 
@@ -585,5 +625,3 @@ Return JSON only in this exact format:
 }}
 
 """
-
-

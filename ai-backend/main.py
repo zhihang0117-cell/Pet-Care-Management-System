@@ -33,10 +33,15 @@ from booking_flow import (
 )
 from booking_service_info import apply_mixed_booking_service_info_rules, apply_standalone_service_info_rules
 from session_continuation import (
+    append_pending_resume_prompt,
     apply_read_only_entity_rules,
     apply_session_booking_creation_flag,
     apply_session_identity,
+    capture_pending_flow,
     handle_session_before_routing,
+    resolve_pending_intent_before_llm,
+    restore_pending_flow,
+    should_resume_pending_flow,
     update_session_after_turn,
 )
 from session_store import (
@@ -103,6 +108,12 @@ class ClearSessionRequest(BaseModel):
 @app.get("/")
 def read_root():
     return {"message": "Pawfect backend environment is working"}
+
+
+@app.get("/health")
+def health_check():
+    """Deployment health check; does not call Supabase, RAG, or the LLM."""
+    return {"status": "ok"}
 
 
 @app.post("/debug/clear-session")
@@ -251,13 +262,23 @@ def _process_chat(request: ChatRequest):
         session, request_phone, request_customer_id, request.message
     )
 
-    intent_result = detect_intent(request.message)
+    pending_flow_snapshot = capture_pending_flow(session)
+    memory_intent = resolve_pending_intent_before_llm(session, request.message)
+    if memory_intent is not None:
+        intent_result = {
+            "intent_json": memory_intent,
+            "provider_used": "conversation_memory",
+        }
+    else:
+        intent_result = detect_intent(request.message)
     intent_json = dict(intent_result.get("intent_json") or {})
+    intent_json = apply_message_pattern_overrides(request.message, intent_json)
+    intent_json = normalize_intent_result(intent_json)
+    # Runtime-only response state must be attached after schema normalization,
+    # which intentionally removes fields outside the public intent contract.
     intent_json["_session_greeted_before_turn"] = bool(
         getattr(session, "greeted_this_session", False)
     )
-    intent_json = apply_message_pattern_overrides(request.message, intent_json)
-    intent_json = normalize_intent_result(intent_json)
     llm_provider_used = str(intent_result.get("provider_used") or "unknown")
 
     intent_json = apply_request_context_to_intent(
@@ -398,6 +419,10 @@ def _process_chat(request: ChatRequest):
     )
     reply = final_response_result["reply"]
     final_response_provider_used = final_response_result["final_response_provider_used"]
+
+    if should_resume_pending_flow(pending_flow_snapshot, intent_json):
+        restore_pending_flow(session, pending_flow_snapshot)
+        reply = append_pending_resume_prompt(reply, session, intent_json)
 
     current_step = str(getattr(session, "current_step", "") or intent_json.get("current_step") or "").strip()
     missing_fields = list(getattr(session, "missing_fields", []) or intent_json.get("missing_information") or [])

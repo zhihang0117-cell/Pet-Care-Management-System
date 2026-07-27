@@ -544,7 +544,15 @@ def _retrieve_booking_policy_rows(
         )
     else:
         chunk_pattern = {
-        "GROOMING": "service_information_2_%",
+        "GROOMING": (
+            "service_information_2_1_%"
+            if pet_type == "CAT"
+            else (
+                "service_information_2_2_%"
+                if pet_type == "DOG"
+                else None
+            )
+        ),
         "DAYCARE": "service_information_3_%",
         "BOARDING": (
             "service_information_1_1"

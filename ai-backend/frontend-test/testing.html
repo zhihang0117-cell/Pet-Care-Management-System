@@ -104,7 +104,7 @@
     <section class="panel history-panel">
       <div class="history-head">
         <h2>Conversation history</h2>
-        <button class="clear-history" id="clearHistory" type="button">Clear history</button>
+        <button class="clear-history" id="clearHistory" type="button">New conversation</button>
       </div>
       <div class="history" id="history" aria-live="polite"></div>
     </section>
@@ -145,6 +145,7 @@
     const history = document.querySelector("#history");
     const clearHistory = document.querySelector("#clearHistory");
     const HISTORY_PREFIX = "pawfect-chat-history:";
+    const API_ORIGIN = "http://127.0.0.1:8000";
 
     const historyKey = () => `${HISTORY_PREFIX}${phone.value.trim() || "anonymous"}`;
     const readHistory = () => {
@@ -181,11 +182,40 @@
       writeHistory(items);
       renderHistory();
     };
+    const clearBackendSession = async () => {
+      const response = await fetch(`${API_ORIGIN}/debug/clear-session`, {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({phone_number: phone.value.trim()})
+      });
+      const data = await response.json();
+      if (!response.ok || data.status !== "success") {
+        throw new Error(data.error || `Could not start a new conversation (HTTP ${response.status})`);
+      }
+    };
+    let shouldResetSession = readHistory().length === 0;
 
-    phone.addEventListener("change", renderHistory);
-    clearHistory.addEventListener("click", () => {
-      localStorage.removeItem(historyKey());
+    phone.addEventListener("change", () => {
       renderHistory();
+      shouldResetSession = readHistory().length === 0;
+    });
+    clearHistory.addEventListener("click", async () => {
+      clearHistory.disabled = true;
+      try {
+        await clearBackendSession();
+        localStorage.removeItem(historyKey());
+        shouldResetSession = false;
+        renderHistory();
+        reply.className = "reply";
+        reply.textContent = "New conversation started. The next reply will greet the customer.";
+      } catch (error) {
+        reply.className = "reply error";
+        reply.textContent = error instanceof TypeError
+          ? `Cannot reach the Pawfect backend at ${API_ORIGIN}. Please make sure it is running, then try again.`
+          : error.message;
+      } finally {
+        clearHistory.disabled = false;
+      }
     });
 
     form.addEventListener("submit", async (event) => {
@@ -196,7 +226,11 @@
       reply.className = "reply";
       reply.textContent = "Processing request…";
       try {
-        const response = await fetch("http://127.0.0.1:8000/chat", {
+        if (shouldResetSession) {
+          await clearBackendSession();
+          shouldResetSession = false;
+        }
+        const response = await fetch(`${API_ORIGIN}/chat`, {
           method: "POST",
           headers: {"Content-Type": "application/json"},
           body: JSON.stringify({
@@ -219,7 +253,9 @@
         document.querySelector("#raw").textContent = JSON.stringify(data, null, 2);
       } catch (error) {
         reply.className = "reply error";
-        reply.textContent = error.message;
+        reply.textContent = error instanceof TypeError
+          ? `Cannot reach the Pawfect backend at ${API_ORIGIN}. Please make sure it is running, then try again.`
+          : error.message;
       } finally {
         send.disabled = false;
         send.textContent = "Send message";
