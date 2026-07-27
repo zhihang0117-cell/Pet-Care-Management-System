@@ -1,0 +1,231 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Pawfect Chat Tester</title>
+  <style>
+    :root {
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, sans-serif;
+      color: #17233a;
+      background: #f5f7f6;
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; min-height: 100vh; padding: 40px 20px; }
+    main { width: min(1180px, 100%); margin: auto; }
+    header { display: flex; align-items: center; gap: 14px; margin-bottom: 24px; }
+    .logo {
+      display: grid; place-items: center; width: 48px; height: 48px;
+      border-radius: 14px; background: #14324c; color: white; font-size: 23px;
+    }
+    h1 { margin: 0 0 3px; font-size: 24px; }
+    header p, .hint { margin: 0; color: #687477; font-size: 13px; }
+    .layout { display: grid; grid-template-columns: 340px 1fr; gap: 18px; }
+    .panel {
+      border: 1px solid #dce3e1; border-radius: 13px;
+      background: white; padding: 22px;
+    }
+    h2 { margin: 0 0 18px; font-size: 16px; }
+    h3 { margin: 0 0 10px; font-size: 13px; }
+    label { display: block; margin: 16px 0 0; font-size: 12px; font-weight: 700; }
+    input, textarea {
+      width: 100%; margin-top: 7px; padding: 12px;
+      border: 1px solid #cbd5d2; border-radius: 8px;
+      background: white; font: inherit; font-size: 14px; outline: none;
+    }
+    textarea { min-height: 150px; resize: vertical; line-height: 1.5; }
+    input:focus, textarea:focus { border-color: #168b79; box-shadow: 0 0 0 3px #168b7918; }
+    button {
+      width: 100%; margin-top: 18px; padding: 12px;
+      border: 0; border-radius: 8px; background: #168b79;
+      color: white; font-weight: 700; cursor: pointer;
+    }
+    button:disabled { opacity: .65; cursor: wait; }
+    .history-panel { margin-bottom: 18px; }
+    .history-head {
+      display: flex; align-items: center; justify-content: space-between;
+      gap: 12px; margin-bottom: 16px;
+    }
+    .history-head h2 { margin: 0; }
+    .clear-history {
+      width: auto; margin: 0; padding: 8px 11px;
+      background: transparent; border: 1px solid #cbd5d2; color: #526064;
+      font-size: 12px;
+    }
+    .history {
+      display: flex; flex-direction: column; gap: 12px;
+      max-height: 420px; overflow-y: auto; padding: 4px;
+    }
+    .history-empty { margin: 8px 0; color: #7b8587; font-size: 13px; text-align: center; }
+    .message-row { display: flex; }
+    .message-row.user { justify-content: flex-end; }
+    .message-bubble {
+      max-width: min(78%, 720px); padding: 11px 14px; border-radius: 13px;
+      background: #edf8f5; white-space: pre-wrap; line-height: 1.5; font-size: 14px;
+    }
+    .message-row.user .message-bubble { background: #14324c; color: white; }
+    .message-bubble small {
+      display: block; margin-bottom: 4px; opacity: .62;
+      font-size: 9px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase;
+    }
+    .reply {
+      min-height: 130px; padding: 16px; border-radius: 9px;
+      background: #edf8f5; white-space: pre-wrap; line-height: 1.65;
+    }
+    .reply.error { background: #fff0ec; color: #a43f2e; }
+    .status {
+      display: grid; grid-template-columns: repeat(4, 1fr);
+      gap: 8px; margin: 16px 0;
+    }
+    .status div { padding: 10px; border: 1px solid #e2e7e5; border-radius: 7px; }
+    .status span, .status strong { display: block; overflow: hidden; text-overflow: ellipsis; }
+    .status span { color: #798386; font-size: 10px; }
+    .status strong { margin-top: 4px; color: #0e6d60; font: 11px ui-monospace, monospace; white-space: nowrap; }
+    details { border-top: 1px solid #e2e7e5; padding-top: 13px; }
+    summary { cursor: pointer; font-size: 12px; font-weight: 700; }
+    pre {
+      max-height: 380px; overflow: auto; padding: 13px; border-radius: 7px;
+      background: #f7f8f8; font: 11px/1.55 ui-monospace, monospace; white-space: pre-wrap;
+    }
+    @media (max-width: 760px) {
+      body { padding: 20px 14px; }
+      .layout { grid-template-columns: 1fr; }
+      .status { grid-template-columns: repeat(2, 1fr); }
+      .message-bubble { max-width: 90%; }
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <header>
+      <div class="logo">🐾</div>
+      <div><h1>Pawfect Chat Tester</h1><p>Phone + message → FastAPI response</p></div>
+    </header>
+    <section class="panel history-panel">
+      <div class="history-head">
+        <h2>Conversation history</h2>
+        <button class="clear-history" id="clearHistory" type="button">Clear history</button>
+      </div>
+      <div class="history" id="history" aria-live="polite"></div>
+    </section>
+    <div class="layout">
+      <form class="panel" id="chatForm">
+        <h2>Send test message</h2>
+        <label>Phone number
+          <input id="phone" type="tel" value="+60 12-345 6701" required>
+        </label>
+        <label>Message
+          <textarea id="message" required>I want to book grooming for my pet.</textarea>
+        </label>
+        <button id="send" type="submit">Send message</button>
+        <p class="hint" style="margin-top:12px">Endpoint: http://127.0.0.1:8000/chat</p>
+      </form>
+      <section class="panel">
+        <h2>Response</h2>
+        <div class="reply" id="reply">Waiting for a test message.</div>
+        <div class="status">
+          <div><span>Route</span><strong id="route">—</strong></div>
+          <div><span>RAG</span><strong id="rag">—</strong></div>
+          <div><span>Database</span><strong id="database">—</strong></div>
+          <div><span>Tool calling</span><strong id="tools">—</strong></div>
+        </div>
+        <details>
+          <summary>Raw process response</summary>
+          <pre id="raw">No response yet.</pre>
+        </details>
+      </section>
+    </div>
+  </main>
+  <script>
+    const form = document.querySelector("#chatForm");
+    const send = document.querySelector("#send");
+    const reply = document.querySelector("#reply");
+    const phone = document.querySelector("#phone");
+    const message = document.querySelector("#message");
+    const history = document.querySelector("#history");
+    const clearHistory = document.querySelector("#clearHistory");
+    const HISTORY_PREFIX = "pawfect-chat-history:";
+
+    const historyKey = () => `${HISTORY_PREFIX}${phone.value.trim() || "anonymous"}`;
+    const readHistory = () => {
+      try {
+        return JSON.parse(localStorage.getItem(historyKey()) || "[]");
+      } catch {
+        return [];
+      }
+    };
+    const writeHistory = items => localStorage.setItem(historyKey(), JSON.stringify(items.slice(-60)));
+    const escapeHtml = value => String(value ?? "").replace(/[&<>"']/g, character => ({
+      "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#039;"
+    }[character]));
+    const renderHistory = () => {
+      const items = readHistory();
+      history.innerHTML = items.length
+        ? items.map(item => `
+          <div class="message-row ${item.role}">
+            <div class="message-bubble">
+              <small>${item.role === "user" ? "Customer" : "Pawfect AI"}</small>
+              ${escapeHtml(item.text)}
+            </div>
+          </div>
+        `).join("")
+        : '<p class="history-empty">No conversation history for this phone number yet.</p>';
+      history.scrollTop = history.scrollHeight;
+    };
+    const rememberTurn = (customerMessage, assistantReply) => {
+      const items = readHistory();
+      items.push(
+        {role: "user", text: customerMessage},
+        {role: "assistant", text: assistantReply}
+      );
+      writeHistory(items);
+      renderHistory();
+    };
+
+    phone.addEventListener("change", renderHistory);
+    clearHistory.addEventListener("click", () => {
+      localStorage.removeItem(historyKey());
+      renderHistory();
+    });
+
+    form.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const customerMessage = message.value.trim();
+      send.disabled = true;
+      send.textContent = "Sending…";
+      reply.className = "reply";
+      reply.textContent = "Processing request…";
+      try {
+        const response = await fetch("http://127.0.0.1:8000/chat", {
+          method: "POST",
+          headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({
+            phone_number: phone.value.trim(),
+            message: customerMessage
+          })
+        });
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.detail || `HTTP ${response.status}`);
+        const assistantReply = data.reply || "No reply returned.";
+        reply.textContent = assistantReply;
+        rememberTurn(customerMessage, assistantReply);
+        message.value = "";
+        message.focus();
+        document.querySelector("#route").textContent = data.route_result?.route || "—";
+        document.querySelector("#rag").textContent = data.rag_used ? "Used" : "Not used";
+        document.querySelector("#database").textContent = data.database_used ? "Used" : "Not used";
+        const tool = data.database_result?.tool_calling;
+        document.querySelector("#tools").textContent = tool?.used ? (tool.tool_name || `${tool.count || 1} calls`) : "Not used";
+        document.querySelector("#raw").textContent = JSON.stringify(data, null, 2);
+      } catch (error) {
+        reply.className = "reply error";
+        reply.textContent = error.message;
+      } finally {
+        send.disabled = false;
+        send.textContent = "Send message";
+      }
+    });
+    renderHistory();
+  </script>
+</body>
+</html>
