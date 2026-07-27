@@ -25,6 +25,8 @@ DATABASE_ROUTE_SCENARIOS = {
     "CHECK_LOYALTY_POINTS",
     "CHECK_MEMBERSHIP_STATUS",
     "LOYALTY_ACCOUNT_INQUIRY",
+    "CHECK_COUPON_ELIGIBILITY",
+    "GET_BOOKING_SERVICE_OPTIONS",
     "CUSTOMER_GREETING",
     "REPEAT_LAST_BOOKING",
     "CONFIRM_BOOKING",
@@ -91,6 +93,15 @@ def route_intent(intent_json: dict) -> dict:
         return {
             "route": "CALL_DATABASE",
             "reason": "Confirmed booking draft; create booking in Supabase",
+        }
+
+    if scenario_intent == "GET_BOOKING_SERVICE_OPTIONS":
+        return {
+            "route": "CALL_RAG_AND_DATABASE",
+            "reason": (
+                "Service-information chunks provide customer-facing details; "
+                "relational catalogue validates selectable booking values"
+            ),
         }
 
     if scenario_intent in {"CANCEL_BOOKING", "RESCHEDULE_BOOKING", "REDEEM_REWARD", "CREATE_CUSTOMER", "CREATE_PET"}:

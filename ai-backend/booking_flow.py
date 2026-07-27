@@ -428,7 +428,7 @@ def build_missing_field_reply(
     session=None,
     intent_json: dict | None = None,
 ) -> str:
-    """Ask only for the next missing booking field(s)."""
+    """Recommend an easy booking next step and collect related fields together."""
     intent_json = intent_json or {}
     missing = ordered_missing_fields(
         missing,
@@ -450,21 +450,80 @@ def build_missing_field_reply(
             "new_customer_booking_collection"
         ):
             return build_new_customer_booking_entry_reply(session, intent_json)
+        known_pet = str(getattr(session, "pet_name", "") or "").strip()
+        if known_pet:
+            return (
+                f"I can arrange grooming, daycare, or boarding for {known_pet} 😊 "
+                "Send the service you need and your preferred date together, "
+                "and I'll recommend an available time."
+            )
         if intent_json.get("new_service_choice"):
-            return "Which service would you like to book — grooming, daycare, or boarding?"
-        return "Which service would you like to book — grooming, daycare, or boarding?"
+            return (
+                "We can arrange grooming, daycare, or boarding 😊 "
+                "For a quick recommendation, send your pet's name and what care you need."
+            )
+        return (
+            "We can arrange grooming, daycare, or boarding 😊 "
+            "Send your pet's name, the service you need, and your preferred date together, "
+            "and I'll help move the booking forward."
+        )
+
+    if len(missing) > 1:
+        labels = {
+            "customer_name": "your name",
+            "full_name": "your name",
+            "pet_name": "which pet this is for",
+            "pet_type": "whether your pet is a dog or cat",
+            "pet_size_or_height": "your pet's size or height",
+            "preferred_date": "your preferred date",
+            "preferred_time": "a preferred time, if you have one",
+            "service_package": "the package you prefer",
+        }
+        requested = [labels.get(field, field.replace("_", " ")) for field in missing]
+        joined = (
+            " and ".join(requested)
+            if len(requested) == 2
+            else ", ".join(requested[:-1]) + f", and {requested[-1]}"
+        )
+        return (
+            f"I can help arrange that 😊 To move the booking forward, please send these "
+            f"booking details together in one message: {joined}. "
+            "For example: “Milo, grooming, 3 August, morning.”"
+        )
 
     if first == "pet_name":
         return build_pet_name_question(session, intent_json)
 
     if first == "preferred_date":
-        return "What date would you prefer?"
+        return (
+            "Let's find a suitable slot 😊 Send your preferred date and I'll check the "
+            "available times for you."
+        )
 
     if first == "preferred_time":
-        return "What time do you prefer?"
+        return (
+            "If you share your preferred time, I'll match it with the nearest available slot."
+        )
 
     if first == "service_package":
-        return "Which package would you like for this booking — Basic Grooming or Full Grooming?"
+        service = str(
+            (intent_json or {}).get("service_type")
+            or getattr(session, "last_service_type", "")
+            or ""
+        ).strip().upper()
+        options = list(getattr(session, "service_options", []) or [])
+        if options and str(getattr(session, "service_options_for", "") or "").upper() == service:
+            lines = [
+                f"• {item.get('service_name')}"
+                + (f" — {item.get('price_display')}" if item.get("price_display") else "")
+                for item in options[:6]
+            ]
+            return (
+                f"For {service.lower()}, these are the available services:\n\n"
+                + "\n".join(lines)
+                + "\n\nWhich one would you like for the booking?"
+            )
+        return f"Which {service.lower() or 'service'} option would you like for this booking?"
 
     if first == "pet_type" and "pet_size_or_height" in missing[1:]:
         return (
@@ -595,11 +654,15 @@ def build_repeat_or_new_reply(session, intent_json: dict) -> str:
         if sentence:
             sections.append(sentence)
         sections.append(
-            "Would you like the same service again, or would you prefer "
-            "grooming, daycare, or boarding?"
+            "For the quickest booking, I recommend repeating that service. "
+            "Just send your preferred date and I'll check the available times. "
+            "If you'd like something different, you can choose grooming, daycare, or boarding."
         )
     else:
-        sections.append("What would you like to book today: grooming, daycare, or boarding?")
+        sections.append(
+            "We can arrange grooming, daycare, or boarding. Send the service, pet name, "
+            "and preferred date together, and I'll recommend an available slot."
+        )
     return "\n\n".join(sections).strip()
 
 
@@ -608,7 +671,14 @@ def build_new_customer_booking_entry_reply(session, intent_json: dict) -> str:
     if _should_greet_this_turn(session, intent_json):
         sections.append("Hi, welcome to Pawfect 😊")
         mark_greeted(session)
-    sections.extend(["I can help you arrange a booking.", "Would you like grooming, daycare, or boarding?"])
+    sections.extend(
+        [
+            "I can help you arrange a booking.",
+            "Send your pet's name, whether they're a dog or cat, the service you need "
+            "(grooming, daycare, or boarding), and your preferred date together. "
+            "I'll then recommend an available slot.",
+        ]
+    )
     return "\n\n".join(sections).strip()
 
 
@@ -847,6 +917,28 @@ def apply_booking_entry_rules(session, intent_json: dict, user_message: str, con
     del conv_ctx
     updated = copy.deepcopy(intent_json)
     if updated.get("slot_just_accepted"):
+        return updated
+    if updated.get("coupon_eligibility_with_booking"):
+        # Answer the live loyalty/coupon question first. Booking collection
+        # resumes from verified fields after this read-only response.
+        from session_continuation import _extract_service_type, _message_has_date_hint, _message_has_time_hint
+
+        entities = dict(updated.get("entities") or {})
+        if not _message_has_date_hint(user_message):
+            entities.pop("preferred_date", None)
+            session.preferred_date = ""
+            session.collected_entities.pop("preferred_date", None)
+            session.selected_slot = ""
+            session.draft_booking_payload = {}
+        if not _message_has_time_hint(user_message):
+            entities.pop("preferred_time", None)
+            session.preferred_time = ""
+            session.collected_entities.pop("preferred_time", None)
+        updated["entities"] = entities
+        missing = compute_deferred_booking_missing(session, updated, user_message)
+        if not _extract_service_type(user_message) and "service_type" not in missing:
+            missing = ["service_type", *missing]
+        updated["deferred_booking_missing"] = missing
         return updated
     if updated.get("booking_supporting_service_info") or updated.get("booking_service_info_handled"):
         return updated
@@ -1113,7 +1205,7 @@ def compute_booking_missing_fields(
             entities["pet_name"] = session.pet_name
         if not entity_value(entities, "preferred_date"):
             missing.append("preferred_date")
-        if not entity_value(entities, "preferred_time"):
+        if not entity_value(entities, "preferred_time") and not entity_value(entities, "preferred_date"):
             missing.append("preferred_time")
         intent_json["entities"] = entities
         if not skip_session_sync:
@@ -1171,6 +1263,13 @@ def compute_booking_missing_fields(
         ):
             missing.append("pet_size_or_height")
 
+    if (
+        service_upper in {"GROOMING", "DAYCARE", "BOARDING"}
+        and not entity_value(entities, "service_package")
+        and not entity_value(entities, "selected_package")
+    ):
+        missing.append("service_package")
+
     collected = dict(getattr(session, "collected_entities", {}) or {})
     if (
         service_upper == "GROOMING"
@@ -1182,7 +1281,9 @@ def compute_booking_missing_fields(
 
     if not entity_value(entities, "preferred_date"):
         missing.append("preferred_date")
-    if not entity_value(entities, "preferred_time"):
+    # A known date is sufficient to query the whole day. The customer selects
+    # preferred_time from the returned real slots on the next turn.
+    if not entity_value(entities, "preferred_time") and not entity_value(entities, "preferred_date"):
         missing.append("preferred_time")
 
     missing = _filter_completed_missing(session, entities, missing)
@@ -1222,6 +1323,8 @@ def apply_booking_collection_rules(
     updated = copy.deepcopy(intent_json)
     if updated.get("slot_just_accepted"):
         return updated
+    if updated.get("coupon_eligibility_with_booking"):
+        return updated
     if updated.get("standalone_service_info"):
         return updated
     if str(updated.get("scenario_intent") or "").strip() == "SERVICE_INFORMATION":
@@ -1248,6 +1351,22 @@ def apply_booking_collection_rules(
         updated["completed_fields"] = list(getattr(session, "completed_fields", []) or [])
 
     if missing:
+        if (
+            "service_package" in missing
+            and str(getattr(session, "service_options_for", "") or "").upper()
+            != str(updated.get("service_type") or (updated.get("entities") or {}).get("service_type") or "").upper()
+        ):
+            updated["main_intent"] = "BOOKING_INTENT"
+            updated["scenario_intent"] = "GET_BOOKING_SERVICE_OPTIONS"
+            updated["database_action_needed"] = True
+            updated["retrieval_needed"] = True
+            updated["retrieval_source"] = ["service_information"]
+            updated["database_action"] = "get_booking_service_options"
+            updated["next_action"] = "get_booking_service_options"
+            updated["deferred_booking_missing"] = missing
+            updated["missing_information"] = []
+            updated["confidence"] = max(float(updated.get("confidence") or 0.0), 0.95)
+            return updated
         updated["main_intent"] = "BOOKING_INTENT"
         updated["scenario_intent"] = "MAKE_BOOKING"
         updated["database_action_needed"] = False

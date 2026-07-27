@@ -1403,6 +1403,29 @@ def build_enriched_grooming_rag_query(user_message: str, session, intent_json: d
 
 def build_service_info_retrieval_query(user_message: str, intent_json: dict, session=None) -> str:
     scenario = str(intent_json.get("scenario_intent") or "").strip()
+    if scenario == "GET_BOOKING_SERVICE_OPTIONS":
+        entities = dict(intent_json.get("entities") or {})
+        service = str(
+            intent_json.get("service_type") or entities.get("service_type") or ""
+        ).strip().upper()
+        pet_type = str(
+            entities.get("pet_type")
+            or getattr(session, "pet_type", "")
+            or ""
+        ).strip().upper()
+        if service == "DAYCARE":
+            return (
+                "service information daycare Hourly Care Daycare Above 3 Hours "
+                "Splash Pool Session CCA Enrichment Class prices"
+            )
+        if service == "BOARDING":
+            species = "Cat Hotel Price room types capacity price" if pet_type == "CAT" else "Dog Hotel Price room types capacity price"
+            return f"service information boarding {species}"
+        species = "cat" if pet_type == "CAT" else "dog"
+        return (
+            f"service information {species} grooming bathing packages trimming "
+            "Standard Bath Premium Bath Luxury Bath prices"
+        )
     if scenario != "SERVICE_INFORMATION":
         return user_message
     service = str(intent_json.get("service_type") or "").strip().lower()
@@ -1416,6 +1439,76 @@ def build_service_info_retrieval_query(user_message: str, intent_json: dict, ses
         parts.append(f"grooming {package.lower()} price pet size height")
     parts.append(user_message.strip())
     return " ".join(part for part in parts if part)
+
+
+def _policy_size_code(pet_size: str) -> str:
+    """Translate session size labels back to the codes used by policy tables."""
+    token = str(pet_size or "").strip().lower().replace("-", "").replace(" ", "")
+    return {
+        "xs": "XS",
+        "s": "S",
+        "small": "S",
+        "m": "M",
+        "medium": "M",
+        "l": "L",
+        "large": "L",
+        "xl": "XL",
+        "extralarge": "XL",
+        "xxl": "XXL",
+    }.get(token, "")
+
+
+def _height_matches_policy_row(row: str, height_cm: float) -> bool:
+    below = re.search(r"below\s*(\d+(?:\.\d+)?)\s*cm", row, re.I)
+    if below:
+        return height_cm < float(below.group(1))
+    above = re.search(r"above\s*(\d+(?:\.\d+)?)\s*cm", row, re.I)
+    if above:
+        return height_cm > float(above.group(1))
+    between = re.search(
+        r"(\d+(?:\.\d+)?)\s*cm\s*[-–]\s*(\d+(?:\.\d+)?)\s*cm",
+        row,
+        re.I,
+    )
+    if between:
+        return float(between.group(1)) <= height_cm <= float(between.group(2))
+    return False
+
+
+def extract_matching_grooming_price_rows(
+    chunks: list[dict],
+    *,
+    pet_size: str = "",
+    pet_height: str = "",
+) -> list[tuple[str, str]]:
+    """Return exact price rows whose policy band matches this pet."""
+    height_match = re.search(r"(\d+(?:\.\d+)?)", str(pet_height or ""))
+    height_cm = float(height_match.group(1)) if height_match else None
+    size_code = _policy_size_code(pet_size)
+    matches: list[tuple[str, str]] = []
+
+    for chunk in chunks:
+        metadata = dict(chunk.get("metadata") or {})
+        title = str(metadata.get("section_title") or metadata.get("sub_header") or "Grooming")
+        for raw_row in re.split(r"\n\s*\n", str(chunk.get("text") or "")):
+            row = " ".join(raw_row.split()).strip()
+            if not row.lower().startswith("for ") or "RM" not in row:
+                continue
+            matched = (
+                _height_matches_policy_row(row, height_cm)
+                if height_cm is not None
+                else bool(
+                    size_code
+                    and re.match(
+                        rf"for\s+{re.escape(size_code)}(?:\s+size|\s+\d)",
+                        row,
+                        re.I,
+                    )
+                )
+            )
+            if matched:
+                matches.append((title, row))
+    return matches
 
 
 def build_grooming_price_response_plan(
@@ -1479,6 +1572,23 @@ def build_grooming_price_response_plan(
         else:
             sections.append("I don't have that add-on price here yet, but I can help check with the team.")
     else:
+        matched_rows = extract_matching_grooming_price_rows(
+            chunk_list,
+            pet_size=pet_size,
+            pet_height=pet_height,
+        )
+        if matched_rows:
+            type_word = "dog" if pet_type == "DOG" else "cat" if pet_type == "CAT" else "pet"
+            measured = f" at {pet_height}" if pet_height else ""
+            sections.append(
+                f"Based on your {type_word}'s size{measured}, these are the matching policy prices:"
+            )
+            for title, row in matched_rows:
+                sections.append(f"{title}:\n{row}")
+            next_question = (
+                "Which option would you like? Once you choose it, I can continue with the booking."
+            )
+            return {"sections": sections, "next_question": next_question}
         if entity_value(ctx, "add_on_service") == "shaving":
             sections.append("Shaving add-ons are available for grooming.")
         addon_lines = _extract_shaving_addon_prices(body, chunk_list)

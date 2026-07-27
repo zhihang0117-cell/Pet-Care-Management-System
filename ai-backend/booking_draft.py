@@ -330,7 +330,13 @@ def build_booking_confirmed_reply(database_result: dict, session=None) -> str:
         parts.append(f"{service} for {pet_name} has been submitted for review.")
     if booking_date and booking_time:
         parts.append(f"Date: {booking_date}, Time: {booking_time}.")
-    return " ".join(parts).strip()
+    confirmed_reply = " ".join(parts).strip()
+    if session is not None and bool(getattr(session, "new_customer_session", False)):
+        confirmed_reply += (
+            "\n\nWould you like to join Pawfect Membership to start collecting "
+            "loyalty points for future visits? 😊"
+        )
+    return confirmed_reply
 
 
 def build_orphan_confirmation_reply() -> str:

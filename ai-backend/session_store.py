@@ -55,6 +55,8 @@ class SessionContext:
     pet_size: str = ""
     pet_height: str = ""
     service_package: str = ""
+    service_options: list[dict] = field(default_factory=list)
+    service_options_for: str = ""
     selected_package: str = ""
     selected_addons: list[str] = field(default_factory=list)
     add_on_service: str = ""
@@ -81,6 +83,8 @@ class SessionContext:
     missing_fields: list[str] = field(default_factory=list)
     collected_entities: dict[str, str] = field(default_factory=dict)
     customer_pets: list[dict] = field(default_factory=list)
+    customer_context_loaded: bool = False
+    new_customer_session: bool = False
     current_step: str = ""
     completed_fields: list[str] = field(default_factory=list)
     turn_request_id: str = ""
@@ -141,6 +145,8 @@ class SessionContext:
             "pet_size": self.pet_size,
             "pet_height": self.pet_height,
             "service_package": self.service_package,
+            "service_options": list(self.service_options or []),
+            "service_options_for": self.service_options_for,
             "selected_package": self.selected_package,
             "selected_addons": list(self.selected_addons),
             "add_on_service": self.add_on_service,
@@ -164,6 +170,8 @@ class SessionContext:
             "missing_fields": list(self.missing_fields),
             "collected_entities": dict(self.collected_entities),
             "customer_pets": list(self.customer_pets),
+            "customer_context_loaded": self.customer_context_loaded,
+            "new_customer_session": self.new_customer_session,
             "current_step": self.current_step,
             "completed_fields": list(self.completed_fields),
             "turn_request_id": self.turn_request_id,

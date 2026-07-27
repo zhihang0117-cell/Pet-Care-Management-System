@@ -29,10 +29,34 @@ def resolve_customer_at_request_start(
 
     result = lookup_customer_by_phone(phone, customer_id=str(customer_id or "").strip())
     update_session_from_identity(session, result)
+    if str(result.get("status") or "").strip() == "not_found":
+        # Preserve how this conversation started even if a customer record is
+        # created later during the booking flow.
+        session.new_customer_session = True
 
     if str(result.get("status") or "").strip() == "success":
         from pet_profile import enrich_session_pet_profile
 
+        # Re-match the current message against the cached pet collection on
+        # every turn. This is cheap when cached and is necessary when a
+        # multi-pet customer names a different pet later in the conversation.
         enrich_session_pet_profile(session, user_message)
+        if not bool(getattr(session, "customer_context_loaded", False)):
+            from database_service import fetch_latest_booking_for_entry
+
+            latest_booking = fetch_latest_booking_for_entry(session)
+            if str(latest_booking.get("status") or "").strip() == "success":
+                session.last_booking_snapshot = dict(latest_booking.get("data") or {})
+            else:
+                session.last_booking_snapshot = {}
+            session.customer_context_loaded = True
+
+    if str(result.get("status") or "").strip() == "success":
+        enriched = dict(result)
+        data = dict(result.get("data") or {})
+        data["pet_profiles"] = list(getattr(session, "customer_pets", []) or [])
+        data["last_booking"] = dict(getattr(session, "last_booking_snapshot", {}) or {})
+        enriched["data"] = data
+        return enriched
 
     return result

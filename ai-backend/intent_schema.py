@@ -29,6 +29,7 @@ DATABASE_SCENARIOS = {
     "REDEEM_REWARD",
     "CHECK_MEMBERSHIP_STATUS",
     "LOYALTY_ACCOUNT_INQUIRY",
+    "CHECK_COUPON_ELIGIBILITY",
     "CUSTOMER_GREETING",
     "REPEAT_LAST_BOOKING",
     "CANCEL_BOOKING",
@@ -142,6 +143,14 @@ _LOYALTY_MEMBERSHIP_STATUS_SIGNAL = re.compile(
     r"(^|\b)(my\s+)?(tier|member\s*level|membership\s*level|membership\s*status|"
     r"loyalty\s*status|am\s+i\s+(a\s+)?(silver|gold|platinum|bronze)\s+member|"
     r"what\s+member\s+am\s+i|check\s+my\s+membership)(\?|\b)",
+    re.I,
+)
+
+_COUPON_ELIGIBILITY_SIGNAL = re.compile(
+    r"\b(?:coupon|coupons|voucher|vouchers|reward|rewards)\b"
+    r".{0,55}\b(?:redeem|exchange|enough|eligible|afford|points?)\b|"
+    r"\b(?:redeem|exchange|enough|eligible|afford|points?)\b"
+    r".{0,55}\b(?:coupon|coupons|voucher|vouchers|reward|rewards)\b",
     re.I,
 )
 
@@ -363,6 +372,20 @@ def apply_message_pattern_overrides(user_message: str, intent: dict) -> dict:
         result["database_action"] = "check_booking_status"
         result["next_action"] = "check_booking_status"
         result["confidence"] = max(float(result.get("confidence") or 0.0), 0.92)
+        return result
+
+    if _COUPON_ELIGIBILITY_SIGNAL.search(effective_message):
+        with_booking = is_explicit_booking_request(effective_message)
+        result["main_intent"] = "LOYALTY_INTENT"
+        result["scenario_intent"] = "CHECK_COUPON_ELIGIBILITY"
+        result["database_action_needed"] = True
+        result["retrieval_needed"] = False
+        result["retrieval_source"] = []
+        result["database_action"] = "check_coupon_eligibility"
+        result["next_action"] = "check_coupon_eligibility"
+        result["coupon_eligibility_with_booking"] = with_booking
+        result["missing_information"] = []
+        result["confidence"] = max(float(result.get("confidence") or 0.0), 0.97)
         return result
 
     if re.search(r"\buse\s+\d+\s+points?\b", effective_message, re.I):
@@ -642,13 +665,22 @@ def normalize_intent_result(raw_result: dict) -> dict:
         if next_action in ("", "clarify_request", "retrieve_service_info", "retrieve_policy"):
             next_action = "check_booking_status"
 
-    if scenario_intent in {"CHECK_LOYALTY_POINTS", "CHECK_MEMBERSHIP_STATUS", "LOYALTY_ACCOUNT_INQUIRY"}:
+    if scenario_intent in {
+        "CHECK_LOYALTY_POINTS",
+        "CHECK_MEMBERSHIP_STATUS",
+        "LOYALTY_ACCOUNT_INQUIRY",
+        "CHECK_COUPON_ELIGIBILITY",
+    }:
         main_intent = "LOYALTY_INTENT"
         database_action_needed = True
         retrieval_needed = False
         retrieval_source = []
         if not database_action:
-            database_action = "check_loyalty_points"
+            database_action = (
+                "check_coupon_eligibility"
+                if scenario_intent == "CHECK_COUPON_ELIGIBILITY"
+                else "check_loyalty_points"
+            )
 
     if scenario_intent == "CUSTOMER_GREETING":
         main_intent = "GREETING_INTENT"

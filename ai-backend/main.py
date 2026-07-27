@@ -21,6 +21,11 @@ from router import route_intent
 from database_service import execute_database_action, get_database_provider
 from llm_service import detect_intent
 from rag_service import retrieve_rag_context
+from response_data_sanitizer import sanitize_response_data
+from relational_tool_calling import (
+    execute_relational_tool_calls,
+    plan_relational_tool_calls,
+)
 from booking_flow import (
     apply_booking_collection_rules,
     apply_booking_confirmation_safety,
@@ -137,7 +142,7 @@ def _build_chat_error_response(request: ChatRequest, exc: Exception, *, error_id
         "reply": _DEFAULT_HANDOFF_REPLY,
         "customer_id": session.customer_id if session.customer_id is not None else "",
         "phone_number": request_phone,
-        "session_context": session.to_dict(),
+        "session_context": sanitize_response_data(session.to_dict()),
         "database_provider": get_database_provider(),
         "message": request.message,
         "intent_json": {},
@@ -174,7 +179,7 @@ def _build_early_handoff_response(
         "reply": handoff_reply_for_reason(handoff_reason),
         "customer_id": session.customer_id if session.customer_id is not None else "",
         "phone_number": str(request.phone_number or "").strip(),
-        "session_context": session.to_dict(),
+        "session_context": sanitize_response_data(session.to_dict()),
         "database_provider": get_database_provider(),
         "message": request.message,
         "intent_json": intent_json,
@@ -248,6 +253,9 @@ def _process_chat(request: ChatRequest):
 
     intent_result = detect_intent(request.message)
     intent_json = dict(intent_result.get("intent_json") or {})
+    intent_json["_session_greeted_before_turn"] = bool(
+        getattr(session, "greeted_this_session", False)
+    )
     intent_json = apply_message_pattern_overrides(request.message, intent_json)
     intent_json = normalize_intent_result(intent_json)
     llm_provider_used = str(intent_result.get("provider_used") or "unknown")
@@ -320,13 +328,27 @@ def _process_chat(request: ChatRequest):
     elif scenario_intent == "COLLECT_CUSTOMER_NAME" and identity_result.get("status") == "not_found":
         database_result = identity_result
     elif invoke_database:
-        database_result = execute_database_action(
-            intent_json,
+        tool_calls = (
+            []
+            if scenario_intent in {"CHECK_COUPON_ELIGIBILITY", "GET_BOOKING_SERVICE_OPTIONS"}
+            else plan_relational_tool_calls(request.message, intent_json)
+        )
+        database_result = execute_relational_tool_calls(
+            tool_calls,
+            intent_json=intent_json,
             customer_id=request_customer_id,
             phone_number=request_phone,
             session=session,
             user_message=request.message,
         )
+        if not database_result:
+            database_result = execute_database_action(
+                intent_json,
+                customer_id=request_customer_id,
+                phone_number=request_phone,
+                session=session,
+                user_message=request.message,
+            )
 
     if database_result.get("action") == "check_available_slots" and database_result.get("status") == "success":
         session = update_session_from_availability_check(session, intent_json, database_result)
@@ -360,12 +382,16 @@ def _process_chat(request: ChatRequest):
         intent_json["handoff_reason"] = handoff_reason
         route_result = {"route": "HUMAN_HANDOFF", "reason": handoff_reason}
 
+    # Keep staff identifiers available for internal booking/availability work,
+    # but never expose them to the response LLM or the public chat payload.
+    response_database_result = sanitize_response_data(database_result)
+
     final_response_result = generate_final_response(
         user_message=request.message,
         intent_json=intent_json,
         route_result=route_result,
         rag_context=rag_context,
-        database_result=database_result,
+        database_result=response_database_result,
         required_service_type=(rag_debug or {}).get("required_service_type"),
         session=session,
         identity_result=identity_result,
@@ -403,7 +429,7 @@ def _process_chat(request: ChatRequest):
         "reply": reply,
         "customer_id": resolved_customer_id if resolved_customer_id is not None else "",
         "phone_number": request_phone,
-        "session_context": session.to_dict(),
+        "session_context": sanitize_response_data(session.to_dict()),
         "database_provider": get_database_provider(),
         "message": request.message,
         "intent_json": intent_json,
@@ -420,7 +446,7 @@ def _process_chat(request: ChatRequest):
         "rewritten_query": rewritten_query,
         "query_rewrite_used": query_rewrite_used,
         "database_used": database_used,
-        "database_result": database_result,
+        "database_result": response_database_result,
         "identity_result": identity_result,
         "handoff_required": handoff_required,
         "handoff_reason": handoff_reason or "",

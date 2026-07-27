@@ -47,8 +47,7 @@ _TOPIC_SHIFT_PHRASES = re.compile(
 _TIME_HINT = re.compile(
     r"\b("
     r"morning|afternoon|evening|night|noon|"
-    r"\d{1,2}(:\d{2})?\s*(am|pm)|"
-    r"am|pm"
+    r"\d{1,2}(:\d{2})?\s*(am|pm)"
     r")\b",
     re.I,
 )
@@ -70,7 +69,8 @@ def _entity_value(entities: dict, key: str) -> str:
 
 
 def _message_has_time_hint(message: str) -> bool:
-    return bool(_TIME_HINT.search(message or ""))
+    text = str(message or "").strip()
+    return bool(_TIME_HINT.search(text) or re.fullmatch(r"(?:am|pm)", text, re.I))
 
 
 def _message_has_date_hint(message: str) -> bool:
@@ -117,6 +117,38 @@ def extract_fields_from_message(message: str, target_fields: list[str], session=
             value = _extract_service_type(message)
             if value:
                 extracted[field] = value
+        elif field == "service_package":
+            options = list(getattr(session, "service_options", []) or []) if session is not None else []
+            text = str(message or "").strip()
+            selected = None
+            number_match = re.fullmatch(r"(?:option\s*)?(\d+)[.!]?", text, re.I)
+            if number_match:
+                index = int(number_match.group(1)) - 1
+                if 0 <= index < len(options):
+                    selected = options[index]
+            if selected is None:
+                lowered = text.lower()
+                selected = next(
+                    (
+                        option
+                        for option in options
+                        if str(option.get("service_name") or "").strip().lower() in lowered
+                        or lowered
+                        in str(option.get("service_name") or "").strip().lower()
+                    ),
+                    None,
+                )
+            if selected:
+                value = str(selected.get("service_name") or "").strip()
+                if value:
+                    extracted[field] = value
+                    session.service_package = value
+            else:
+                from package_selection import extract_service_package
+
+                value = extract_service_package(text)
+                if value:
+                    extracted[field] = value
         elif field == "pet_name":
             from booking_flow import extract_pet_confirmation, get_customer_pets_for_session
 
@@ -162,8 +194,10 @@ def extract_fields_from_message(message: str, target_fields: list[str], session=
 
 def apply_read_only_entity_rules(intent_json: dict, user_message: str) -> dict:
     """
-    Ensure read-only availability flows collect preferred_time when a date is known
-    but no time was provided (enables multi-turn slot lookup).
+    Normalize read-only availability fields.
+
+    A date is enough to query the day. When no time is supplied the database
+    returns real available slots instead of asking the customer to guess first.
     """
     updated = copy.deepcopy(intent_json)
     scenario = str(updated.get("scenario_intent") or "").strip()
@@ -184,10 +218,8 @@ def apply_read_only_entity_rules(intent_json: dict, user_message: str) -> dict:
         entities["preferred_date"] = _extract_preferred_date(user_message)
 
     has_date = bool(_entity_value(entities, "preferred_date")) or _message_has_date_hint(user_message)
-    has_time = bool(_entity_value(entities, "preferred_time")) or _message_has_time_hint(user_message)
-
-    if has_date and not has_time and "preferred_time" not in missing:
-        missing.append("preferred_time")
+    if has_date:
+        missing = [field for field in missing if field != "preferred_time"]
 
     updated["entities"] = entities
     updated["missing_information"] = missing
@@ -393,6 +425,10 @@ def clear_booking_flow_state(session) -> None:
     session.price_quote = None
     session.preferred_date = ""
     session.preferred_time = ""
+    session.service_options = []
+    session.service_options_for = ""
+    session.service_package = ""
+    session.selected_package = ""
     session.pet_id = None
     session.booking_scenario_snapshot = ""
     session.add_on_service = ""
@@ -766,6 +802,15 @@ def apply_session_continuation(session, user_message: str, intent_json: dict, co
 def handle_session_before_routing(session, user_message: str, intent_json: dict, conv_ctx=None) -> tuple[dict, object]:
     """Apply topic reset, booking confirmation, or pending-action continuation before routing."""
     del conv_ctx
+    if str(intent_json.get("scenario_intent") or "").strip() == "CUSTOMER_GREETING":
+        # A fresh greeting starts a new conversational task. Do not let an
+        # abandoned booking date/time leak into the next request.
+        clear_stale_booking_session_state(session)
+        return intent_json, session
+
+    if intent_json.get("coupon_eligibility_with_booking"):
+        return intent_json, session
+
     if intent_json.get("booking_interruption"):
         return intent_json, session
 
@@ -893,6 +938,33 @@ def update_session_after_turn(
     route = str(route_result.get("route") or "").strip()
     scenario = str(intent_json.get("scenario_intent") or "").strip()
     service_type = str(intent_json.get("service_type") or "UNKNOWN").strip()
+
+    if intent_json.get("coupon_eligibility_with_booking"):
+        missing = list(intent_json.get("deferred_booking_missing") or [])
+        session.booking_creation_flow = True
+        session.pending_action = REPEAT_BOOKING_PENDING_ACTION
+        session.missing_fields = missing
+        session.booking_missing_snapshot = missing
+        entities = dict(intent_json.get("entities") or {})
+        session.collected_entities = merge_collected_entities(session, entities)
+        sync_session_booking_fields(session, session.collected_entities)
+        session.last_intent = "MAKE_BOOKING"
+        session.last_scenario_intent = "MAKE_BOOKING"
+        return session
+
+    if scenario == "GET_BOOKING_SERVICE_OPTIONS":
+        data = dict(database_result.get("data") or {})
+        options = list(data.get("service_options") or [])
+        session.service_options = options
+        session.service_options_for = str(data.get("service_type") or service_type or "").upper()
+        missing = list(intent_json.get("deferred_booking_missing") or ["service_package"])
+        session.booking_creation_flow = True
+        session.pending_action = REPEAT_BOOKING_PENDING_ACTION
+        session.missing_fields = missing
+        session.booking_missing_snapshot = missing
+        session.last_intent = "MAKE_BOOKING"
+        session.last_scenario_intent = "MAKE_BOOKING"
+        return session
 
     if intent_json.get("booking_supporting_service_info") or intent_json.get(
         "booking_supporting_info_needed"

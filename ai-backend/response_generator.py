@@ -247,6 +247,26 @@ def validate_final_reply(
     return re.sub(r"\n{3,}", "\n\n", text).strip()
 
 
+_REPEATED_GREETING_PREFIX = re.compile(
+    r"^\s*(?:hi|hello|hey)"
+    r"(?:\s+[A-Za-z][A-Za-z'.-]*(?:\s+[A-Za-z][A-Za-z'.-]*){0,2})?"
+    r"\s*[,!]\s*(?:😊|👋|🐾)?\s*(?:\n+|\s+)",
+    re.IGNORECASE,
+)
+
+
+def strip_repeated_session_greeting(reply: str, intent_json: dict) -> str:
+    """Remove an LLM-added salutation after this session was already greeted."""
+    text = str(reply or "").strip()
+    if not text:
+        return text
+    if not intent_json.get("_session_greeted_before_turn"):
+        return text
+    if str(intent_json.get("scenario_intent") or "").strip() == "CUSTOMER_GREETING":
+        return text
+    return _REPEATED_GREETING_PREFIX.sub("", text, count=1).strip()
+
+
 def compose_missing_info_reply(next_question: str, *, scenario: str = "", acknowledgement_style: str = "") -> str:
     del scenario, acknowledgement_style
     return strip_fragment_opening(str(next_question or "")).strip()
@@ -292,7 +312,8 @@ def finalize_customer_reply(
 ) -> str:
     del session, user_message, route_result
     apply_response_flags(intent_json)
-    text = strip_unwanted_booking_cta(reply, offer_booking_transition=False)
+    text = strip_repeated_session_greeting(reply, intent_json)
+    text = strip_unwanted_booking_cta(text, offer_booking_transition=False)
     return validate_final_reply(text, intent_json=intent_json)
 
 
@@ -507,11 +528,22 @@ def _format_retrieved_context(
     return "\n\n".join(parts) if parts else "No retrieved information available."
 
 
-def _build_greeting_reply(database_result: dict) -> str:
-    """Fixed WhatsApp greeting templates for CUSTOMER_GREETING (no LLM)."""
+def _build_greeting_reply(database_result: dict, session=None) -> str:
+    """Fixed greeting template that welcomes at most once per session."""
     status = str(database_result.get("status") or "").strip()
     data = database_result.get("data") or {}
     action = str(database_result.get("action") or "").strip()
+    already_greeted = bool(getattr(session, "greeted_this_session", False))
+
+    if already_greeted:
+        if status == "not_found":
+            return "May I have your name so I can continue helping you?"
+        if status == "missing_information":
+            return "May I have your phone number so I can check your account?"
+        return "What can I help you with today?"
+
+    if session is not None:
+        session.greeted_this_session = True
 
     if status == "success" and action == "check_customer_by_phone":
         name = str(data.get("full_name") or data.get("customer_name") or "").strip()
@@ -532,6 +564,89 @@ def _build_greeting_reply(database_result: dict) -> str:
         )
 
     return "Hi, welcome to Pawfect! 😊 How can I help you today?"
+
+
+def _build_coupon_eligibility_reply(
+    database_result: dict,
+    intent_json: dict,
+    session=None,
+) -> str:
+    """Natural, fully grounded coupon answer with an optional booking continuation."""
+    if str(database_result.get("status") or "").strip() != "success":
+        return "I couldn't check your coupon eligibility right now. I'll get our team to assist you."
+
+    data = dict(database_result.get("data") or {})
+    balance = int(data.get("points_balance") or 0)
+    eligible = list(data.get("eligible_coupons") or [])
+    sections = [f"You currently have {balance} loyalty points 😊"]
+
+    if eligible:
+        lines = []
+        for coupon in eligible[:5]:
+            name = str(coupon.get("reward_name") or coupon.get("reward_type") or "Coupon").strip()
+            required = int(coupon.get("points_required") or 0)
+            discount = coupon.get("discount_value")
+            detail = f" — RM{discount} off" if discount not in (None, "") else ""
+            lines.append(f"• {name}: {required} points{detail}")
+        sections.append("You have enough points for:\n\n" + "\n".join(lines))
+    else:
+        next_coupon = data.get("next_coupon") or {}
+        if next_coupon:
+            name = str(
+                next_coupon.get("reward_name") or next_coupon.get("reward_type") or "the next coupon"
+            ).strip()
+            short = int(next_coupon.get("points_short") or 0)
+            required = int(next_coupon.get("points_required") or 0)
+            sections.append(
+                f"You don't have enough points for a coupon yet. "
+                f"{name} requires {required} points, so you need {short} more."
+            )
+        else:
+            sections.append("There aren't any active coupons available for redemption right now.")
+
+    if intent_json.get("coupon_eligibility_with_booking"):
+        from booking_flow import build_missing_field_reply
+
+        missing = list(intent_json.get("deferred_booking_missing") or [])
+        continuation = build_missing_field_reply(missing, session, intent_json)
+        sections.append(
+            "I can also continue with your booking."
+            + (f"\n\n{continuation}" if continuation else "")
+        )
+
+    return "\n\n".join(section for section in sections if section).strip()
+
+
+def _build_booking_service_options_reply(database_result: dict, session=None) -> str:
+    """Present verified service-catalogue choices before booking availability."""
+    if str(database_result.get("status") or "").strip() != "success":
+        return "I couldn't load the service choices right now. I'll get our team to assist you."
+    data = dict(database_result.get("data") or {})
+    service_type = str(data.get("service_type") or "").strip().lower()
+    options = list(data.get("service_options") or [])
+    if not options:
+        return f"I couldn't find active {service_type or 'service'} options right now. I'll get our team to assist you."
+    displayed_options = options if service_type == "boarding" else options[:6]
+    lines = [
+        f"{index}. {item.get('service_name')}"
+        + (f" — {item.get('price_display')}" if item.get("price_display") else "")
+        + (
+            f" · up to {item.get('capacity')} pet"
+            f"{'s' if int(item.get('capacity') or 0) != 1 else ''}"
+            if service_type == "boarding" and item.get("capacity")
+            else ""
+        )
+        for index, item in enumerate(displayed_options, start=1)
+    ]
+    pet_name = str(getattr(session, "pet_name", "") or "").strip()
+    pet_phrase = f" for {pet_name}" if pet_name else ""
+    return (
+        f"For {service_type}{pet_phrase}, these are the available "
+        f"{'room types' if service_type == 'boarding' else 'service options'}:\n\n"
+        + "\n".join(lines)
+        + "\n\nChoose one and send your preferred date in the same message. "
+        "For example: “Option 2, 3 August.”"
+    )
 
 
 def _format_service_type_label(service_type: str) -> str:
@@ -859,7 +974,7 @@ def _build_rule_based_reply(
             )
 
         if scenario_intent == "CUSTOMER_GREETING":
-            return _build_greeting_reply(database_result)
+            return _build_greeting_reply(database_result, session)
 
         if scenario_intent == "REPEAT_LAST_BOOKING":
             return _build_repeat_last_booking_reply(database_result, intent_json)
@@ -1017,7 +1132,7 @@ def generate_final_response(
 
     scenario_intent = str(intent_json.get("scenario_intent") or "").strip()
     if scenario_intent == "CUSTOMER_GREETING":
-        reply = _build_greeting_reply(database_result)
+        reply = _build_greeting_reply(database_result, session)
         return _done(
             reply,
             provider_used="rule_based",
@@ -1188,6 +1303,38 @@ def generate_final_response(
             provider_used="rule_based",
             model_used="booking_draft_confirmation_template",
             provider_logged="booking_draft_confirmation_template",
+        )
+
+    if (
+        scenario_intent == "GET_BOOKING_SERVICE_OPTIONS"
+        and str(database_result.get("action") or "").strip() == "get_booking_service_options"
+        and (
+            not rag_context
+            or (
+                os.getenv("FINAL_RESPONSE_PROVIDER", "").strip().lower()
+                or os.getenv("LLM_PROVIDER", "mock").strip().lower()
+            )
+            != "openai"
+        )
+    ):
+        reply = _build_booking_service_options_reply(database_result, session)
+        return _done(
+            reply,
+            provider_used="rule_based",
+            model_used="booking_service_options_template",
+            provider_logged="booking_service_options_template",
+        )
+
+    if (
+        scenario_intent == "CHECK_COUPON_ELIGIBILITY"
+        and str(database_result.get("action") or "").strip() == "check_coupon_eligibility"
+    ):
+        reply = _build_coupon_eligibility_reply(database_result, intent_json, session)
+        return _done(
+            reply,
+            provider_used="rule_based",
+            model_used="coupon_eligibility_template",
+            provider_logged="coupon_eligibility_template",
         )
 
     if (

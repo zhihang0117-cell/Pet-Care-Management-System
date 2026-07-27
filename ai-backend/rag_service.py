@@ -510,6 +510,73 @@ def _retrieve_rows_via_company_id(
     return [row for _, row in scored_rows[:top_k]]
 
 
+def _retrieve_booking_policy_rows(
+    supabase,
+    table_name: str,
+    company_id: int,
+    intent_json: dict,
+) -> list[dict]:
+    """Fetch the canonical service-information family for booking choices.
+
+    Some older boarding price chunks are tagged ``general`` in metadata, so a
+    pure service_type filter cannot discover them reliably.
+    """
+    scenario = str(intent_json.get("scenario_intent") or "").strip()
+    if scenario not in {"GET_BOOKING_SERVICE_OPTIONS", "SERVICE_INFORMATION"}:
+        return []
+
+    entities = dict(intent_json.get("entities") or {})
+    service = str(
+        intent_json.get("service_type") or entities.get("service_type") or ""
+    ).strip().upper()
+    pet_type = str(entities.get("pet_type") or "").strip().upper()
+
+    if scenario == "SERVICE_INFORMATION" and service != "GROOMING":
+        return []
+
+    if scenario == "SERVICE_INFORMATION" and service == "GROOMING":
+        # Pull the actual species price matrices instead of trusting a generic
+        # vector top-k that often ranks add-on or heading chunks first.
+        chunk_pattern = (
+            "service_information_2_1_%"
+            if pet_type == "CAT"
+            else "service_information_2_2_%"
+        )
+    else:
+        chunk_pattern = {
+        "GROOMING": "service_information_2_%",
+        "DAYCARE": "service_information_3_%",
+        "BOARDING": (
+            "service_information_1_1"
+            if pet_type == "CAT"
+            else "service_information_1_2"
+        ),
+        }.get(service)
+    if not chunk_pattern:
+        return []
+
+    query = (
+        supabase.table(table_name)
+        .select("id, company_id, chunk_id, content, metadata")
+        .eq("company_id", company_id)
+    )
+    if "%" in chunk_pattern:
+        query = query.like("chunk_id", chunk_pattern)
+    else:
+        query = query.eq("chunk_id", chunk_pattern)
+    rows = query.execute().data or []
+
+    normalized_rows: list[dict] = []
+    for row in rows:
+        normalized = dict(row)
+        metadata = dict(normalized.get("metadata") or {})
+        metadata["service_type"] = service.lower()
+        normalized["metadata"] = metadata
+        normalized.setdefault("similarity", 1.0)
+        normalized_rows.append(normalized)
+    return normalized_rows
+
+
 def _map_row_to_chunk(row: dict) -> dict:
     """Map Supabase RPC row to the standard RAG chunk format."""
     row_metadata = row.get("metadata") if isinstance(row.get("metadata"), dict) else {}
@@ -660,9 +727,25 @@ def real_rag_retrieve(
 
     supabase_url = os.getenv("SUPABASE_URL", "").strip()
     supabase_key = os.getenv("SUPABASE_SERVICE_ROLE_KEY", "").strip()
-    rpc_name = os.getenv("RAG_RPC", "match_chunks_bge_m3").strip() or "match_chunks_bge_m3"
-    table_name = os.getenv("RAG_TABLE", "chunks_bge_m3").strip() or "chunks_bge_m3"
+    rpc_name = (
+        os.getenv("RAG_RPC", "match_chunks_bge_large").strip()
+        or "match_chunks_bge_large"
+    )
+    table_name = (
+        os.getenv("RAG_TABLE", "chunks_bge_large").strip()
+        or "chunks_bge_large"
+    )
     top_k = int(os.getenv("RAG_TOP_K", "5"))
+    # Booking option lookup must first collect a wider policy candidate set before
+    # filtering by service metadata.  A generic top-5 can otherwise omit the room
+    # policy chunks even when they exist, then incorrectly fall back to another
+    # service's high-scoring chunk.
+    retrieval_top_k = (
+        max(top_k, 20)
+        if str(intent_json.get("scenario_intent") or "").strip()
+        == "GET_BOOKING_SERVICE_OPTIONS"
+        else top_k
+    )
 
     if not supabase_url or not supabase_key:
         raise ValueError("Supabase credentials are not configured")
@@ -685,7 +768,7 @@ def real_rag_retrieve(
             rpc_name,
             {
                 "query_embedding": query_embedding,
-                "match_count": top_k,
+                "match_count": retrieval_top_k,
                 "filter_tenant": filter_tenant,
                 "filter_metadata": filter_metadata,
             },
@@ -704,12 +787,31 @@ def real_rag_retrieve(
                 table_name,
                 company_id,
                 query_embedding,
-                top_k,
+                retrieval_top_k,
             )
         else:
             raise
 
-    raw_chunks = [_map_row_to_chunk(row) for row in rows if isinstance(row, dict)]
+    policy_rows = _retrieve_booking_policy_rows(
+        supabase, table_name, company_id, intent_json
+    )
+    # When the canonical family exists, keep the final context policy-only.
+    # This prevents operational/veterinary chunks from leaking into a simple
+    # service or room selection response.
+    combined_rows = policy_rows if policy_rows else rows
+    unique_rows: list[dict] = []
+    seen_chunk_ids: set[str] = set()
+    for row in combined_rows:
+        if not isinstance(row, dict):
+            continue
+        chunk_id = str(row.get("chunk_id") or row.get("id") or "")
+        if chunk_id and chunk_id in seen_chunk_ids:
+            continue
+        if chunk_id:
+            seen_chunk_ids.add(chunk_id)
+        unique_rows.append(row)
+
+    raw_chunks = [_map_row_to_chunk(row) for row in unique_rows]
     raw_chunks = [chunk for chunk in raw_chunks if chunk["text"]]
 
     bad_filtered_chunks, removed_bad_chunks, all_bad_chunks_filtered_using_original = (

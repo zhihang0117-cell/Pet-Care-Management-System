@@ -104,7 +104,11 @@ def test_make_booking_collection():
     with patch("booking_flow.get_customer_pets_for_session", return_value=[{"pet_id": 1, "pet_name": "Milo"}]):
         with patch("booking_flow.resolve_pet_id", return_value=1):
             updated = apply_booking_collection_rules(session, intent, "tomorrow at 2pm")
-    assert updated["scenario_intent"] in {"MAKE_BOOKING", "CHECK_AVAILABILITY"}
+    assert updated["scenario_intent"] in {
+        "MAKE_BOOKING",
+        "CHECK_AVAILABILITY",
+        "GET_BOOKING_SERVICE_OPTIONS",
+    }
 
 
 def test_session_stores_field():

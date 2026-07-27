@@ -132,12 +132,32 @@ def build_availability_reply(session, availability_result: dict, intent_json: di
     service_label = service_type.replace("_", " ").title().lower()
     pet_phrase = f" for {pet_name}'s {service_label}" if pet_name else f" for {service_label}"
 
+    if not requested_time:
+        slots = [t for t in (result.get("all_available_slots") or []) if t]
+        if not slots:
+            return (
+                f"I checked {date_text}, but there aren't any available {service_label} "
+                "slots that day. Would another date work for you?"
+            )
+        displayed = [format_time_for_display(slot) for slot in slots[:6]]
+        slot_text = (
+            displayed[0]
+            if len(displayed) == 1
+            else ", ".join(displayed[:-1]) + f", or {displayed[-1]}"
+        )
+        return (
+            f"For {date_text}, the available times{pet_phrase} are {slot_text}.\n\n"
+            f"I recommend {displayed[0]} as the earliest option. "
+            "Reply with that time, or choose another slot above, and I'll prepare the booking."
+        )
+
     if result.get("available") and result.get("matched_slot"):
         start = (result.get("matched_slot") or {}).get("start_time") or requested_time
         display_time = format_time_for_display(start)
         return (
             f"Yes, {display_time} on {date_text} is available{pet_phrase}.\n\n"
-            "Would you like me to use this slot?"
+            f"I recommend securing the {display_time} slot. "
+            "Reply yes and I'll prepare the booking confirmation."
         )
 
     alternatives = [t for t in (result.get("alternative_slots") or []) if t]
@@ -145,7 +165,9 @@ def build_availability_reply(session, availability_result: dict, intent_json: di
         alt_text = " and ".join(format_time_for_display(t) for t in alternatives)
         return (
             f"{time_text} is not available on {date_text}.\n\n"
-            f"The nearest available times are {alt_text}. Which one would you prefer?"
+            f"The nearest available times are {alt_text}. "
+            f"I recommend {format_time_for_display(alternatives[0])}; "
+            "reply with that time and I'll continue the booking."
         )
 
     if not result.get("all_available_slots"):

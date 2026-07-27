@@ -19,6 +19,8 @@ READ_ONLY_SCENARIOS = {
     "CHECK_LOYALTY_POINTS",
     "CHECK_MEMBERSHIP_STATUS",
     "LOYALTY_ACCOUNT_INQUIRY",
+    "CHECK_COUPON_ELIGIBILITY",
+    "GET_BOOKING_SERVICE_OPTIONS",
     "CUSTOMER_GREETING",
     "REPEAT_LAST_BOOKING",
 }
@@ -86,6 +88,8 @@ _LOYALTY_LOOKUP_ACTIONS = frozenset(
         "check_membership_status",
         "check_loyalty_account",
         "get_loyalty_account",
+        "check_coupon_eligibility",
+        "get_booking_service_options",
         "redeem_reward",
     }
 )
@@ -321,6 +325,96 @@ def resolve_customer_context(context: CustomerContext) -> CustomerContext:
 def get_customer_pets(context: CustomerContext) -> dict:
     """Return pets registered to the resolved customer."""
     return get_pets_by_customer_id(context)
+
+
+def get_booking_service_options(context: CustomerContext, service_type: str, pet_type: str = "") -> dict:
+    """Return bookable main services from the company services catalogue."""
+    category = str(service_type or "").strip().upper()
+    pet_kind = str(pet_type or "").strip().upper()
+    if category not in {"GROOMING", "DAYCARE", "BOARDING"}:
+        return _result(
+            "get_booking_service_options",
+            "missing_information",
+            {"missing_fields": ["service_type"]},
+        )
+    try:
+        if category == "BOARDING":
+            room_rows = (
+                get_supabase_client()
+                .table("room")
+                .select("room_id, room_type, capacity, price")
+                .eq("company_id", context.company_id)
+                .execute()
+                .data
+                or []
+            )
+            room_options = [
+                {
+                    "service_id": row.get("room_id"),
+                    "service_name": row.get("room_type"),
+                    "room_type": row.get("room_type"),
+                    "capacity": row.get("capacity"),
+                    "price_display": (
+                        f"RM{row.get('price')}/night"
+                        if row.get("price") not in (None, "")
+                        else None
+                    ),
+                }
+                for row in room_rows
+                if str(row.get("room_type") or "").strip()
+            ]
+            return _result(
+                "get_booking_service_options",
+                "success",
+                {"service_type": category, "service_options": room_options},
+            )
+
+        rows = (
+            get_supabase_client()
+            .table("services")
+            .select("service_id, service_name, price_display")
+            .eq("company_id", context.company_id)
+            .execute()
+            .data
+            or []
+        )
+        options: list[dict] = []
+        for row in rows:
+            name = str(row.get("service_name") or "").strip()
+            lowered = name.lower()
+            if category == "DAYCARE":
+                include = any(
+                    token in lowered
+                    for token in ("daycare", "splash pool", "enrichment class")
+                )
+            else:
+                include = (
+                    lowered.startswith(("standard bath", "premium bath", "luxury bath"))
+                    or lowered in {
+                        "cat trimming packages",
+                        "dog bathing packages",
+                        "dog trimming packages",
+                    }
+                )
+                if pet_kind == "CAT" and lowered.startswith("dog "):
+                    include = False
+                if pet_kind == "DOG" and lowered.startswith("cat "):
+                    include = False
+            if include:
+                options.append(
+                    {
+                        "service_id": row.get("service_id"),
+                        "service_name": name,
+                        "price_display": row.get("price_display"),
+                    }
+                )
+        return _result(
+            "get_booking_service_options",
+            "success",
+            {"service_type": category, "service_options": options},
+        )
+    except Exception as exc:
+        return _result("get_booking_service_options", "error", {}, str(exc))
 
 
 def get_pets_by_customer_id(context: CustomerContext) -> dict:
@@ -847,7 +941,13 @@ def check_available_slots(context: CustomerContext, intent_json: dict) -> dict:
     if service_type not in SERVICE_TYPE_TO_BOOKING_TABLE:
         service_type = "GROOMING"
 
-    preferred_date = _parse_date(entities.get("preferred_date")) or (date.today() + timedelta(days=1))
+    preferred_date = _parse_date(entities.get("preferred_date"))
+    if preferred_date is None:
+        return _result(
+            "check_available_slots",
+            "missing_information",
+            {"missing_fields": ["preferred_date"]},
+        )
     date_str = preferred_date.isoformat()
 
     try:
@@ -1235,7 +1335,12 @@ def create_booking(context: CustomerContext, intent_json: dict) -> dict:
     booking_date = _resolve_booking_date(entities, draft)
     booking_time = _resolve_booking_slot(entities, draft)
     service_name = str(
-        entities.get("package_name") or entities.get("service_name") or draft.get("package_name") or "Full Grooming"
+        entities.get("package_name")
+        or entities.get("service_name")
+        or entities.get("service_package")
+        or draft.get("package_name")
+        or (draft.get("entities") or {}).get("service_package")
+        or service_type.title()
     ).strip()
 
     missing: list[str] = []
@@ -1710,6 +1815,67 @@ def get_loyalty_account(context: CustomerContext) -> dict:
     return loyalty_result
 
 
+def check_coupon_eligibility(context: CustomerContext) -> dict:
+    """Return live loyalty balance plus currently redeemable coupon choices."""
+    loyalty = check_loyalty_points(context)
+    if loyalty.get("status") != "success":
+        return _result(
+            "check_coupon_eligibility",
+            loyalty.get("status", "error"),
+            loyalty.get("data") or {},
+            loyalty.get("error"),
+        )
+
+    loyalty_data = dict(loyalty.get("data") or {})
+    balance = int(loyalty_data.get("points_balance") or 0)
+    try:
+        response = (
+            get_supabase_client()
+            .table("coupon")
+            .select("*")
+            .eq("company_id", context.company_id)
+            .execute()
+        )
+        today = date.today()
+        available: list[dict] = []
+        for row in response.data or []:
+            required = int(row.get("points_required") or 0)
+            expiry = _parse_date(row.get("expiry_date"))
+            if required <= 0 or (expiry is not None and expiry < today):
+                continue
+            available.append(
+                {
+                    "coupon_id": row.get("coupon_id"),
+                    "reward_name": row.get("reward_name"),
+                    "reward_type": row.get("reward_type"),
+                    "points_required": required,
+                    "discount_value": row.get("discount_value")
+                    or row.get("discount_value (RM)")
+                    or row.get("discount_value_rm"),
+                    "expiry_date": row.get("expiry_date"),
+                    "eligible": required <= balance,
+                    "points_short": max(required - balance, 0),
+                }
+            )
+        available.sort(key=lambda item: item["points_required"])
+        eligible = [item for item in available if item["eligible"]]
+        next_coupon = next((item for item in available if not item["eligible"]), None)
+        return _result(
+            "check_coupon_eligibility",
+            "success",
+            {
+                "customer_id": loyalty_data.get("customer_id"),
+                "loyalty_id": loyalty_data.get("loyalty_id"),
+                "points_balance": balance,
+                "tier": loyalty_data.get("tier"),
+                "eligible_coupons": eligible,
+                "next_coupon": next_coupon,
+            },
+        )
+    except Exception as exc:
+        return _result("check_coupon_eligibility", "error", {}, str(exc))
+
+
 def update_loyalty_points(context: CustomerContext, new_balance: int) -> dict:
     resolve_customer_context(context)
     if context.resolved_customer_id is None:
@@ -1953,6 +2119,21 @@ def relational_database_action(intent_json: dict, context: CustomerContext) -> d
         return check_loyalty_points(context)
     if scenario_intent == "LOYALTY_ACCOUNT_INQUIRY":
         return get_loyalty_account(context)
+    if scenario_intent == "CHECK_COUPON_ELIGIBILITY":
+        return check_coupon_eligibility(context)
+    if scenario_intent == "GET_BOOKING_SERVICE_OPTIONS":
+        entities = intent_json.get("entities") or {}
+        return get_booking_service_options(
+            context,
+            str(intent_json.get("service_type") or entities.get("service_type") or ""),
+            str(entities.get("pet_type") or ""),
+        )
+    if scenario_intent == "GET_PET_PROFILES":
+        entities = intent_json.get("entities") or {}
+        pet_name = str(entities.get("pet_name") or "").strip()
+        if pet_name:
+            return get_pet_by_customer_and_name(context, pet_name)
+        return get_pets_by_customer_id(context)
 
     if scenario_intent == "CUSTOMER_GREETING":
         return check_customer_by_phone(context)
