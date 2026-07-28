@@ -48,7 +48,10 @@ class RetrievalRequest:
 def classify_information_type(intent_json: dict, user_message: str = "") -> str:
     scenario = str(intent_json.get("scenario_intent") or "").strip()
     text = str(user_message or "").lower()
-    if str(intent_json.get("supporting_info_type") or "").strip() == "SERVICE_PACKAGE":
+    if str(intent_json.get("supporting_info_type") or "").strip() in {
+        "SERVICE_PACKAGE",
+        "SERVICE_OPTIONS_PREVIEW",
+    }:
         return "PACKAGE_DETAILS"
     if scenario == "CANCELLATION_POLICY" or "cancellation" in text and "policy" in text:
         return "CANCELLATION_POLICY"
@@ -84,7 +87,7 @@ def build_retrieval_request(
     query = str(user_message or "").strip()
     if information_type == "PACKAGE_DETAILS" and str(
         intent_json.get("supporting_info_type") or ""
-    ).strip() == "SERVICE_PACKAGE":
+    ).strip() in {"SERVICE_PACKAGE", "SERVICE_OPTIONS_PREVIEW"}:
         pet_type = str(
             entities.get("pet_type") or intent_json.get("pet_type") or ""
         ).strip()

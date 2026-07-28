@@ -1,6 +1,7 @@
 import { Router } from "express";
 import { supabase } from "../supabaseClient.js";
 import { asyncHandler } from "../middleware/auth.js";
+import { normalizeAvailabilitySettings } from "../lib/availabilitySettings.js";
 
 export const authRouter = Router();
 
@@ -47,6 +48,17 @@ authRouter.post(
         return res.status(400).json({ error: "selected_services contains an unsupported service." });
       }
     }
+    let normalizedAvailability = null;
+    if (settings?.business_hours !== undefined || settings?.closed_dates !== undefined) {
+      if (settings.business_hours === undefined || settings.closed_dates === undefined) {
+        return res.status(400).json({ error: "business_hours and closed_dates must be provided together." });
+      }
+      try {
+        normalizedAvailability = normalizeAvailabilitySettings(settings);
+      } catch (error) {
+        return res.status(400).json({ error: error.message });
+      }
+    }
 
     const normalizedManagerEmail = String(email).trim().toLowerCase();
     const normalizedTeamAccounts = teamAccounts.map((account) => ({
@@ -91,7 +103,9 @@ authRouter.post(
 
       const companyPayload = {};
       if (settings && typeof settings === "object" && !Array.isArray(settings)) {
-        companyPayload.settings_json = settings;
+        companyPayload.settings_json = { ...settings };
+        delete companyPayload.settings_json.business_hours;
+        delete companyPayload.settings_json.closed_dates;
       }
       if (Object.keys(companyPayload).length) {
         const { error: settingsError } = await supabase
@@ -99,6 +113,14 @@ authRouter.post(
           .update(companyPayload)
           .eq("company_id", companyId);
         if (settingsError) throw settingsError;
+      }
+      if (normalizedAvailability) {
+        const { error: availabilityError } = await supabase.rpc("replace_company_availability", {
+          p_company_id: Number(companyId),
+          p_business_hours: normalizedAvailability.businessHours,
+          p_closed_dates: normalizedAvailability.closedDates,
+        });
+        if (availabilityError) throw availabilityError;
       }
 
       for (const account of normalizedTeamAccounts) {

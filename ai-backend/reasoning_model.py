@@ -85,6 +85,19 @@ def _normalize_plan_output(raw: dict) -> dict:
     return normalized
 
 
+def _normalize_grounded_output(raw: dict) -> dict:
+    """Repair harmless JSON-shape drift without turning an action into a claim."""
+    normalized = dict(raw or {})
+    recommendation = dict(normalized.get("recommendation") or {})
+    trigger = recommendation.get("trigger", False)
+    if not isinstance(trigger, bool):
+        # A model occasionally puts an action label in this boolean field.
+        # Treat it as no suggestion; candidate selection remains evidence-guarded.
+        recommendation["trigger"] = False
+    normalized["recommendation"] = recommendation
+    return normalized
+
+
 def reasoning_model_enabled() -> bool:
     from testing_mode import is_testing_mode
 
@@ -153,6 +166,16 @@ Decide what must happen next and return one JSON object matching DecisionPlan:
 Use RAG for tenant-specific policy/service knowledge. Use relational evidence
 for live customer, pet, booking, payment, loyalty, catalogue, capacity, or
 availability facts. Use both only when both are decision-critical.
+
+Operate as a proactive decision-support agent, not a question-answer bot:
+- Never wait for the customer to ask an obvious next question when verified
+  evidence can reduce their decision effort now.
+- Once a service category is known, retrieve and preview the relevant service
+  options while collecting only the remaining decision-critical field.
+- Once a grooming date is known, query live slots immediately; package choice
+  is not a prerequisite for grooming availability.
+- Use profile and conversation memory before asking. Ask at most one
+  high-value next question, and make it concrete rather than "let me know."
 
 Do not select a candidate before tools return. Do not invent facts, IDs,
 policies, prices, availability, preferences, or completed actions.
@@ -381,7 +404,7 @@ def reason_grounded_decision(
             },
             GroundedDecision,
         )
-        decision = GroundedDecision.model_validate(raw)
+        decision = GroundedDecision.model_validate(_normalize_grounded_output(raw))
     except (ValidationError, ValueError, TypeError, json.JSONDecodeError) as exc:
         logger.warning(
             "grounded_decision_fallback type=%s error=%s",

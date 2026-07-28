@@ -1036,12 +1036,24 @@ def handle_session_before_routing(session, user_message: str, intent_json: dict,
             session = finalize_session_slot_selection(session, intent_json)
             updated = copy.deepcopy(intent_json)
             updated["main_intent"] = "BOOKING_INTENT"
-            updated["scenario_intent"] = "MAKE_BOOKING"
-            updated["database_action_needed"] = False
-            updated["database_action"] = ""
-            updated["next_action"] = "await_confirmation"
             updated["slot_just_accepted"] = True
-            updated["missing_information"] = ["confirmation"]
+            if getattr(session, "draft_booking_payload", None):
+                updated["scenario_intent"] = "MAKE_BOOKING"
+                updated["database_action_needed"] = False
+                updated["database_action"] = ""
+                updated["next_action"] = "await_confirmation"
+                updated["missing_information"] = ["confirmation"]
+            else:
+                # Grooming slots do not depend on package choice. After a slot
+                # is accepted, fetch verified package options before confirmation.
+                updated["scenario_intent"] = "GET_BOOKING_SERVICE_OPTIONS"
+                updated["database_action_needed"] = True
+                updated["database_action"] = "get_booking_service_options"
+                updated["retrieval_needed"] = True
+                updated["retrieval_source"] = ["service_information"]
+                updated["next_action"] = "get_booking_service_options"
+                updated["deferred_booking_missing"] = ["service_package"]
+                updated["missing_information"] = []
             updated["confidence"] = max(float(updated.get("confidence") or 0.0), 0.95)
             # Intent classifiers may label a bare "yes" as a generic returning
             # customer booking entry.  Once the active flow has consumed it as

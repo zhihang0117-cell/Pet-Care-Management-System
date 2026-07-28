@@ -499,6 +499,17 @@ def _finalize_reply(
         user_message=user_message,
         route_result=route_result,
     )
+    scenario = str(intent_json.get("scenario_intent") or "").strip().upper()
+    service_type = str(intent_json.get("service_type") or "").strip().upper()
+    if (
+        scenario == "SERVICE_INFORMATION"
+        and service_type in {"", "GENERAL", "UNKNOWN"}
+        and "Which category would you like to explore first" not in finalized
+    ):
+        finalized = (
+            f"{finalized.rstrip()}\n\n"
+            "Which category would you like to explore first—Grooming, Daycare, or Boarding?"
+        )
     normalized = _normalize_whatsapp_formatting(finalized)
     return validate_final_reply(normalized, intent_json=intent_json, session=session)
 
@@ -1359,6 +1370,26 @@ def generate_final_response(
 
     route = str(route_result.get("route") or "").strip()
     if route == "CALL_RAG_THEN_ASK_MISSING_INFO":
+        if str(intent_json.get("supporting_info_type") or "").strip() == "SERVICE_OPTIONS_PREVIEW":
+            from booking_service_info import build_proactive_service_options_preview
+
+            pet_name = str(getattr(session, "pet_name", "") or "").strip()
+            preview = build_proactive_service_options_preview(
+                rag_context,
+                pet_name,
+            )
+            question = (
+                f"What date would you prefer for {pet_name}'s grooming?"
+                if pet_name
+                else "What date would you prefer for the grooming?"
+            )
+            reply = "\n\n".join(part for part in (preview, question) if part)
+            return _done(
+                reply,
+                provider_used="rule_based",
+                model_used="proactive_service_options_preview_template",
+                provider_logged="proactive_service_options_preview_template",
+            )
         reply = _build_rule_based_reply(
             user_message=user_message,
             intent_json=intent_json,
@@ -1595,6 +1626,12 @@ def generate_final_response(
             )
         if availability:
             reply = build_availability_reply(session, availability, intent_json)
+            if intent_json.get("include_service_options_with_availability") and rag_context:
+                from booking_service_info import build_availability_service_options_section
+
+                options_section = build_availability_service_options_section(rag_context)
+                if options_section:
+                    reply = f"{reply}\n\n{options_section}"
         elif str(database_result.get("status") or "").strip() == "success":
             reply = "I couldn't confirm slot availability yet. Would you like to try another time?"
         else:

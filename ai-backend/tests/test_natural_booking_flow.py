@@ -240,6 +240,132 @@ def test_greeting_template_marks_session_and_does_not_greet_again():
     assert "welcome" not in second.lower()
 
 
+def test_package_rag_paragraph_acknowledges_date_and_naturally_continues_booking():
+    from booking_service_info import build_mixed_booking_rag_reply
+
+    session = SessionContext(
+        existing_customer=True,
+        customer_name="Alicia",
+        pet_name="Milo",
+        preferred_date="2026-07-30",
+    )
+    session.greeted_this_session = True
+    rag_text = (
+        "Cat Bathing Packages: The Standard Bath - Groomers Choice package is priced at RM80. "
+        "The Premium Bath - HYPONIC package is priced at RM120. "
+        "The Luxury Bath - DAVIS package is priced at RM160."
+    )
+    reply = build_mixed_booking_rag_reply(
+        rag_text,
+        session,
+        {
+            "supporting_info_type": "SERVICE_PACKAGE",
+            "missing_information": ["service_package"],
+        },
+    )
+
+    assert "I’ve saved 30 July for Milo" in reply
+    assert "• Standard Bath - Groomers Choice: RM80" in reply
+    assert "• Premium Bath - HYPONIC: RM120" in reply
+    assert "Which option feels right for you?" in reply
+    assert "check the available times on 30 July" in reply
+
+
+def test_unstructured_package_rag_still_asks_for_the_missing_package():
+    from booking_service_info import build_mixed_booking_rag_reply
+
+    session = SessionContext(pet_name="Milo", preferred_date="2026-07-30")
+    reply = build_mixed_booking_rag_reply(
+        "We offer several bathing packages with different products.",
+        session,
+        {
+            "supporting_info_type": "SERVICE_PACKAGE",
+            "missing_information": ["service_package"],
+            "scenario_intent": "MAKE_BOOKING",
+        },
+    )
+
+    assert "Which" in reply
+    assert "package" in reply.lower()
+
+
+def test_availability_can_include_verified_grooming_service_types():
+    from booking_service_info import build_availability_service_options_section
+
+    section = build_availability_service_options_section(
+        [
+            {
+                "text": (
+                    "Cat Bathing Packages: The Standard Bath package is priced at RM80. "
+                    "The Premium Bath package is priced at RM120."
+                )
+            }
+        ]
+    )
+
+    assert "For the grooming service itself" in section
+    assert "• Standard Bath: RM80" in section
+    assert "• Premium Bath: RM120" in section
+    assert "time and service option together" in section
+
+
+def test_known_grooming_category_proactively_previews_options_before_date():
+    from booking_service_info import build_proactive_service_options_preview
+
+    preview = build_proactive_service_options_preview(
+        [
+            {
+                "text": (
+                    "The Standard Bath package is priced at RM80. "
+                    "The Premium Bath package is priced at RM120."
+                )
+            }
+        ],
+        "Milo",
+    )
+
+    assert "verified grooming options for Milo" in preview
+    assert "• Standard Bath: RM80" in preview
+    assert "lowest-cost starting point" in preview
+    assert "preferred date first" in preview
+    assert "date and option together" in preview
+
+    from retrieval_request import build_retrieval_request
+
+    request = build_retrieval_request(
+        "I want grooming for Milo",
+        {
+            "service_type": "GROOMING",
+            "supporting_info_type": "SERVICE_OPTIONS_PREVIEW",
+            "entities": {"pet_type": "CAT", "pet_size": "medium"},
+        },
+    )
+    assert request.information_type == "PACKAGE_DETAILS"
+    assert "service packages options" in request.query
+
+
+def test_general_service_question_is_scoped_to_active_booking_category():
+    from main import _scope_service_information_to_active_category
+
+    session = SessionContext(
+        booking_creation_flow=True,
+        last_service_type="GROOMING",
+        collected_entities={"service_type": "GROOMING"},
+    )
+    scoped = _scope_service_information_to_active_category(
+        {
+            "scenario_intent": "SERVICE_INFORMATION",
+            "service_type": "GENERAL",
+            "entities": {},
+        },
+        session,
+    )
+
+    assert scoped["service_type"] == "GROOMING"
+    assert scoped["entities"]["service_type"] == "GROOMING"
+    assert scoped["retrieval_needed"] is True
+
+
 def test_existing_customer_greeting_recommends_verified_latest_booking():
     from response_generator import _build_greeting_reply
 
@@ -610,6 +736,82 @@ def test_daycare_requires_specific_service_before_availability():
     from router import route_intent
 
     assert route_intent(updated)["route"] == "CALL_RAG_AND_DATABASE"
+
+
+def test_grooming_category_can_query_slots_before_package_selection():
+    from booking_flow import apply_booking_collection_rules
+
+    session = SessionContext(
+        existing_customer=True,
+        customer_id=7,
+        pet_name="Milo",
+        pet_id=3,
+        pet_type="CAT",
+        pet_size="medium",
+        booking_creation_flow=True,
+    )
+    intent = {
+        "main_intent": "BOOKING_INTENT",
+        "scenario_intent": "MAKE_BOOKING",
+        "service_type": "GROOMING",
+        "entities": {
+            "service_type": "GROOMING",
+            "pet_name": "Milo",
+            "pet_id": "3",
+            "pet_type": "CAT",
+            "pet_size": "medium",
+            "preferred_date": "2026-08-03",
+        },
+    }
+
+    with patch("booking_flow.resolve_pet_id", return_value=3):
+        updated = apply_booking_collection_rules(
+            session, intent, "Grooming for Milo on 3 August"
+        )
+
+    assert updated["scenario_intent"] == "CHECK_AVAILABILITY"
+    assert updated["database_action"] == "check_availability"
+    assert updated["retrieval_needed"] is False
+    assert "service_package" not in updated["missing_information"]
+
+
+def test_accepted_grooming_slot_collects_package_before_confirmation():
+    from session_store import finalize_session_slot_selection
+
+    session = SessionContext(
+        existing_customer=True,
+        customer_id=7,
+        pet_name="Milo",
+        pet_id=3,
+        pet_type="CAT",
+        pet_size="medium",
+        last_service_type="GROOMING",
+        preferred_date="2026-08-03",
+        availability_result={
+            "available": True,
+            "requested_date": "2026-08-03",
+            "requested_time": "10:00",
+            "matched_slot": {"start_time": "10:00:00"},
+        },
+    )
+    intent = {
+        "service_type": "GROOMING",
+        "entities": {
+            "service_type": "GROOMING",
+            "pet_name": "Milo",
+            "pet_id": "3",
+            "preferred_date": "2026-08-03",
+            "preferred_time": "10:00",
+        },
+    }
+
+    with patch("booking_draft.resolve_pet_id", return_value=3):
+        finalized = finalize_session_slot_selection(session, intent)
+
+    assert finalized.selected_slot == "10:00:00"
+    assert finalized.draft_booking_payload == {}
+    assert finalized.missing_fields == ["service_package"]
+    assert finalized.current_step == "ASK_PACKAGE"
 
 
 def test_booking_service_options_reply_uses_verified_catalogue():

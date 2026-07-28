@@ -402,9 +402,11 @@ def update_session_from_availability_check(
 ) -> SessionContext:
     """Store structured availability result without auto-selecting slot or creating draft."""
     from availability_service import enrich_database_result_with_availability
-    from booking_flow import has_complete_booking_fields
+    from booking_flow import compute_availability_missing_fields
 
-    if not has_complete_booking_fields(session, intent_json):
+    if compute_availability_missing_fields(
+        session, intent_json, skip_session_sync=True
+    ):
         return session
 
     data = database_result.get("data") or {}
@@ -498,6 +500,23 @@ def finalize_session_slot_selection(session: SessionContext, intent_json: dict) 
     session.selected_slot = selected_slot
     session.selected_staff_id = selected_staff_id
     session.price_quote = price_quote
+    selected_package = str(
+        entities.get("service_package")
+        or entities.get("selected_package")
+        or session.service_package
+        or session.selected_package
+        or ""
+    ).strip()
+    if service_type == "GROOMING" and not selected_package:
+        # Slots are category-level for grooming. Preserve the accepted slot,
+        # then collect the package before building a confirmable booking draft.
+        session.draft_booking_payload = {}
+        session.pending_action = REPEAT_BOOKING_PENDING_ACTION
+        session.missing_fields = ["service_package"]
+        session.current_step = "ASK_PACKAGE"
+        session.last_scenario_intent = "MAKE_BOOKING"
+        session.booking_creation_flow = True
+        return session
     session.draft_booking_payload = build_draft_booking_payload(
         service_type=service_type,
         pet_id=pet_id,

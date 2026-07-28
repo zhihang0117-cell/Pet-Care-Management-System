@@ -47,6 +47,7 @@ from booking_flow import (
     apply_booking_confirmation_safety,
     apply_booking_entry_rules,
     compute_booking_missing_fields,
+    compute_availability_missing_fields,
 )
 from booking_service_info import apply_mixed_booking_service_info_rules, apply_standalone_service_info_rules
 from session_continuation import (
@@ -71,6 +72,7 @@ from session_store import (
     update_session_intent,
 )
 from runtime_debug import get_runtime_debug_payload, infer_next_question, log_chat_runtime_state, log_startup_info
+from intent_debug_catalog import build_intent_debug_catalog
 from chat_logging import (
     ChatRequestTrace,
     log_chat_intent,
@@ -93,6 +95,33 @@ _RAG_ROUTES = frozenset(
     {"CALL_KNOWLEDGE_RAG", "CALL_RAG_AND_DATABASE", "CALL_RAG_THEN_ASK_MISSING_INFO"}
 )
 _DATABASE_ROUTES = frozenset({"CALL_DATABASE", "CALL_RAG_AND_DATABASE"})
+
+
+def _scope_service_information_to_active_category(intent_json: dict, session) -> dict:
+    """Resolve a general service follow-up against the active booking category."""
+    scenario = str(intent_json.get("scenario_intent") or "").strip().upper()
+    service_type = str(intent_json.get("service_type") or "").strip().upper()
+    if scenario != "SERVICE_INFORMATION" or service_type not in {"", "GENERAL", "UNKNOWN"}:
+        return intent_json
+    if not bool(getattr(session, "booking_creation_flow", False)):
+        return intent_json
+    collected = dict(getattr(session, "collected_entities", {}) or {})
+    active_category = str(
+        collected.get("service_type")
+        or getattr(session, "last_service_type", "")
+        or ""
+    ).strip().upper()
+    if active_category not in {"GROOMING", "DAYCARE", "BOARDING"}:
+        return intent_json
+    scoped = dict(intent_json)
+    scoped["service_type"] = active_category
+    entities = dict(scoped.get("entities") or {})
+    entities["service_type"] = active_category
+    scoped["entities"] = entities
+    scoped["retrieval_needed"] = True
+    scoped["retrieval_source"] = ["service_information"]
+    scoped["next_action"] = "retrieve_service_info"
+    return scoped
 
 
 @asynccontextmanager
@@ -149,6 +178,16 @@ def debug_clear_session(request: ClearSessionRequest):
 def debug_runtime(phone_number: str = Query(default="")):
     """Local testing only: active process, source path, and session state."""
     return get_runtime_debug_payload(phone_number)
+
+
+@app.get("/debug/intent-catalog")
+def debug_intent_catalog():
+    """Development-only intent, routing, RAG, and tool process catalogue."""
+    from testing_mode import is_testing_mode
+
+    if not is_testing_mode() and os.getenv("ENVIRONMENT_NAME", "development") != "development":
+        return {"status": "forbidden", "error": "debug endpoints disabled"}
+    return build_intent_debug_catalog()
 
 
 _DEFAULT_HANDOFF_REPLY = (
@@ -317,6 +356,7 @@ def _process_chat(request: ChatRequest):
         customer_id=request_customer_id,
     )
     intent_json = apply_session_identity(session, intent_json)
+    intent_json = _scope_service_information_to_active_category(intent_json, session)
     if reasoning_model_enabled():
         pending_flow_snapshot = {}
     else:
@@ -365,6 +405,7 @@ def _process_chat(request: ChatRequest):
     )
     if reasoning_model_enabled():
         intent_json = project_plan_to_intent(decision_plan, intent_json)
+        intent_json = _scope_service_information_to_active_category(intent_json, session)
         intent_json["_session_greeted_before_turn"] = bool(
             getattr(session, "greeted_this_session", False)
         )
@@ -378,7 +419,7 @@ def _process_chat(request: ChatRequest):
             "MAKE_BOOKING",
             "CHECK_AVAILABILITY",
         }:
-            process_missing = compute_booking_missing_fields(
+            process_missing = compute_availability_missing_fields(
                 session,
                 intent_json,
                 request.message,
@@ -388,22 +429,37 @@ def _process_chat(request: ChatRequest):
                 decision_plan.critical_unknowns = list(process_missing)
                 decision_plan.goal_status = GoalStatus.AWAITING_USER
                 package_information_needed = process_missing[0] == "service_package"
+                service_type = str(
+                    intent_json.get("service_type")
+                    or (intent_json.get("entities") or {}).get("service_type")
+                    or ""
+                ).strip().upper()
+                proactive_grooming_preview = (
+                    service_type == "GROOMING"
+                    and process_missing[0] == "preferred_date"
+                )
                 decision_plan.next_action = (
                     NextAction.RETRIEVE_POLICY
-                    if package_information_needed
+                    if package_information_needed or proactive_grooming_preview
                     else NextAction.ASK_CRITICAL_CLARIFICATION
                 )
-                decision_plan.evidence_need.rag = package_information_needed
+                decision_plan.evidence_need.rag = (
+                    package_information_needed or proactive_grooming_preview
+                )
                 decision_plan.evidence_need.relational = False
                 decision_plan.evidence_need.reason = (
                     "Retrieve verified service package information before asking the customer to choose"
                     if package_information_needed
+                    else "Proactively show verified grooming options while collecting the preferred date"
+                    if proactive_grooming_preview
                     else "Complete required booking fields before retrieval or availability checks"
                 )
                 decision_plan.tool_calls = []
                 decision_plan.current_decision = (
                     "present and compare verified service packages"
                     if package_information_needed
+                    else "preview verified grooming options and collect the preferred date"
+                    if proactive_grooming_preview
                     else f"collect required booking field: {process_missing[0]}"
                 )
                 decision_plan.memory_patch.pending_question = process_missing[0]
@@ -413,6 +469,53 @@ def _process_chat(request: ChatRequest):
                     intent_json["booking_supporting_info_needed"] = True
                     intent_json["booking_supporting_service_info"] = True
                     intent_json["supporting_info_type"] = "SERVICE_PACKAGE"
+                elif proactive_grooming_preview:
+                    intent_json["retrieval_needed"] = True
+                    intent_json["retrieval_source"] = ["service_information"]
+                    intent_json["booking_supporting_info_needed"] = True
+                    intent_json["booking_supporting_service_info"] = True
+                    intent_json["supporting_info_type"] = "SERVICE_OPTIONS_PREVIEW"
+            else:
+                # A grooming category plus pet/date is sufficient to query the
+                # whole day's real slots. Do not let a stale model clarification
+                # ask for package or time before using relational availability.
+                decision_plan.critical_unknowns = []
+                decision_plan.goal_status = GoalStatus.AWAITING_EVIDENCE
+                service_type = str(
+                    intent_json.get("service_type")
+                    or (intent_json.get("entities") or {}).get("service_type")
+                    or ""
+                ).strip().upper()
+                include_grooming_options = service_type == "GROOMING"
+                decision_plan.next_action = (
+                    NextAction.RETRIEVE_AND_QUERY
+                    if include_grooming_options
+                    else NextAction.QUERY_RELATIONAL
+                )
+                decision_plan.evidence_need.rag = include_grooming_options
+                decision_plan.evidence_need.relational = True
+                decision_plan.evidence_need.reason = (
+                    "Query live category-level availability and retrieve verified grooming options"
+                    if include_grooming_options
+                    else "Query live category-level availability for the confirmed date"
+                )
+                decision_plan.current_decision = (
+                    "check live availability before collecting optional service details"
+                )
+                decision_plan.memory_patch.pending_question = ""
+                intent_json["scenario_intent"] = "CHECK_AVAILABILITY"
+                intent_json["retrieval_needed"] = include_grooming_options
+                intent_json["retrieval_source"] = (
+                    ["service_information"] if include_grooming_options else []
+                )
+                if include_grooming_options:
+                    intent_json["include_service_options_with_availability"] = True
+                    intent_json["supporting_info_type"] = "SERVICE_PACKAGE"
+                    intent_json["booking_supporting_info_needed"] = True
+                    intent_json["booking_supporting_service_info"] = True
+                intent_json["database_action_needed"] = True
+                intent_json["database_action"] = "check_availability"
+                intent_json["next_action"] = "check_availability"
         session = update_session_intent(session, intent_json)
         route_result = route_intent(intent_json)
     route_result = route_from_plan(

@@ -4,6 +4,10 @@ import mammoth from "mammoth";
 import { supabase } from "../supabaseClient.js";
 import { asyncHandler } from "../middleware/auth.js";
 import { requireManager } from "../middleware/authUser.js";
+import {
+  availabilityAsSettings,
+  normalizeAvailabilitySettings,
+} from "../lib/availabilitySettings.js";
 
 export const companiesRouter = Router();
 
@@ -14,7 +18,6 @@ const MAX_DOCUMENT_BYTES = 10 * 1024 * 1024;
 const DOCUMENT_TYPES = new Set(["policies", "service_information", "business_flow_booking", "veterinary"]);
 const SERVICE_TYPES = new Set(["grooming", "boarding", "daycare", "general"]);
 const DOCX_MIME = "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
-
 function isMissingCompanyDocumentsTable(error) {
   const message = String(error?.message || error || "");
   return error?.code === "PGRST205"
@@ -116,13 +119,25 @@ async function callAiBackend(path, body) {
 companiesRouter.get(
   "/me",
   asyncHandler(async (req, res) => {
-    const { data, error } = await supabase
-      .from("companies")
-      .select("*")
-      .eq("company_id", req.companyId)
-      .single();
+    const [companyResult, hoursResult, datesResult] = await Promise.all([
+      supabase.from("companies").select("*").eq("company_id", req.companyId).single(),
+      supabase.from("company_business_hours").select("day_of_week,open_time,close_time,is_closed")
+        .eq("company_id", req.companyId).order("day_of_week"),
+      supabase.from("company_closed_dates").select("closed_date,reason")
+        .eq("company_id", req.companyId).order("closed_date"),
+    ]);
+    const { data, error } = companyResult;
     if (error) return res.status(400).json({ error: error.message });
-    res.json(data);
+    if (hoursResult.error || datesResult.error) {
+      return res.status(503).json({
+        error: "Availability tables are not configured. Apply backend/sql/company_availability_settings_migration.sql.",
+      });
+    }
+    const availability = availabilityAsSettings(hoursResult.data, datesResult.data);
+    res.json({
+      ...data,
+      settings_json: { ...(data.settings_json || {}), ...availability },
+    });
   })
 );
 
@@ -481,6 +496,19 @@ companiesRouter.patch(
           return res.status(400).json({ error: "selected_services contains an unsupported service." });
         }
       }
+      let normalizedAvailability = null;
+      const hasAvailability = req.body.settings.business_hours !== undefined
+        || req.body.settings.closed_dates !== undefined;
+      if (hasAvailability) {
+        if (req.body.settings.business_hours === undefined || req.body.settings.closed_dates === undefined) {
+          return res.status(400).json({ error: "business_hours and closed_dates must be saved together." });
+        }
+        try {
+          normalizedAvailability = normalizeAvailabilitySettings(req.body.settings);
+        } catch (error) {
+          return res.status(400).json({ error: error.message });
+        }
+      }
       const { data: current, error: fetchError } = await supabase
         .from("companies")
         .select("settings_json")
@@ -492,7 +520,23 @@ companiesRouter.patch(
       // Uploaded document state belongs exclusively to company_documents.
       // Remove the retired duplicate filename map on every settings write.
       delete nextSettings.policies;
+      // Availability has normalized relational tables as its sole source of truth.
+      delete nextSettings.business_hours;
+      delete nextSettings.closed_dates;
       payload.settings_json = nextSettings;
+
+      if (normalizedAvailability) {
+        const { error: availabilityError } = await supabase.rpc("replace_company_availability", {
+          p_company_id: Number(req.companyId),
+          p_business_hours: normalizedAvailability.businessHours,
+          p_closed_dates: normalizedAvailability.closedDates,
+        });
+        if (availabilityError) {
+          return res.status(503).json({
+            error: `Could not save availability settings: ${availabilityError.message}`,
+          });
+        }
+      }
     }
 
     if (Object.keys(payload).length === 0) {
@@ -506,6 +550,16 @@ companiesRouter.patch(
       .select()
       .single();
     if (error) return res.status(400).json({ error: error.message });
-    res.json(data);
+    const [hoursResult, datesResult] = await Promise.all([
+      supabase.from("company_business_hours").select("day_of_week,open_time,close_time,is_closed")
+        .eq("company_id", req.companyId).order("day_of_week"),
+      supabase.from("company_closed_dates").select("closed_date,reason")
+        .eq("company_id", req.companyId).order("closed_date"),
+    ]);
+    const availability = availabilityAsSettings(hoursResult.data, datesResult.data);
+    res.json({
+      ...data,
+      settings_json: { ...(data.settings_json || {}), ...availability },
+    });
   })
 );

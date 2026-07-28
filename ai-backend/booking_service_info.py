@@ -38,6 +38,68 @@ class ServiceInfoObservation:
     intent_patch: dict = field(default_factory=dict)
     service_info_requested: bool = False
     requested_service: str = ""
+
+
+def extract_verified_package_rows(text: str) -> list[tuple[str, str]]:
+    """Extract package label/price pairs from paragraph or multi-line RAG text."""
+    rows = re.findall(
+        r"\bThe\s+(.+?)\s+package\s+is\s+priced\s+at\s+"
+        r"(RM\s*\d+(?:\.\d{1,2})?)",
+        str(text or ""),
+        re.I,
+    )
+    return [
+        (label.strip(" .:-"), re.sub(r"\s+", "", price.upper()))
+        for label, price in rows
+    ]
+
+
+def build_availability_service_options_section(rag_chunks: list[dict]) -> str:
+    """Build a compact evidence-grounded option section to accompany slots."""
+    combined = "\n\n".join(
+        str(chunk.get("text") or "").strip()
+        for chunk in rag_chunks or []
+        if str(chunk.get("text") or "").strip()
+    )
+    rows = extract_verified_package_rows(combined)
+    if not rows:
+        return ""
+    lines = ["For the grooming service itself, these verified options are available:"]
+    lines.extend(f"• {label}: {price}" for label, price in rows)
+    first_label, first_price = rows[0]
+    lines.extend(
+        [
+            "",
+            f"{first_label} at {first_price} is the lowest-cost starting point.",
+            "You can choose the time first, or send the time and service option together.",
+        ]
+    )
+    return "\n".join(lines)
+
+
+def build_proactive_service_options_preview(rag_chunks: list[dict], pet_name: str = "") -> str:
+    """Preview verified options as soon as a booking category is known."""
+    combined = "\n\n".join(
+        str(chunk.get("text") or "").strip()
+        for chunk in rag_chunks or []
+        if str(chunk.get("text") or "").strip()
+    )
+    rows = extract_verified_package_rows(combined)
+    if not rows:
+        return ""
+    subject = f" for {pet_name}" if str(pet_name or "").strip() else ""
+    lines = [f"Here are the verified grooming options{subject}:"]
+    lines.extend(f"• {label}: {price}" for label, price in rows)
+    first_label, first_price = rows[0]
+    lines.extend(
+        [
+            "",
+            f"{first_label} at {first_price} is the lowest-cost starting point.",
+            "You don’t need to decide yet—you can send the preferred date first, "
+            "or send the date and option together.",
+        ]
+    )
+    return "\n".join(lines)
     requested_package: str | None = None
     required_fact_types: list[str] = field(default_factory=list)
     resume_booking_after_answer: bool = False
@@ -754,22 +816,18 @@ def build_mixed_booking_rag_reply(rag_text: str, session, intent_json: dict) -> 
         sections.append(f"Hi {name}, welcome back to Pawfect! 😊")
 
     body = str(rag_text or "").strip()
+    package_rows: list[tuple[str, str]] = []
     if (
         body
         and str(intent_json.get("supporting_info_type") or "").strip()
         == "SERVICE_PACKAGE"
     ):
-        package_rows = re.findall(
-            r"(?:^|\n)\s*The\s+([^\n]+?)\s+package\s+is\s+priced\s+at\s+"
-            r"(RM\s*\d+(?:\.\d{1,2})?)",
-            body,
-            re.I | re.M,
-        )
+        # RAG chunks may be a paragraph ("Packages: The Standard... The
+        # Premium...") or one option per line. Do not tie extraction to line
+        # boundaries or a particular chunk formatter.
+        package_rows = extract_verified_package_rows(body)
         if package_rows:
-            normalized_rows = [
-                (label.strip(" .:-"), re.sub(r"\s+", "", price.upper()))
-                for label, price in package_rows
-            ]
+            normalized_rows = package_rows
             option_lines = [
                 f"• {label}: {price}" for label, price in normalized_rows
             ]
@@ -786,13 +844,29 @@ def build_mixed_booking_rag_reply(rag_text: str, session, intent_json: dict) -> 
             saved_date = str(getattr(session, "preferred_date", "") or "").strip()
             saved_time = str(getattr(session, "preferred_time", "") or "").strip()
             pet_name = str(getattr(session, "pet_name", "") or "").strip()
+            acknowledged = ""
+            date_label = saved_date or "your preferred date"
+            if saved_date:
+                try:
+                    from datetime import date
+
+                    parsed_date = date.fromisoformat(saved_date)
+                    date_label = f"{parsed_date.day} {parsed_date.strftime('%B')}"
+                    acknowledged = (
+                        f"I’ve saved {date_label} for "
+                        f"{pet_name or 'your pet'}."
+                    )
+                except ValueError:
+                    acknowledged = f"I’ve saved {saved_date} for {pet_name or 'your pet'}."
             next_step = (
-                f"Reply with {', '.join(label for label, _price in normalized_rows)}. "
-                f"I'll then check the saved {saved_date or 'preferred date'}"
-                f"{f' {saved_time}' if saved_time else ''} availability."
+                "Which option feels right for you? Once you choose, "
+                f"I’ll check the available times on {date_label}"
+                f"{f' around {saved_time}' if saved_time else ''}."
             )
             body = "\n".join(
                 [
+                    acknowledged,
+                    "",
                     (
                         f"For {pet_name}, these verified options are available:"
                         if pet_name
@@ -808,13 +882,19 @@ def build_mixed_booking_rag_reply(rag_text: str, session, intent_json: dict) -> 
     if body:
         sections.append(body)
 
-    continuation = (
-        ""
-        if str(intent_json.get("supporting_info_type") or "").strip()
-        == "SERVICE_PACKAGE"
-        and body
-        else build_booking_continuation_prompt(session, intent_json).strip()
-    )
+    service_package_body_was_structured = bool(package_rows) if (
+        str(intent_json.get("supporting_info_type") or "").strip() == "SERVICE_PACKAGE"
+    ) else False
+    if service_package_body_was_structured:
+        continuation = ""
+    elif str(intent_json.get("supporting_info_type") or "").strip() == "SERVICE_PACKAGE":
+        from booking_flow import build_missing_field_reply
+
+        continuation = build_missing_field_reply(
+            ["service_package"], session, intent_json
+        ).strip()
+    else:
+        continuation = build_booking_continuation_prompt(session, intent_json).strip()
     if continuation:
         sections.append(continuation)
     return "\n\n".join(sections).strip()

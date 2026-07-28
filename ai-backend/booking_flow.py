@@ -1329,6 +1329,41 @@ def compute_deferred_booking_missing(session, intent_json: dict, user_message: s
     )
 
 
+def compute_availability_missing_fields(
+    session,
+    intent_json: dict,
+    user_message: str = "",
+    *,
+    skip_session_sync: bool = False,
+) -> list[str]:
+    """Fields needed to query slots, which are not always full booking fields.
+
+    Grooming capacity is scheduled at category level, so a customer may see
+    real slots before choosing a specific package. Daycare and boarding retain
+    their option requirements because those choices can affect capacity.
+    """
+    missing = compute_booking_missing_fields(
+        session,
+        intent_json,
+        user_message,
+        skip_session_sync=skip_session_sync,
+    )
+    entities = dict(intent_json.get("entities") or {})
+    service_type = str(
+        intent_json.get("service_type")
+        or entities.get("service_type")
+        or getattr(session, "last_service_type", "")
+        or ""
+    ).strip().upper()
+    if service_type == "GROOMING":
+        missing = [field for field in missing if field != "service_package"]
+        if not skip_session_sync:
+            session.missing_fields = list(missing)
+            update_booking_progress(session, entities, missing)
+        intent_json["missing_information"] = list(missing)
+    return missing
+
+
 def has_complete_booking_fields(session, intent_json: dict, user_message: str = "") -> bool:
     probe = copy.deepcopy(intent_json)
     return not compute_booking_missing_fields(session, probe, user_message, skip_session_sync=True)
@@ -1365,7 +1400,7 @@ def apply_booking_collection_rules(
     if not is_booking_collection_active(session, updated):
         return updated
 
-    missing = compute_booking_missing_fields(session, updated, user_message)
+    missing = compute_availability_missing_fields(session, updated, user_message)
     updated["missing_information"] = missing
     if not session.existing_customer and session.booking_creation_flow:
         updated["new_customer_booking_collection"] = True

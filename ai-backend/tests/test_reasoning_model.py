@@ -175,3 +175,40 @@ def test_user_relative_date_overrides_model_supplied_past_date():
     expected_days = (4 - date.today().weekday()) % 7 or 7
     expected = date.fromordinal(date.today().toordinal() + expected_days).isoformat()
     assert calls[0]["arguments"]["preferred_date"] == expected
+
+
+def test_post_tool_model_action_label_in_trigger_does_not_force_full_fallback():
+    plan = _fallback_plan()
+    validation = EvidenceValidation(valid=True, evidence_ids=["rag:packages"])
+    deterministic = GroundedDecision(
+        goal_status=GoalStatus.AWAITING_USER,
+        evidence_ids=["rag:packages"],
+        next_action=NextAction.ASK_CRITICAL_CLARIFICATION,
+    )
+    model_output = {
+        "goal_status": "awaiting_user",
+        "valid_candidate_ids": [],
+        "evidence_ids": ["rag:packages"],
+        "recommendation": {
+            "trigger": "suggest_service_package",
+            "selected_candidate_id": None,
+            "decisive_factors": [],
+            "trade_offs": [],
+        },
+        "next_action": "ASK_CRITICAL_CLARIFICATION",
+    }
+
+    with (
+        patch("reasoning_model.reasoning_model_enabled", return_value=True),
+        patch("reasoning_model._json_completion", return_value=model_output),
+    ):
+        decision = reason_grounded_decision(
+            plan=plan,
+            validation=validation,
+            deterministic_candidate_decision=deterministic,
+            rag_context=[],
+            database_result={},
+        )
+
+    assert decision.recommendation.trigger is False
+    assert decision.evidence_ids == ["rag:packages"]
