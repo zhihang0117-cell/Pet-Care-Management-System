@@ -55,6 +55,16 @@ def test_customer_identity_preloads_pets_and_latest_booking_once():
         "get_pet_profiles",
         "get_latest_booking",
     ]
+    assert first["tool_calling"]["used"] is True
+    assert first["tool_calling"]["tool_names"] == [
+        "get_customer_profile",
+        "get_pet_profiles",
+        "get_latest_booking",
+    ]
+    assert second["tool_calling"]["tool_names"] == [
+        "get_customer_profile",
+        "get_pet_profiles",
+    ]
 
 
 def test_booking_date_without_time_queries_availability_instead_of_asking_time():
@@ -113,7 +123,7 @@ def test_date_only_availability_reply_offers_real_slots():
     assert "9:00 AM" in reply
     assert "11:00 AM" in reply
     assert "2:00 PM" in reply
-    assert "I recommend 9:00 AM" in reply
+    assert "9:00 AM is the earliest option" in reply
     assert "prepare the booking" in reply
 
 
@@ -143,7 +153,7 @@ def test_repeat_booking_recommends_fast_path_to_booking():
 
     reply = build_repeat_or_new_reply(session, {})
 
-    assert "recommend repeating" in reply
+    assert "you can repeat" in reply
     assert "preferred date" in reply
     assert "available times" in reply
 
@@ -158,7 +168,7 @@ def test_exact_available_slot_guides_customer_to_confirmation():
 
     reply = build_availability_reply(SessionContext(), result, {"service_type": "DAYCARE"})
 
-    assert "recommend securing" in reply
+    assert "slot is ready to secure" in reply
     assert "Reply yes" in reply
     assert "booking confirmation" in reply
 
@@ -228,6 +238,65 @@ def test_greeting_template_marks_session_and_does_not_greet_again():
     assert session.greeted_this_session is True
     assert "Hi" not in second
     assert "welcome" not in second.lower()
+
+
+def test_existing_customer_greeting_recommends_verified_latest_booking():
+    from response_generator import _build_greeting_reply
+
+    session = SessionContext(existing_customer=True, customer_name="Alicia")
+    result = {
+        "action": "check_customer_by_phone",
+        "status": "success",
+        "data": {
+            "full_name": "Alicia",
+            "latest_booking": {
+                "booking_id": "B101",
+                "service_type": "GROOMING",
+                "pet_name": "Milo",
+            },
+        },
+    }
+
+    reply = _build_greeting_reply(result, session)
+
+    assert "last booking was grooming for Milo" in reply
+    assert "you can repeat it" in reply
+    assert "recommend" not in reply.lower()
+
+
+def test_existing_customer_greeting_accepts_identity_last_booking_shape():
+    from response_generator import _build_greeting_reply
+
+    session = SessionContext(existing_customer=True, customer_name="Alicia")
+    result = {
+        "action": "check_customer_by_phone",
+        "status": "success",
+        "data": {
+            "full_name": "Alicia",
+            "last_booking": {
+                "booking_id": 182,
+                "last_service_type": "DAYCARE",
+                "pet_name": "Milo",
+            },
+        },
+    }
+
+    reply = _build_greeting_reply(result, session)
+
+    assert "last booking was daycare for Milo" in reply
+    assert "you can repeat it" in reply
+    assert "recommend" not in reply.lower()
+
+
+def test_customer_reply_removes_explicit_recommendation_label():
+    from response_generator import _remove_explicit_recommendation_labels
+
+    reply = _remove_explicit_recommendation_labels(
+        "I recommend 9:00 AM because it is the earliest verified slot."
+    )
+
+    assert reply == "9:00 AM because it is the earliest verified slot."
+    assert "recommend" not in reply.lower()
 
 
 def test_new_customer_name_follow_up_does_not_repeat_welcome():
@@ -834,7 +903,7 @@ def test_existing_customer_with_multiple_pets_gets_natural_named_choice():
     )
 
     assert "Would you like to make the booking for Milo or Coco?" in reply
-    assert "I'd recommend Milo" in reply
+    assert "Milo is the quickest option" in reply
     assert "provide your pet's name" not in reply
     assert "• Milo" not in reply
 

@@ -64,7 +64,11 @@ def _single_llm_intent_result(user_message: str) -> dict | None:
     }
 
 
-def detect_intent(user_message: str) -> dict:
+def detect_intent(
+    user_message: str,
+    conversation_state: dict | None = None,
+    conversation_history: list[dict] | None = None,
+) -> dict:
     """
     Detect customer intent using configured LLM provider with safe mock fallback.
 
@@ -82,13 +86,11 @@ def detect_intent(user_message: str) -> dict:
     provider = os.getenv("LLM_PROVIDER", "mock").strip().lower()
 
     if provider == "openai":
-        single_llm_result = _single_llm_intent_result(user_message)
-        if single_llm_result is not None:
-            return single_llm_result
-
         api_key = os.getenv("OPENAI_API_KEY", "").strip()
         if not api_key:
-            if should_reraise_on_error():
+            from testing_mode import is_testing_mode
+
+            if should_reraise_on_error() or not is_testing_mode():
                 raise ValueError("OPENAI_API_KEY is not set for evaluation run")
             return {
                 "intent_json": mock_llm_intent_detection(user_message),
@@ -101,7 +103,14 @@ def detect_intent(user_message: str) -> dict:
         try:
             from real_llm import real_llm_intent_detection
 
-            result = real_llm_intent_detection(user_message)
+            if conversation_state is None and conversation_history is None:
+                result = real_llm_intent_detection(user_message)
+            else:
+                result = real_llm_intent_detection(
+                    user_message,
+                    conversation_state=conversation_state,
+                    conversation_history=conversation_history,
+                )
             return {
                 "intent_json": result["intent_json"],
                 "provider_used": "openai",
@@ -118,9 +127,13 @@ def detect_intent(user_message: str) -> dict:
                     log_llm_api_error(api_error)
                     raise api_error from exc
                 raise
+            from testing_mode import is_testing_mode
+
+            if not is_testing_mode():
+                raise
             return {
                 "intent_json": mock_llm_intent_detection(user_message),
-                "provider_used": "mock",
+                "provider_used": "mock_testing_fallback",
                 "query_json_model_used": "mock",
                 "query_json_provider_used": "mock",
                 "query_json_base_url_used": "",

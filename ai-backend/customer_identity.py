@@ -19,6 +19,7 @@ def resolve_customer_at_request_start(
 ) -> dict:
     """Look up customer by phone, load pets, and merge into session before intent processing."""
     phone = str(phone_number or "").strip()
+    context_was_loaded = bool(getattr(session, "customer_context_loaded", False))
     if not phone:
         return {
             "action": "check_customer_by_phone",
@@ -86,6 +87,26 @@ def resolve_customer_at_request_start(
             ],
         }
         enriched["data"] = data
+        tool_names = ["get_customer_profile", "get_pet_profiles"]
+        if not context_was_loaded:
+            tool_names.append("get_latest_booking")
+        enriched["tool_calling"] = {
+            "used": True,
+            "count": len(tool_names),
+            "source": "identity_context",
+            "tool_names": tool_names,
+            "calls": [
+                {
+                    "tool_name": tool_name,
+                    "status": (
+                        latest_booking_status
+                        if tool_name == "get_latest_booking"
+                        else "success"
+                    ),
+                }
+                for tool_name in tool_names
+            ],
+        }
         return enriched
 
     return result

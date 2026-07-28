@@ -169,6 +169,10 @@ def _provision_new_booking_customer(
 def fetch_latest_booking_for_entry(session) -> dict:
     customer_id = getattr(session, "customer_id", None)
     phone = str(getattr(session, "phone_number", "") or "").strip()
+    if get_database_provider() == "mock":
+        from mock_database import mock_get_latest_booking_by_customer_id
+
+        return mock_get_latest_booking_by_customer_id(customer_id, phone)
     context = CustomerContext(phone_number=phone)
     if customer_id is not None:
         context.resolved_customer_id = int(customer_id)

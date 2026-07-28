@@ -137,7 +137,7 @@ def test_confirmed_new_customer_booking_provisions_customer_and_pet():
     assert payload["_draft_booking"]["pet_id"] == 92
 
 
-def test_high_confidence_intent_skips_remote_llm(monkeypatch):
+def test_production_openai_intent_does_not_use_keyword_shortcut(monkeypatch):
     import llm_service
 
     monkeypatch.setenv("LLM_PROVIDER", "openai")
@@ -145,13 +145,21 @@ def test_high_confidence_intent_skips_remote_llm(monkeypatch):
     monkeypatch.setenv("TESTING", "false")
     monkeypatch.delenv("_EVAL_OVERRIDE_ACTIVE", raising=False)
 
-    with patch(
-        "real_llm.real_llm_intent_detection",
-        side_effect=AssertionError("remote intent LLM must not be called"),
-    ):
+    model_result = {
+        "intent_json": {
+            "main_intent": "BOOKING_INTENT",
+            "scenario_intent": "MAKE_BOOKING",
+            "confidence": 0.95,
+        },
+        "model_used": "reasoning-model",
+        "provider_used": "openai",
+        "base_url_used": "",
+    }
+    with patch("real_llm.real_llm_intent_detection", return_value=model_result) as call:
         result = llm_service.detect_intent("I want to make a grooming booking")
 
-    assert result["provider_used"] == "deterministic"
+    call.assert_called_once()
+    assert result["provider_used"] == "openai"
     assert result["intent_json"]["scenario_intent"] == "MAKE_BOOKING"
 
 

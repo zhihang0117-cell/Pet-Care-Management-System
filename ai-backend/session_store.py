@@ -97,6 +97,9 @@ class SessionContext:
     resume_after_response: bool = False
     interruption_type: str = ""
     interruption_depth: int = 0
+    decision_state: dict = field(default_factory=dict)
+    reasoning_memory: dict = field(default_factory=dict)
+    recent_messages: list[dict] = field(default_factory=list)
     _runtime_guard: bool = field(default=False, repr=False)
     _allow_projection_write: bool = field(default=False, repr=False)
 
@@ -182,6 +185,9 @@ class SessionContext:
             "resume_after_response": self.resume_after_response,
             "interruption_type": self.interruption_type,
             "interruption_depth": self.interruption_depth,
+            "decision_state": dict(self.decision_state or {}),
+            "reasoning_memory": dict(self.reasoning_memory or {}),
+            "recent_messages": list(self.recent_messages or []),
         }
 
 

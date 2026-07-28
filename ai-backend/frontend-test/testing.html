@@ -249,7 +249,9 @@
         document.querySelector("#rag").textContent = data.rag_used ? "Used" : "Not used";
         document.querySelector("#database").textContent = data.database_used ? "Used" : "Not used";
         const tool = data.database_result?.tool_calling;
-        document.querySelector("#tools").textContent = tool?.used ? (tool.tool_name || `${tool.count || 1} calls`) : "Not used";
+        document.querySelector("#tools").textContent = tool?.used
+          ? ((tool.tool_names || []).join(", ") || tool.tool_name || `${tool.count || 1} calls`)
+          : "Not used";
         document.querySelector("#raw").textContent = JSON.stringify(data, null, 2);
       } catch (error) {
         reply.className = "reply error";

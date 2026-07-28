@@ -899,10 +899,13 @@ def retrieve_rag_context(user_message: str, intent_json: dict, route: str, sessi
         }
 
     from booking_service_info import build_service_info_retrieval_query
+    from retrieval_request import build_retrieval_request
 
-    retrieval_query = build_service_info_retrieval_query(
+    service_info_query = build_service_info_retrieval_query(
         user_message, intent_json, session=session
     )
+    structured_request = build_retrieval_request(user_message, intent_json)
+    retrieval_query = structured_request.query or service_info_query
     rewrite_result = {
         "retrieval_query": retrieval_query,
         "rewritten_query": "",

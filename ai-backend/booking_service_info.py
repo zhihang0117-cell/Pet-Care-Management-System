@@ -754,10 +754,67 @@ def build_mixed_booking_rag_reply(rag_text: str, session, intent_json: dict) -> 
         sections.append(f"Hi {name}, welcome back to Pawfect! 😊")
 
     body = str(rag_text or "").strip()
+    if (
+        body
+        and str(intent_json.get("supporting_info_type") or "").strip()
+        == "SERVICE_PACKAGE"
+    ):
+        package_rows = re.findall(
+            r"(?:^|\n)\s*The\s+([^\n]+?)\s+package\s+is\s+priced\s+at\s+"
+            r"(RM\s*\d+(?:\.\d{1,2})?)",
+            body,
+            re.I | re.M,
+        )
+        if package_rows:
+            normalized_rows = [
+                (label.strip(" .:-"), re.sub(r"\s+", "", price.upper()))
+                for label, price in package_rows
+            ]
+            option_lines = [
+                f"• {label}: {price}" for label, price in normalized_rows
+            ]
+            first_label, first_price = normalized_rows[0]
+            other_labels = [label for label, _price in normalized_rows[1:]]
+            guidance = (
+                f"{first_label} at {first_price} is the lowest-cost starting point."
+            )
+            if other_labels:
+                guidance += (
+                    f" Choose {' or '.join(other_labels)} if you prefer one of those "
+                    "bath product options."
+                )
+            saved_date = str(getattr(session, "preferred_date", "") or "").strip()
+            saved_time = str(getattr(session, "preferred_time", "") or "").strip()
+            pet_name = str(getattr(session, "pet_name", "") or "").strip()
+            next_step = (
+                f"Reply with {', '.join(label for label, _price in normalized_rows)}. "
+                f"I'll then check the saved {saved_date or 'preferred date'}"
+                f"{f' {saved_time}' if saved_time else ''} availability."
+            )
+            body = "\n".join(
+                [
+                    (
+                        f"For {pet_name}, these verified options are available:"
+                        if pet_name
+                        else "These verified options are available:"
+                    ),
+                    *option_lines,
+                    "",
+                    guidance,
+                    "",
+                    next_step,
+                ]
+            )
     if body:
         sections.append(body)
 
-    continuation = build_booking_continuation_prompt(session, intent_json).strip()
+    continuation = (
+        ""
+        if str(intent_json.get("supporting_info_type") or "").strip()
+        == "SERVICE_PACKAGE"
+        and body
+        else build_booking_continuation_prompt(session, intent_json).strip()
+    )
     if continuation:
         sections.append(continuation)
     return "\n\n".join(sections).strip()

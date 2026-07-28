@@ -226,3 +226,39 @@ Artifact: `outputs/readonly_integration_test_20260720_223538.json`
 ## Environment variables
 
 See `.env.example`. Secrets (`OPENAI_API_KEY`, `SUPABASE_SERVICE_ROLE_KEY`) belong in `.env` only.
+## Evidence-grounded decision support
+
+The `/chat` runtime uses a bounded decision cycle while preserving the existing
+intent, RAG, relational, booking, and response APIs:
+
+1. `DecisionPlan` identifies the current goal, critical unknowns, and whether
+   RAG, relational data, both, or neither are needed.
+2. Existing allow-listed tools execute under server-owned company/customer
+   context.
+3. `EvidenceValidation` rejects cross-tenant evidence and records missing or
+   failed evidence.
+4. `GroundedDecision` compares only verified candidates and chooses the next
+   action: answer, clarify, compare, recommend, confirm, recover, or escalate.
+5. The response layer receives the grounded decision and may recommend only the
+   selected verified candidate.
+
+Every normal `/chat` response includes a `decision_support` object containing
+`plan`, `evidence_validation`, and `grounded_decision`. It is intended for
+debugging, evaluation, and training-data capture; internal decision fields
+must not be shown in customer-facing WhatsApp prose.
+
+### Reasoning-model production mode
+
+With `LLM_PROVIDER=openai` and `REASONING_MODEL_ENABLED=true` (the default),
+natural-language control uses two model stages:
+
+1. A conversation-aware pre-tool model returns `DecisionPlan`.
+2. The backend validates the plan and executes only allow-listed, tenant-scoped tools.
+3. The backend validates evidence and constructs the valid candidate-ID set.
+4. A post-tool model returns `GroundedDecision` using only validated evidence and candidates.
+
+Production OpenAI requests do not use the legacy `mock_llm` keyword shortcut
+and do not pass model intent through semantic pattern overrides. The legacy
+keyword path remains only for explicit offline mock testing. Transaction
+authorization, tenant boundaries, hard constraints, candidate existence, and
+success confirmation remain deterministic backend rules.

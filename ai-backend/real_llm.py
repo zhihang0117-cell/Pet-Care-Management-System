@@ -46,7 +46,11 @@ def _create_chat_completion(client: OpenAI, request_kwargs: dict):
         CURRENT_EVAL_ATTEMPT.reset(attempt_token)
 
 
-def real_llm_intent_detection(user_message: str) -> dict:
+def real_llm_intent_detection(
+    user_message: str,
+    conversation_state: dict | None = None,
+    conversation_history: list[dict] | None = None,
+) -> dict:
     """
     Call OpenAI with the Query JSON Prompt to classify customer intent.
 
@@ -73,7 +77,17 @@ def real_llm_intent_detection(user_message: str) -> dict:
         "model": runtime["model"],
         "messages": [
             {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_message},
+            {
+                "role": "user",
+                "content": json.dumps(
+                    {
+                        "current_message": user_message,
+                        "conversation_history": conversation_history or [],
+                        "conversation_state": conversation_state or {},
+                    },
+                    ensure_ascii=False,
+                ),
+            },
         ],
         "temperature": 0,
     }

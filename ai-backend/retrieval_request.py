@@ -48,6 +48,8 @@ class RetrievalRequest:
 def classify_information_type(intent_json: dict, user_message: str = "") -> str:
     scenario = str(intent_json.get("scenario_intent") or "").strip()
     text = str(user_message or "").lower()
+    if str(intent_json.get("supporting_info_type") or "").strip() == "SERVICE_PACKAGE":
+        return "PACKAGE_DETAILS"
     if scenario == "CANCELLATION_POLICY" or "cancellation" in text and "policy" in text:
         return "CANCELLATION_POLICY"
     if "reschedule" in text and "policy" in text:
@@ -78,11 +80,35 @@ def build_retrieval_request(
     ).strip().upper() or None
     if service == "UNKNOWN":
         service = None
+    information_type = classify_information_type(intent_json, user_message)
+    query = str(user_message or "").strip()
+    if information_type == "PACKAGE_DETAILS" and str(
+        intent_json.get("supporting_info_type") or ""
+    ).strip() == "SERVICE_PACKAGE":
+        pet_type = str(
+            entities.get("pet_type") or intent_json.get("pet_type") or ""
+        ).strip()
+        pet_size = str(
+            entities.get("pet_size")
+            or entities.get("pet_height")
+            or intent_json.get("pet_size")
+            or ""
+        ).strip()
+        query = " ".join(
+            item
+            for item in (
+                service or "",
+                "service packages options inclusions differences",
+                pet_type,
+                pet_size,
+            )
+            if item
+        )
     return RetrievalRequest(
         company_id=company_id,
-        query=str(user_message or "").strip(),
+        query=query,
         service_type=service,
-        information_type=classify_information_type(intent_json, user_message),
+        information_type=information_type,
         selected_package=str(
             entities.get("service_package") or entities.get("selected_package") or ""
         ).strip()
@@ -106,7 +132,16 @@ def chunk_matches_retrieval_request(chunk: dict, request: RetrievalRequest) -> b
     if info == "PACKAGE_PRICE":
         return any(k in text for k in ("price", "rm", "cost", "fee"))
     if info == "PACKAGE_DETAILS":
-        return "include" in text or "grooming" in text or "package" in text
+        document_type = str(
+            meta.get("document_type")
+            or meta.get("dataset_type")
+            or meta.get("document_file_name")
+            or chunk.get("source")
+            or ""
+        ).lower()
+        if "service_information" not in document_type:
+            return False
+        return True
     if info == "SERVICE_POLICY":
         return "rule" in text or "requirement" in text or "policy" in text
     return True

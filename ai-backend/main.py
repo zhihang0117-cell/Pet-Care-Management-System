@@ -19,8 +19,24 @@ from intent_schema import (
 from response_generator import EXPLICIT_HUMAN_HANDOFF_REPLY, generate_final_response, handoff_reply_for_reason, resolve_turn_handoff
 from router import route_intent
 from database_service import execute_database_action, get_database_provider
+from decision_support import (
+    GoalStatus,
+    NextAction,
+    build_decision_plan,
+    model_to_dict,
+    resolve_grounded_decision,
+    validate_evidence,
+)
 from llm_service import detect_intent
 from rag_service import retrieve_rag_context
+from reasoning_model import (
+    planned_read_tool_calls,
+    project_plan_to_intent,
+    reason_decision_plan,
+    reason_grounded_decision,
+    reasoning_model_enabled,
+    route_from_plan,
+)
 from response_data_sanitizer import sanitize_response_data
 from relational_tool_calling import (
     execute_relational_tool_calls,
@@ -30,6 +46,7 @@ from booking_flow import (
     apply_booking_collection_rules,
     apply_booking_confirmation_safety,
     apply_booking_entry_rules,
+    compute_booking_missing_fields,
 )
 from booking_service_info import apply_mixed_booking_service_info_rules, apply_standalone_service_info_rules
 from session_continuation import (
@@ -174,6 +191,7 @@ def _build_chat_error_response(request: ChatRequest, exc: Exception, *, error_id
         "identity_result": {"status": "error", "error": str(exc), "error_id": error_id or ""},
         "handoff_required": True,
         "handoff_reason": "DATABASE_ERROR",
+        "decision_support": {},
     }
 
 
@@ -211,6 +229,7 @@ def _build_early_handoff_response(
         "identity_result": {"status": "not_applicable"},
         "handoff_required": True,
         "handoff_reason": handoff_reason,
+        "decision_support": {},
     }
 
 
@@ -263,39 +282,52 @@ def _process_chat(request: ChatRequest):
     )
 
     pending_flow_snapshot = capture_pending_flow(session)
-    memory_intent = resolve_pending_intent_before_llm(session, request.message)
+    memory_intent = (
+        None
+        if reasoning_model_enabled()
+        else resolve_pending_intent_before_llm(session, request.message)
+    )
     if memory_intent is not None:
         intent_result = {
             "intent_json": memory_intent,
             "provider_used": "conversation_memory",
         }
     else:
-        intent_result = detect_intent(request.message)
+        if reasoning_model_enabled():
+            intent_result = detect_intent(
+                request.message,
+                conversation_state=session.to_dict(),
+                conversation_history=list(getattr(session, "recent_messages", []) or [])[-12:],
+            )
+        else:
+            intent_result = detect_intent(request.message)
     intent_json = dict(intent_result.get("intent_json") or {})
-    intent_json = apply_message_pattern_overrides(request.message, intent_json)
+    llm_provider_used = str(intent_result.get("provider_used") or "unknown")
+    if llm_provider_used != "openai":
+        intent_json = apply_message_pattern_overrides(request.message, intent_json)
     intent_json = normalize_intent_result(intent_json)
     # Runtime-only response state must be attached after schema normalization,
     # which intentionally removes fields outside the public intent contract.
     intent_json["_session_greeted_before_turn"] = bool(
         getattr(session, "greeted_this_session", False)
     )
-    llm_provider_used = str(intent_result.get("provider_used") or "unknown")
-
     intent_json = apply_request_context_to_intent(
         intent_json,
         phone_number=request_phone,
         customer_id=request_customer_id,
     )
-    intent_json = apply_read_only_entity_rules(intent_json, request.message)
     intent_json = apply_session_identity(session, intent_json)
-    apply_session_booking_creation_flag(session, request.message, intent_json)
-
-    intent_json, session = handle_session_before_routing(session, request.message, intent_json)
-    intent_json = apply_booking_entry_rules(session, intent_json, request.message)
-    intent_json = apply_mixed_booking_service_info_rules(session, intent_json, request.message)
-    intent_json = apply_standalone_service_info_rules(session, intent_json, request.message)
-    intent_json = apply_booking_collection_rules(session, intent_json, request.message)
-    intent_json = apply_booking_confirmation_safety(session, intent_json, request.message)
+    if reasoning_model_enabled():
+        pending_flow_snapshot = {}
+    else:
+        intent_json = apply_read_only_entity_rules(intent_json, request.message)
+        apply_session_booking_creation_flag(session, request.message, intent_json)
+        intent_json, session = handle_session_before_routing(session, request.message, intent_json)
+        intent_json = apply_booking_entry_rules(session, intent_json, request.message)
+        intent_json = apply_mixed_booking_service_info_rules(session, intent_json, request.message)
+        intent_json = apply_standalone_service_info_rules(session, intent_json, request.message)
+        intent_json = apply_booking_collection_rules(session, intent_json, request.message)
+        intent_json = apply_booking_confirmation_safety(session, intent_json, request.message)
     session = update_session_intent(session, intent_json)
 
     request_trace.set_post_intent(intent_json, session)
@@ -303,6 +335,104 @@ def _process_chat(request: ChatRequest):
 
     route_result = route_intent(intent_json)
     route = str(route_result.get("route") or "").strip()
+    deterministic_plan = build_decision_plan(
+        user_message=request.message,
+        intent_json=intent_json,
+        route_result=route_result,
+        session=session,
+    )
+    decision_plan = reason_decision_plan(
+        user_message=request.message,
+        conversation_state=session.to_dict(),
+        conversation_history=list(getattr(session, "recent_messages", []) or [])[-12:],
+        intent_observation=intent_json,
+        tool_catalog=[
+            "get_customer_profile",
+            "get_pet_profiles",
+            "get_booking_status",
+            "get_latest_booking",
+            "check_availability",
+            "get_loyalty_points",
+            "get_membership_status",
+            "get_loyalty_account",
+            "get_payment_history",
+            "get_redemption_history",
+            "get_message_history",
+            "get_company_information",
+            "get_staff_directory",
+        ],
+        fallback=deterministic_plan,
+    )
+    if reasoning_model_enabled():
+        intent_json = project_plan_to_intent(decision_plan, intent_json)
+        intent_json["_session_greeted_before_turn"] = bool(
+            getattr(session, "greeted_this_session", False)
+        )
+        intent_json = apply_request_context_to_intent(
+            intent_json,
+            phone_number=request_phone,
+            customer_id=request_customer_id,
+        )
+        intent_json = apply_session_identity(session, intent_json)
+        if str(intent_json.get("scenario_intent") or "") in {
+            "MAKE_BOOKING",
+            "CHECK_AVAILABILITY",
+        }:
+            process_missing = compute_booking_missing_fields(
+                session,
+                intent_json,
+                request.message,
+            )
+            intent_json["missing_information"] = process_missing
+            if process_missing:
+                decision_plan.critical_unknowns = list(process_missing)
+                decision_plan.goal_status = GoalStatus.AWAITING_USER
+                package_information_needed = process_missing[0] == "service_package"
+                decision_plan.next_action = (
+                    NextAction.RETRIEVE_POLICY
+                    if package_information_needed
+                    else NextAction.ASK_CRITICAL_CLARIFICATION
+                )
+                decision_plan.evidence_need.rag = package_information_needed
+                decision_plan.evidence_need.relational = False
+                decision_plan.evidence_need.reason = (
+                    "Retrieve verified service package information before asking the customer to choose"
+                    if package_information_needed
+                    else "Complete required booking fields before retrieval or availability checks"
+                )
+                decision_plan.tool_calls = []
+                decision_plan.current_decision = (
+                    "present and compare verified service packages"
+                    if package_information_needed
+                    else f"collect required booking field: {process_missing[0]}"
+                )
+                decision_plan.memory_patch.pending_question = process_missing[0]
+                if package_information_needed:
+                    intent_json["retrieval_needed"] = True
+                    intent_json["retrieval_source"] = ["service_information"]
+                    intent_json["booking_supporting_info_needed"] = True
+                    intent_json["booking_supporting_service_info"] = True
+                    intent_json["supporting_info_type"] = "SERVICE_PACKAGE"
+        session = update_session_intent(session, intent_json)
+        route_result = route_intent(intent_json)
+    route_result = route_from_plan(
+        decision_plan,
+        route_result,
+        protected_action=str(intent_json.get("scenario_intent") or "")
+        in {
+            "CONFIRM_BOOKING",
+            "CANCEL_BOOKING",
+            "RESCHEDULE_BOOKING",
+            "REDEEM_REWARD",
+            "CREATE_CUSTOMER",
+            "CREATE_PET",
+        },
+    )
+    route = str(route_result.get("route") or "").strip()
+    # In reasoning mode, a semantic plan may correct a legacy UNKNOWN route.
+    # Explicit-human and medical safety handoffs have already returned above.
+    if reasoning_model_enabled() and route != "HUMAN_HANDOFF":
+        intent_json.pop("handoff_reason", None)
     invoke_rag = route in _RAG_ROUTES
     invoke_database = route in _DATABASE_ROUTES
 
@@ -346,13 +476,30 @@ def _process_chat(request: ChatRequest):
             intent_json["customer_status"] = "EXISTING_CUSTOMER"
         elif request_phone:
             intent_json["customer_status"] = "NEW_CUSTOMER"
+        if session.existing_customer:
+            from database_service import fetch_latest_booking_for_entry
+
+            latest_booking_result = fetch_latest_booking_for_entry(session)
+            greeting_data = dict(database_result.get("data") or {})
+            if latest_booking_result.get("status") == "success":
+                greeting_data["latest_booking"] = dict(latest_booking_result.get("data") or {})
+                session.last_booking_snapshot = dict(latest_booking_result.get("data") or {})
+            database_result = {**database_result, "data": greeting_data}
     elif scenario_intent == "COLLECT_CUSTOMER_NAME" and identity_result.get("status") == "not_found":
         database_result = identity_result
     elif invoke_database:
+        reasoning_tool_calls = (
+            planned_read_tool_calls(decision_plan, user_message=request.message)
+            if reasoning_model_enabled()
+            else []
+        )
         tool_calls = (
             []
             if scenario_intent in {"CHECK_COUPON_ELIGIBILITY", "GET_BOOKING_SERVICE_OPTIONS"}
-            else plan_relational_tool_calls(request.message, intent_json)
+            else (
+                reasoning_tool_calls
+                or plan_relational_tool_calls(request.message, intent_json)
+            )
         )
         database_result = execute_relational_tool_calls(
             tool_calls,
@@ -390,7 +537,40 @@ def _process_chat(request: ChatRequest):
             database_result = last_booking_result
 
     session = update_session_after_turn(session, intent_json, route_result, database_result)
-    database_used = database_result["status"] != "not_applicable"
+    identity_tool_calling = dict(identity_result.get("tool_calling") or {})
+    identity_database_used = bool(identity_tool_calling.get("used"))
+    action_database_used = database_result["status"] != "not_applicable"
+    if identity_database_used and not action_database_used:
+        # Identity/profile reads are real relational evidence, not hidden
+        # pre-processing. Surface them through the same database result used
+        # by evidence validation, response generation, and runtime telemetry.
+        database_result = dict(identity_result)
+    elif identity_database_used and action_database_used:
+        action_tool_calling = dict(database_result.get("tool_calling") or {})
+        identity_calls = list(identity_tool_calling.get("calls") or [])
+        action_calls = list(action_tool_calling.get("calls") or [])
+        if not action_calls and action_tool_calling.get("used"):
+            action_calls = [
+                {
+                    "tool_name": action_tool_calling.get("tool_name") or database_result.get("action"),
+                    "status": database_result.get("status"),
+                }
+            ]
+        database_result = {
+            **database_result,
+            "tool_calling": {
+                "used": True,
+                "count": len(identity_calls) + len(action_calls),
+                "source": "combined",
+                "tool_names": [
+                    str(call.get("tool_name") or "")
+                    for call in [*identity_calls, *action_calls]
+                    if str(call.get("tool_name") or "").strip()
+                ],
+                "calls": [*identity_calls, *action_calls],
+            },
+        }
+    database_used = identity_database_used or action_database_used
 
     handoff_required, handoff_reason = resolve_turn_handoff(
         user_message=request.message,
@@ -406,6 +586,56 @@ def _process_chat(request: ChatRequest):
     # Keep staff identifiers available for internal booking/availability work,
     # but never expose them to the response LLM or the public chat payload.
     response_database_result = sanitize_response_data(database_result)
+    from customer_context import get_relational_company_id
+
+    evidence_validation = validate_evidence(
+        plan=decision_plan,
+        rag_context=rag_context,
+        database_result=response_database_result,
+        active_tenant_id=str(get_relational_company_id()),
+    )
+    deterministic_grounded_decision = resolve_grounded_decision(
+        plan=decision_plan,
+        validation=evidence_validation,
+        database_result=response_database_result,
+        handoff_required=handoff_required,
+    )
+    grounded_decision = reason_grounded_decision(
+        plan=decision_plan,
+        validation=evidence_validation,
+        deterministic_candidate_decision=deterministic_grounded_decision,
+        rag_context=rag_context,
+        database_result=response_database_result,
+    )
+    decision_support = {
+        "plan": model_to_dict(decision_plan),
+        "evidence_validation": model_to_dict(evidence_validation),
+        "grounded_decision": model_to_dict(grounded_decision),
+    }
+    session.decision_state = decision_support
+    memory_patch = model_to_dict(decision_plan.memory_patch)
+    previous_memory = dict(getattr(session, "reasoning_memory", {}) or {})
+    session.reasoning_memory = {
+        **previous_memory,
+        "active_goal": memory_patch.get("active_goal") or previous_memory.get("active_goal", ""),
+        "confirmed_facts": {
+            **dict(previous_memory.get("confirmed_facts") or {}),
+            **dict(memory_patch.get("confirmed_facts") or {}),
+        },
+        "preferences": {
+            **dict(previous_memory.get("preferences") or {}),
+            **dict(memory_patch.get("preferences") or {}),
+        },
+        "rejected_options": list(
+            dict.fromkeys(
+                [
+                    *list(previous_memory.get("rejected_options") or []),
+                    *list(memory_patch.get("rejected_options") or []),
+                ]
+            )
+        ),
+        "pending_question": memory_patch.get("pending_question") or "",
+    }
 
     final_response_result = generate_final_response(
         user_message=request.message,
@@ -416,9 +646,17 @@ def _process_chat(request: ChatRequest):
         required_service_type=(rag_debug or {}).get("required_service_type"),
         session=session,
         identity_result=identity_result,
+        decision_support=decision_support,
     )
     reply = final_response_result["reply"]
     final_response_provider_used = final_response_result["final_response_provider_used"]
+    session.recent_messages = (
+        list(getattr(session, "recent_messages", []) or [])
+        + [
+            {"role": "user", "content": request.message},
+            {"role": "assistant", "content": reply},
+        ]
+    )[-12:]
 
     if should_resume_pending_flow(pending_flow_snapshot, intent_json):
         restore_pending_flow(session, pending_flow_snapshot)
@@ -475,4 +713,5 @@ def _process_chat(request: ChatRequest):
         "identity_result": identity_result,
         "handoff_required": handoff_required,
         "handoff_reason": handoff_reason or "",
+        "decision_support": decision_support,
     }

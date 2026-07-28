@@ -338,10 +338,26 @@ def finalize_customer_reply(
 ) -> str:
     del user_message, route_result
     apply_response_flags(intent_json)
-    text = strip_repeated_session_greeting(reply, intent_json)
+    text = _remove_explicit_recommendation_labels(reply)
+    text = strip_repeated_session_greeting(text, intent_json)
     text = strip_unwanted_booking_cta(text, offer_booking_transition=False)
     text = add_first_turn_greeting(text, intent_json, session=session)
     return validate_final_reply(text, intent_json=intent_json)
+
+
+def _remove_explicit_recommendation_labels(reply: str) -> str:
+    """Keep suggestions natural without exposing recommendation labels."""
+    text = str(reply or "").strip()
+    replacements = (
+        (r"\bI(?:'d| would)? recommend securing\s+", "The "),
+        (r"\bI(?:'d| would)? recommend\s+", ""),
+        (r"\bWe recommend\s+", ""),
+        (r"\bOur recommendation is\s+", ""),
+        (r"\bThe recommended option is\s+", ""),
+    )
+    for pattern, replacement in replacements:
+        text = re.sub(pattern, replacement, text, flags=re.IGNORECASE)
+    return text.strip()
 
 
 def _normalize_whatsapp_formatting(reply: str) -> str:
@@ -452,6 +468,7 @@ def _build_decision_json(
     intent_json: dict,
     route_result: dict,
     required_service_type: str | None = None,
+    decision_support: dict | None = None,
 ) -> str:
     decision = {
         "intent_json": intent_json,
@@ -461,6 +478,7 @@ def _build_decision_json(
         "user_has_explicit_booking_intent": bool(
             intent_json.get("user_has_explicit_booking_intent")
         ),
+        "decision_support": decision_support or {},
     }
     return json.dumps(decision, indent=2, ensure_ascii=False)
 
@@ -520,6 +538,31 @@ def _format_database_result(database_result: dict) -> str:
     return json.dumps(database_result, indent=2, ensure_ascii=False)
 
 
+def _apply_grounded_next_action(reply: str, decision_support: dict | None) -> str:
+    """Keep rule-based fallback wording aligned with the grounded decision."""
+    support = dict(decision_support or {})
+    grounded = dict(support.get("grounded_decision") or {})
+    plan = dict(support.get("plan") or {})
+    if grounded.get("next_action") != "ASK_CRITICAL_CLARIFICATION" or "?" in str(reply or ""):
+        return str(reply or "").strip()
+
+    unknowns = set(plan.get("critical_unknowns") or [])
+    if {"pet_size_or_height", "service_package"}.issubset(unknowns):
+        question = "What is your pet's size or height, and which grooming package are you considering?"
+    elif "pet_size_or_height" in unknowns:
+        question = "What is your pet's size or height?"
+    elif "service_package" in unknowns:
+        question = "Which service package are you considering?"
+    elif "preferred_date" in unknowns:
+        question = "What date would you prefer?"
+    elif unknowns:
+        field = sorted(unknowns)[0].replace("_", " ")
+        question = f"Could you confirm the {field}?"
+    else:
+        return str(reply or "").strip()
+    return f"{str(reply or '').strip()}\n\n{question}".strip()
+
+
 def _format_retrieved_context(
     final_context_chunks: list[dict],
     required_service_type: str | None = None,
@@ -574,14 +617,30 @@ def _build_greeting_reply(database_result: dict, session=None) -> str:
 
     if status == "success" and action == "check_customer_by_phone":
         name = str(data.get("full_name") or data.get("customer_name") or "").strip()
+        latest = dict(data.get("latest_booking") or data.get("last_booking") or {})
+        recommendation = ""
+        if latest:
+            service = str(
+                latest.get("service_type")
+                or latest.get("last_service_type")
+                or latest.get("service_name")
+                or "the same service"
+            ).strip().lower()
+            pet_name = str(latest.get("pet_name") or "").strip()
+            pet_phrase = f" for {pet_name}" if pet_name else ""
+            recommendation = (
+                f" Your last booking was {service}{pet_phrase}; "
+                "you can repeat it for the quickest option, or choose something different."
+            )
         if name:
-            return f"Hi {name}, welcome back to Pawfect! 😊 What can I help you with today?"
-        return "Hi, welcome back to Pawfect! 😊 What can I help you with today?"
+            return f"Hi {name}, welcome back to Pawfect! 😊{recommendation} What would you like to do today?"
+        return f"Hi, welcome back to Pawfect! 😊{recommendation} What would you like to do today?"
 
     if status == "not_found":
         return (
             "Hi, welcome to Pawfect! 😊 "
-            "May I have your name first so we can assist you better?"
+            "May I have your name first? Then tell me whether your goal is grooming, daycare, "
+            "or boarding, and I'll help narrow down the most suitable next step."
         )
 
     if status == "missing_information":
@@ -590,7 +649,10 @@ def _build_greeting_reply(database_result: dict, session=None) -> str:
             "May I have your phone number so we can check whether you already have an account with us?"
         )
 
-    return "Hi, welcome to Pawfect! 😊 How can I help you today?"
+    return (
+        "Hi, welcome to Pawfect! 😊 Tell me your pet's needs and whether you're considering "
+        "grooming, daycare, or boarding, and I'll help narrow down the most suitable next step."
+    )
 
 
 def _build_coupon_eligibility_reply(
@@ -775,7 +837,7 @@ def _enforce_service_option_conversation_contract(reply: str, session=None) -> s
             recommendation = ""
             if last_pet and last_pet.lower() in {name.lower() for name in names}:
                 recommendation = (
-                    f"I'd recommend {last_pet}, since your latest booking was for {last_pet}. "
+                    f"{last_pet} is the quickest option, since your latest booking was for {last_pet}. "
                 )
             if names:
                 if len(names) == 2:
@@ -1212,6 +1274,7 @@ def generate_final_response(
     session=None,
     identity_result: dict | None = None,
     conv_ctx=None,
+    decision_support: dict | None = None,
 ) -> dict:
     """
     Generate the final WhatsApp customer reply.
@@ -1274,7 +1337,9 @@ def generate_final_response(
         )
 
     scenario_intent = str(intent_json.get("scenario_intent") or "").strip()
-    if scenario_intent == "CUSTOMER_GREETING":
+    reasoning_plan = dict((decision_support or {}).get("plan") or {})
+    response_mode = str(reasoning_plan.get("response_mode") or "").strip().upper()
+    if scenario_intent == "CUSTOMER_GREETING" or response_mode == "GREETING":
         reply = _build_greeting_reply(database_result, session)
         return _done(
             reply,
@@ -1303,6 +1368,8 @@ def generate_final_response(
             required_service_type=required_service_type,
             session=session,
         )
+        if str(intent_json.get("supporting_info_type") or "").strip() != "SERVICE_PACKAGE":
+            reply = _apply_grounded_next_action(reply, decision_support)
         return _done(
             reply,
             provider_used="rule_based",
@@ -1484,7 +1551,7 @@ def generate_final_response(
         scenario_intent == "CHECK_AVAILABILITY"
         and str(database_result.get("action") or "").strip() == "check_available_slots"
     ):
-        from availability_service import build_availability_reply
+        from availability_service import build_availability_reply, build_availability_result
 
         if session is not None and getattr(session, "draft_booking_payload", None):
             reply = build_draft_confirmation_reply(session)
@@ -1495,7 +1562,37 @@ def generate_final_response(
                 provider_logged="booking_draft_confirmation_template",
             )
 
-        availability = dict((database_result.get("data") or {}).get("availability_result") or getattr(session, "availability_result", {}) or {})
+        availability_data = dict(database_result.get("data") or {})
+        availability = dict(
+            availability_data.get("availability_result")
+            or getattr(session, "availability_result", {})
+            or {}
+        )
+        if (
+            not availability
+            and str(database_result.get("status") or "").strip() == "success"
+            and "available_slots" in availability_data
+        ):
+            entities = dict(intent_json.get("entities") or {})
+            availability = build_availability_result(
+                requested_date=str(
+                    availability_data.get("requested_date")
+                    or availability_data.get("booking_date")
+                    or entities.get("preferred_date")
+                    or ""
+                ),
+                requested_time=str(
+                    availability_data.get("requested_time")
+                    or entities.get("preferred_time")
+                    or ""
+                ),
+                available_slots=list(availability_data.get("available_slots") or []),
+                service_type=str(
+                    availability_data.get("service_type")
+                    or intent_json.get("service_type")
+                    or "GROOMING"
+                ),
+            )
         if availability:
             reply = build_availability_reply(session, availability, intent_json)
         elif str(database_result.get("status") or "").strip() == "success":
@@ -1509,7 +1606,12 @@ def generate_final_response(
             provider_logged="availability_check_template",
         )
 
-    decision_json = _build_decision_json(intent_json, route_result, required_service_type)
+    decision_json = _build_decision_json(
+        intent_json,
+        route_result,
+        required_service_type,
+        decision_support=decision_support,
+    )
     retrieved_context = _format_retrieved_context(rag_context, required_service_type)
     database_result_text = _format_database_result(database_result)
 
@@ -1578,6 +1680,7 @@ def generate_final_response(
         required_service_type=required_service_type,
         session=session,
     )
+    reply = _apply_grounded_next_action(reply, decision_support)
     return _done(
         reply,
         provider_used="rule_based",

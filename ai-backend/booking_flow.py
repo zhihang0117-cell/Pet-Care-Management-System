@@ -455,12 +455,12 @@ def build_missing_field_reply(
             return (
                 f"I can arrange grooming, daycare, or boarding for {known_pet} 😊 "
                 "Send the service you need and your preferred date together, "
-                "and I'll recommend an available time."
+                "and I'll help you choose an available time."
             )
         if intent_json.get("new_service_choice"):
             return (
                 "We can arrange grooming, daycare, or boarding 😊 "
-                "For a quick recommendation, send your pet's name and what care you need."
+                "For the quickest next step, send your pet's name and what care you need."
             )
         return (
             "We can arrange grooming, daycare, or boarding 😊 "
@@ -665,14 +665,14 @@ def build_repeat_or_new_reply(session, intent_json: dict) -> str:
         if sentence:
             sections.append(sentence)
         sections.append(
-            "For the quickest booking, I recommend repeating that service. "
+            "For the quickest booking, you can repeat that service. "
             "Just send your preferred date and I'll check the available times. "
             "If you'd like something different, you can choose grooming, daycare, or boarding."
         )
     else:
         sections.append(
             "We can arrange grooming, daycare, or boarding. Send the service, pet name, "
-            "and preferred date together, and I'll recommend an available slot."
+            "and preferred date together, and I'll help you choose an available slot."
         )
     return "\n\n".join(sections).strip()
 
@@ -687,7 +687,7 @@ def build_new_customer_booking_entry_reply(session, intent_json: dict) -> str:
             "I can help you arrange a booking.",
             "Send your pet's name, whether they're a dog or cat, the service you need "
             "(grooming, daycare, or boarding), and your preferred date together. "
-            "I'll then recommend an available slot.",
+            "I'll then help you choose an available slot.",
         ]
     )
     return "\n\n".join(sections).strip()

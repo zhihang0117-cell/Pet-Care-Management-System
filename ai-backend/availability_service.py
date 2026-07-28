@@ -147,7 +147,7 @@ def build_availability_reply(session, availability_result: dict, intent_json: di
         )
         return (
             f"For {date_text}, the available times{pet_phrase} are {slot_text}.\n\n"
-            f"I recommend {displayed[0]} as the earliest option. "
+            f"{displayed[0]} is the earliest option. "
             "Reply with that time, or choose another slot above, and I'll prepare the booking."
         )
 
@@ -156,7 +156,7 @@ def build_availability_reply(session, availability_result: dict, intent_json: di
         display_time = format_time_for_display(start)
         return (
             f"Yes, {display_time} on {date_text} is available{pet_phrase}.\n\n"
-            f"I recommend securing the {display_time} slot. "
+            f"The {display_time} slot is ready to secure. "
             "Reply yes and I'll prepare the booking confirmation."
         )
 
@@ -166,7 +166,7 @@ def build_availability_reply(session, availability_result: dict, intent_json: di
         return (
             f"{time_text} is not available on {date_text}.\n\n"
             f"The nearest available times are {alt_text}. "
-            f"I recommend {format_time_for_display(alternatives[0])}; "
+            f"{format_time_for_display(alternatives[0])} is the closest option; "
             "reply with that time and I'll continue the booking."
         )
 

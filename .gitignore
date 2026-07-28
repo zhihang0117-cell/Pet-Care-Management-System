@@ -31,10 +31,6 @@ logs/
 # Local data and experiments
 data/
 archive/
-frontend-test/
-!ai-backend/frontend-test/
-ai-backend/frontend-test/*
-!ai-backend/frontend-test/testing.html
 docs/
 tools/
 notebooks/
