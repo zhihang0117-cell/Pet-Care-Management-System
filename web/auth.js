@@ -1,16 +1,5 @@
 // ── Role-based access guard for dashboard pages ────────────────────────────
 function getCurrentAccount() {
-    if (new URLSearchParams(location.search).get('demo') === '1') {
-        return {
-            email: 'showcase@pawfectai.demo',
-            role: 'Manager',
-            businessKey: 'showcase-demo',
-            businessName: 'PAWFECT AI Demo Centre',
-            services: ['grooming', 'boarding', 'daycare'],
-            setupCompleted: true,
-            showcaseDemo: true,
-        };
-    }
     try { return JSON.parse(localStorage.getItem('pawfect_current_account') || 'null'); }
     catch (e) { return null; }
 }
@@ -101,21 +90,8 @@ function renderSidebarAccount() {
     menu.innerHTML = '<a href="login.html">Log in as a different account</a>';
 }
 
-function renderShowcaseReturnButton() {
-    const params = new URLSearchParams(location.search);
-    if (params.get('showcase') !== '1' || document.querySelector('.showcase-return-btn')) return;
-
-    const returnLink = document.createElement('a');
-    returnLink.className = 'showcase-return-btn';
-    returnLink.href = 'index.html#showcase';
-    returnLink.setAttribute('aria-label', 'Return to the showcase presentation');
-    returnLink.innerHTML = '<span aria-hidden="true">←</span> Back to Showcase';
-    document.body.appendChild(returnLink);
-}
-
 document.addEventListener('DOMContentLoaded', () => {
     renderSidebarAccount();
-    renderShowcaseReturnButton();
     applyEnabledServiceVisibility();
 
     document.getElementById('logoutBtn')?.addEventListener('click', logoutAccount);

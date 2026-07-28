@@ -1,0 +1,84 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Project Showcase | Pawfect AI</title>
+  <script>
+    try {
+      if (!JSON.parse(localStorage.getItem('pawfect_current_account') || 'null')) {
+        location.replace('login.html');
+      }
+    } catch {
+      location.replace('login.html');
+    }
+  </script>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Playfair+Display:wght@600;700&family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="index.css">
+</head>
+
+<body class="dash-page">
+<div class="showcase-shell">
+  <header class="showcase-topbar">
+    <div class="dash-brand showcase-topbar-brand">
+      <div class="dash-brand-avatar"><img src="icon/logo.png" alt="Pawfect AI" class="brand-logo-img"></div>
+      <div class="dash-brand-text">
+        <span class="dash-brand-name">Pawfect AI</span>
+        <span class="dash-brand-sub">Showcase</span>
+      </div>
+    </div>
+
+    <nav class="showcase-topnav-actions" aria-label="Live demo navigation">
+      <a class="btn btn-primary showcase-demo-target" href="dashboard.html" data-demo-url="dashboard.html" data-demo-title="Analytical Dashboard">
+        <img src="icon/bar-chart.png" alt="" class="showcase-nav-btn-icon">Open Dashboard
+      </a>
+      <a class="btn btn-secondary showcase-demo-target" href="reg-setup.html" data-demo-url="reg-setup.html" data-demo-title="Configuration">
+        <img src="icon/settings.png" alt="" class="showcase-nav-btn-icon">Configuration
+      </a>
+    </nav>
+
+    <div class="showcase-topbar-account">
+      <div class="sidebar-account-avatar" id="sidebarAccountAvatar">👤</div>
+      <div class="sidebar-account-info">
+        <span class="sidebar-account-role" id="sidebarAccountRole">Staff</span>
+        <span class="sidebar-account-business" id="sidebarAccountBusiness"></span>
+      </div>
+      <a href="dashboard.html" class="btn btn-secondary showcase-logout-btn" aria-label="Quit showcase and return to the analytical dashboard">Quit</a>
+    </div>
+  </header>
+
+  <main class="dash-main showcase-main">
+    <section class="showcase-section">
+      <div class="showcase-stage" id="showcaseStage">
+        <iframe
+          class="showcase-frame"
+          src="https://www.canva.com/design/DAHP_lVtxNU/ZftUvlgxE-Jj0NeM4wN8JQ/view?embed"
+          title="PAWFECT AI project showcase presentation"
+          loading="lazy"
+          allowfullscreen="allowfullscreen"
+          allow="fullscreen">
+        </iframe>
+      </div>
+
+    </section>
+  </main>
+</div>
+
+<section class="showcase-demo-overlay" id="showcaseDemoOverlay" aria-hidden="true">
+  <header class="showcase-demo-toolbar">
+    <button class="btn btn-primary" id="backToPresentation" type="button">
+      <span aria-hidden="true">←</span> Back to Presentation
+    </button>
+    <strong id="showcaseDemoTitle">Live Demo</strong>
+  </header>
+  <iframe class="showcase-demo-frame" id="showcaseDemoFrame" title="PAWFECT AI live demo"></iframe>
+</section>
+
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js"></script>
+<script src="supabase-config.js"></script>
+<script src="auth.js"></script>
+<script src="showcase.js"></script>
+</body>
+</html>
