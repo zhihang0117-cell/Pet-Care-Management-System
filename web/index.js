@@ -37,6 +37,38 @@ if (hamburger && mobileNav) {
     });
 }
 
+// ── Showcase presentation full screen ────────────────────────────────────────
+const showcaseFullscreen = q('showcaseFullscreen');
+const showcaseStage = q('showcaseStage');
+if (showcaseFullscreen && showcaseStage) {
+    showcaseFullscreen.addEventListener('click', async () => {
+        try {
+            if (document.fullscreenElement) {
+                await document.exitFullscreen();
+            } else {
+                await showcaseStage.requestFullscreen();
+            }
+        } catch {
+            window.open(
+                'https://www.canva.com/design/DAHP_lVtxNU/ZftUvlgxE-Jj0NeM4wN8JQ/view',
+                '_blank',
+                'noopener'
+            );
+        }
+    });
+
+    document.addEventListener('fullscreenchange', () => {
+        const active = document.fullscreenElement === showcaseStage;
+        showcaseFullscreen.innerHTML = active
+            ? '<span aria-hidden="true">×</span> Exit Full Screen'
+            : '<span aria-hidden="true">⛶</span> Full Screen';
+        showcaseFullscreen.setAttribute(
+            'aria-label',
+            active ? 'Exit presentation full screen' : 'View presentation in full screen'
+        );
+    });
+}
+
 // ── FAQ smooth accordion ──────────────────────────────────────────────────────
 document.querySelectorAll('.faq-item').forEach(details => {
     const summary = details.querySelector('.faq-question');

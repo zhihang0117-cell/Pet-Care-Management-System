@@ -18,6 +18,7 @@
                 <a href="index.html"><img src="icon/logo with title.png" alt="" class="inline-logo-img"></a>
             </div>
             <ul class="nav-links">
+            <li><a href="#showcase">Showcase</a></li>
             <li><a href="#aboutus">About us</a></li>
             <li><a href="#workflow">How It Works</a></li>
             <li><a href="#modules">Module</a></li>
@@ -35,6 +36,7 @@
         </nav>
         <div class="mobile-nav" id="mobileNav" aria-hidden="true">
             <ul>
+                <li><a href="#showcase">Showcase</a></li>
                 <li><a href="#aboutus">About us</a></li>
                 <li><a href="#workflow">How It Works</a></li>
                 <li><a href="#modules">Module</a></li>
@@ -111,6 +113,47 @@
          </div>
       </div>
     </section>
+
+<!-- Live Showcase -->
+<section class="showcase-section" id="showcase">
+    <div class="showcase-heading">
+        <div>
+            <span class="topic-tag">Project Showcase</span>
+            <h2 class="section-title">Presentation and live product demo, in one place.</h2>
+            <p class="section-subtitle">Walk through the PAWFECT AI story below, then launch the working system whenever you are ready to demonstrate the experience.</p>
+        </div>
+        <div class="showcase-actions">
+            <button class="btn btn-secondary showcase-fullscreen-btn" id="showcaseFullscreen" type="button" aria-label="View presentation in full screen">
+                <span aria-hidden="true">⛶</span> Full Screen
+            </button>
+        </div>
+    </div>
+
+    <div class="showcase-stage" id="showcaseStage">
+        <iframe
+            class="showcase-frame"
+            src="https://www.canva.com/design/DAHP_lVtxNU/ZftUvlgxE-Jj0NeM4wN8JQ/view?embed"
+            title="PAWFECT AI project showcase presentation"
+            loading="lazy"
+            allowfullscreen="allowfullscreen"
+            allow="fullscreen">
+        </iframe>
+        <noscript>
+            <p class="showcase-fallback">JavaScript is disabled. <a href="https://www.canva.com/design/DAHP_lVtxNU/ZftUvlgxE-Jj0NeM4wN8JQ/view" target="_blank" rel="noopener">Open the presentation in Canva.</a></p>
+        </noscript>
+    </div>
+    <div class="showcase-demo-launcher" aria-label="Live demo destinations">
+        <div class="showcase-demo-copy">
+            <strong>Ready for the live walkthrough?</strong>
+            <span>Choose the screen you want to demonstrate. A return button will stay available inside the system.</span>
+        </div>
+        <div class="showcase-demo-buttons">
+            <a class="btn btn-primary" href="dashboard.html?showcase=1&amp;demo=1">Open Dashboard Demo</a>
+            <a class="btn btn-secondary" href="setting.html?showcase=1&amp;demo=1">Open Settings Demo</a>
+        </div>
+    </div>
+    <p class="showcase-note">Tip: present in full screen, exit with Esc, then launch a demo screen. Use “Back to Showcase” to return here.</p>
+</section>
   
 <!--Scrolling Tab-->
 <section>
@@ -517,6 +560,7 @@
             <div class="footer-col">
                 <h4>Platform</h4>
                 <ul>
+                    <li><a href="#showcase">Showcase</a></li>
                     <li><a href="#aboutus">About Us</a></li>
                     <li><a href="#workflow">How It Works</a></li>
                     <li><a href="#modules">Modules</a></li>

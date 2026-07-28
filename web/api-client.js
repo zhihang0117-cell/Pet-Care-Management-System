@@ -21,7 +21,78 @@ const API_BASE_URL =
   window.location.port === "5500"
     ? `${LOCAL_BACKEND_ORIGIN}/api`
     : "/api";
+
+function isShowcaseDemoRequest() {
+  return new URLSearchParams(window.location.search).get("demo") === "1";
+}
+
+function showcaseDemoCompany(overrides = {}) {
+  return {
+    company_id: "showcase-demo",
+    company_name: "PAWFECT AI Demo Centre",
+    country: "Malaysia",
+    street_address: "Showcase Demo Workspace",
+    city: "Petaling Jaya",
+    state: "Selangor",
+    postcode: "46000",
+    business_description: "A read-only showcase workspace for the PAWFECT AI live demonstration.",
+    logo_path: "",
+    settings_json: {
+      selected_services: ["grooming", "boarding", "daycare"],
+      business_hours: {
+        Mon: "09:00 - 18:00", Tue: "09:00 - 18:00", Wed: "09:00 - 18:00",
+        Thu: "09:00 - 18:00", Fri: "09:00 - 18:00", Sat: "09:00 - 17:00", Sun: "Closed"
+      },
+      payment_methods: { cash: true, card: true, qr: true, online: false },
+      language: "English",
+      timezone: "Kuala Lumpur (GMT+8)",
+      currency: "MYR (RM)",
+      weight_unit: "kg",
+      height_unit: "cm",
+      confirm_rule: "Human approval required",
+    },
+    ...overrides,
+  };
+}
+
+function showcaseDemoApiResponse(path, method, body) {
+  if (path === "/companies/me") {
+    if (method === "PATCH") {
+      return showcaseDemoCompany({
+        ...body,
+        settings_json: {
+          ...showcaseDemoCompany().settings_json,
+          ...(body?.settings || {}),
+        },
+      });
+    }
+    return showcaseDemoCompany();
+  }
+  if (path === "/accounts/me") {
+    return {
+      account_id: "showcase-manager",
+      company_id: "showcase-demo",
+      email: "showcase@pawfectai.demo",
+      role: "manager",
+      account_status: "active",
+    };
+  }
+  if (path === "/accounts") {
+    return [{
+      account_id: "showcase-manager",
+      email: "showcase@pawfectai.demo",
+      role: "manager",
+      account_status: "active",
+    }];
+  }
+  return method === "GET" ? [] : {};
+}
+
 async function apiRequest(path, { method = "GET", body } = {}) {
+  if (isShowcaseDemoRequest()) {
+    return structuredClone(showcaseDemoApiResponse(path, method, body));
+  }
+
   const token = await getSupabaseAccessToken();
   if (!token) {
     throw new Error("Not logged in — no Supabase session found.");
