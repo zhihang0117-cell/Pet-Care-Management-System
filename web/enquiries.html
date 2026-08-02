@@ -8,6 +8,7 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Playfair+Display:wght@600;700&family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="index.css">
+  <link rel="stylesheet" href="admin-theme.css">
 </head>
 
 <body class="dash-page">
@@ -17,10 +18,13 @@
   <aside class="dash-sidebar">
 
     <div class="dash-brand">
-      <div class="dash-brand-avatar"><img src="icon/logo.png" alt="Pawfect AI" class="brand-logo-img"></div>
-      <div class="dash-brand-text">
-        <span class="dash-brand-name">Pawfect AI</span>
-        <span class="dash-brand-sub">Staff portal</span>
+      <div class="sidebar-account">
+        <div class="sidebar-account-avatar" id="sidebarAccountAvatar">👤</div>
+        <div class="sidebar-account-info">
+          <span class="sidebar-account-role" id="sidebarAccountRole">Staff</span>
+          <span class="sidebar-account-business" id="sidebarAccountBusiness"></span>
+          <span class="sidebar-account-email" id="sidebarAccountEmail"></span>
+        </div>
       </div>
       <button type="button" class="mobile-nav-toggle" id="mobileNavToggle" onclick="toggleMobileNav()" aria-label="Toggle navigation menu">
         <img src="icon/list-view.png" alt="">
@@ -41,21 +45,16 @@
     </nav>
 
     <div class="dash-sidebar-footer">
-      <div class="sidebar-account">
-        <div class="sidebar-account-avatar" id="sidebarAccountAvatar">👤</div>
-        <div class="sidebar-account-info">
-          <span class="sidebar-account-role" id="sidebarAccountRole">Staff</span>
-          <span class="sidebar-account-business" id="sidebarAccountBusiness"></span>
-          <span class="sidebar-account-email" id="sidebarAccountEmail"></span>
-        </div>
-      </div>
-
       <div class="sidebar-switch-wrap">
         <button type="button" class="btn btn-secondary sidebar-switch-btn" onclick="toggleSwitchAccountMenu()"><span class="nav-icon-wrap switch-btn-icon-wrap"><img src="icon/switchacc.png" alt="" class="nav-icon"></span>Switch Account</button>
         <div class="sidebar-switch-menu" id="switchAccountMenu"></div>
       </div>
 
       <a href="login.html" id="logoutBtn" class="btn btn-logout" style="width:100%;justify-content:center;font-size:0.88rem;">Logout</a>
+
+      <div class="dash-brand-copyright">
+        <span class="dash-brand-name">&copy; 2026 Pawfect AI</span>
+      </div>
     </div>
 
   </aside>
@@ -76,7 +75,7 @@
       </div>
 
       <!-- Search row -->
-      <div style="display:flex;gap:12px;flex-wrap:wrap;margin-top:20px;padding-top:20px;border-top:1px solid var(--accent-sand);">
+      <div style="display:flex;gap:12px;flex-wrap:wrap;margin-top:12px;">
         <input
           type="text"
           id="enquirySearchInput"
@@ -90,30 +89,25 @@
     <!-- KPI Cards -->
     <section class="bk-section bk-section-slim">
       <div class="bk-kpi-grid">
-        <div class="metric-card">
+        <div class="metric-card" style="border-color:#059669;">
           <h3>Total Messages</h3>
           <p id="enquiryTotalCount">0</p>
-          <small style="font-size:0.78rem;color:var(--text-muted);">All time</small>
         </div>
-        <div class="metric-card" style="border-color:#FEF3C7;">
+        <div class="metric-card" style="border-color:#DC2626;">
           <h3 style="color:#92400E;">Pending Response</h3>
           <p id="enquiryPendingCount">0</p>
-          <small style="font-size:0.78rem;color:var(--text-muted);">Awaiting a reply</small>
         </div>
         <div class="metric-card">
           <h3>Resolution Rate</h3>
           <p id="enquiryResolutionRate">0%</p>
-          <small style="font-size:0.78rem;color:var(--text-muted);">All time</small>
         </div>
         <div class="metric-card">
           <h3>Policy</h3>
           <p id="enquiryPolicyCount">0</p>
-          <small style="font-size:0.78rem;color:var(--text-muted);">Policy-related messages</small>
         </div>
         <div class="metric-card">
           <h3>Loyalty</h3>
           <p id="enquiryLoyaltyCount">0</p>
-          <small style="font-size:0.78rem;color:var(--text-muted);">Loyalty-related messages</small>
         </div>
       </div>
     </section>
@@ -131,7 +125,6 @@
       <div class="bk-view-header" style="margin-bottom:16px;">
         <div>
           <h2 style="font-family:var(--font-serif);font-size:1.15rem;font-weight:700;margin-bottom:2px;">Pending Enquiries</h2>
-          <p style="font-size:0.78rem;color:var(--text-muted);">All enquiries that are still awaiting a reply</p>
         </div>
         <span id="enquiryPendingRecordCount" style="font-size:0.78rem;font-weight:700;color:var(--text-muted);white-space:nowrap;">0 records</span>
       </div>
@@ -153,7 +146,6 @@
       <div class="bk-view-header" style="margin-bottom:16px;">
         <div>
           <h2 style="font-family:var(--font-serif);font-size:1.15rem;font-weight:700;margin-bottom:2px;">All Enquiries</h2>
-          <p style="font-size:0.78rem;color:var(--text-muted);">Every enquiry, including pending and replied records</p>
         </div>
         <span id="enquiryHistoryRecordCount" style="font-size:0.78rem;font-weight:700;color:var(--text-muted);white-space:nowrap;">0 records</span>
       </div>

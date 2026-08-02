@@ -1,0 +1,1032 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Pawfect LLM Live Console</title>
+<style>
+  :root {
+    --wa-bg: #efeae2;
+    --wa-panel: #ffffff;
+    --wa-header: #075e54;
+    --wa-header-dark: #202c33;
+    --wa-accent: #25d366;
+    --wa-bubble-out: #d9fdd3;
+    --wa-bubble-in: #ffffff;
+    --wa-text: #111b21;
+    --wa-sub: #667781;
+    --wa-border: #d1d7db;
+    color-scheme: light dark;
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; min-height: 100vh;
+    font-family: "Segoe UI", Helvetica, Arial, ui-sans-serif, system-ui, sans-serif;
+    background: #111b21;
+    color: var(--wa-text);
+  }
+  body { padding: 0; }
+
+  .app-shell {
+    display: grid;
+    grid-template-columns: 300px 1fr 390px;
+    height: 100vh;
+    max-width: 1600px;
+    margin: 0 auto;
+    background: var(--wa-panel);
+    box-shadow: 0 0 40px rgba(0,0,0,.35);
+  }
+
+  /* ---------- LLM inspector ---------- */
+  .flow-pane {
+    background: var(--wa-panel);
+    border-left: 1px solid var(--wa-border);
+    display: flex; flex-direction: column; min-width: 0;
+  }
+  .flow-header {
+    background: var(--wa-header-dark);
+    color: #fff; padding: 12px 16px;
+    display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  }
+  .flow-header h2 { font-size: 14px; margin: 0; font-weight: 600; }
+  .flow-header-actions { display: flex; align-items: center; gap: 7px; }
+  .flow-header .flow-latency {
+    font-size: 11px; font-weight: 700; padding: 3px 8px; border-radius: 20px;
+    background: rgba(255,255,255,.15);
+  }
+  .flow-body { flex: 1; overflow-y: auto; padding: 16px 14px; }
+  .flow-empty { color: var(--wa-sub); font-size: 12px; text-align: center; margin-top: 20px; line-height: 1.6; }
+
+  .flow-steps { position: relative; display: flex; flex-direction: column; }
+  .flow-step {
+    position: relative; padding: 0 0 22px 30px; opacity: 0; transform: translateY(6px);
+    transition: opacity .35s ease, transform .35s ease;
+  }
+  .flow-step.shown { opacity: 1; transform: translateY(0); }
+  .flow-step::before {
+    /* connecting vertical line */
+    content: ''; position: absolute; left: 9px; top: 22px; bottom: -2px; width: 2px;
+    background: var(--wa-border);
+  }
+  .flow-step:last-child::before { display: none; }
+  .flow-step .flow-dot {
+    position: absolute; left: 0; top: 0; width: 20px; height: 20px; border-radius: 50%;
+    background: var(--wa-border); color: #fff; font-size: 11px; font-weight: 700;
+    display: grid; place-items: center; z-index: 1;
+  }
+  .flow-step.active .flow-dot { background: var(--wa-accent); animation: flowPulse 1s ease-in-out infinite; }
+  .flow-step.done .flow-dot { background: var(--wa-header); }
+  .flow-step.error .flow-dot { background: #d9534f; }
+  @keyframes flowPulse {
+    0%, 100% { box-shadow: 0 0 0 0 rgba(37,211,102,.45); }
+    50% { box-shadow: 0 0 0 5px rgba(37,211,102,0); }
+  }
+  .flow-step h4 { margin: 0 0 3px; font-size: 12.5px; font-weight: 700; color: var(--wa-text); }
+  .flow-step .flow-sub { font-size: 11px; color: var(--wa-sub); line-height: 1.5; }
+  .flow-step .flow-sub code {
+    background: #eaeef0; padding: 1px 4px; border-radius: 4px; font-size: 10.5px;
+  }
+
+  .flow-tool-list { margin-top: 8px; display: flex; flex-direction: column; gap: 6px; }
+  .flow-tool {
+    border: 1px solid var(--wa-border); border-radius: 8px; padding: 7px 9px;
+    background: #f7f8f9; font-size: 11px;
+  }
+  .flow-tool .flow-tool-name {
+    font-weight: 700; color: var(--wa-header); display: flex; align-items: center; gap: 5px;
+  }
+  .flow-tool .flow-tool-name .n {
+    background: var(--wa-header); color: #fff; border-radius: 50%; width: 15px; height: 15px;
+    font-size: 9.5px; display: grid; place-items: center; flex: none;
+  }
+  .flow-tool details { margin-top: 4px; }
+  .flow-tool summary { cursor: pointer; color: var(--wa-sub); font-size: 10px; list-style: none; }
+  .flow-tool summary::-webkit-details-marker { display: none; }
+  .flow-tool summary::before { content: "▸ args/result "; }
+  .flow-tool details[open] summary::before { content: "▾ args/result "; }
+  .flow-tool pre {
+    background: #0000000d; border-radius: 6px; padding: 6px; font-size: 9.5px;
+    max-height: 140px; overflow: auto; margin: 4px 0 0; white-space: pre-wrap; word-break: break-all;
+  }
+
+  .inspector-tabs {
+    display: grid; grid-template-columns: 1fr 1fr; gap: 0;
+    background: var(--wa-panel); border-bottom: 1px solid var(--wa-border);
+  }
+  .inspector-tab {
+    border-radius: 0; padding: 10px 8px; background: transparent; color: var(--wa-sub);
+    border-bottom: 2px solid transparent; font-size: 12px;
+  }
+  .inspector-tab:hover { filter: none; background: #00000008; }
+  .inspector-tab.active { color: var(--wa-header); border-bottom-color: var(--wa-accent); }
+  .inspector-tab .count {
+    display: inline-grid; min-width: 18px; height: 18px; padding: 0 5px; margin-left: 4px;
+    place-items: center; border-radius: 10px; background: #e7ecef; color: #45545c;
+    font-size: 10px;
+  }
+  .inspector-panel { flex: 1; min-height: 0; overflow: hidden; }
+  .inspector-panel[hidden] { display: none; }
+  #flowPanel:not([hidden]) { display: flex; flex-direction: column; }
+  .trace-panel { display: flex; flex-direction: column; }
+  .trace-toolbar {
+    display: flex; gap: 5px; align-items: center; padding: 9px 10px;
+    border-bottom: 1px solid var(--wa-border); overflow-x: auto;
+  }
+  .trace-filter {
+    padding: 5px 9px; border-radius: 14px; background: #eef2f1; color: #45545c;
+    font-size: 10.5px; white-space: nowrap;
+  }
+  .trace-filter.active { background: var(--wa-header); color: #fff; }
+  .trace-history { flex: 1; overflow-y: auto; padding: 10px; }
+  .trace-empty {
+    margin: 24px 8px; padding: 18px 12px; border: 1px dashed var(--wa-border);
+    border-radius: 10px; text-align: center; color: var(--wa-sub); font-size: 12px;
+    line-height: 1.55;
+  }
+  .trace-turn {
+    border: 1px solid var(--wa-border); border-radius: 10px; margin-bottom: 10px;
+    overflow: hidden; background: #f7f8f9;
+  }
+  .trace-turn.has-error { border-color: #d9534f; }
+  .trace-turn-head { padding: 9px 10px; background: var(--wa-panel); }
+  .trace-turn-title { display: flex; align-items: center; gap: 6px; font-size: 11px; }
+  .trace-turn-title strong { font-size: 12px; }
+  .trace-turn-title .turn-latency { margin-left: auto; color: var(--wa-sub); }
+  .trace-message {
+    margin-top: 5px; font-size: 11px; color: var(--wa-sub); white-space: nowrap;
+    overflow: hidden; text-overflow: ellipsis;
+  }
+  .trace-call { border-top: 1px solid var(--wa-border); padding: 9px 10px; background: var(--wa-panel); }
+  .trace-call.error { box-shadow: inset 3px 0 #d9534f; }
+  .trace-call.handoff { box-shadow: inset 3px 0 #e9a23b; }
+  .trace-call-head { display: flex; align-items: center; gap: 6px; min-width: 0; }
+  .trace-call-index {
+    width: 18px; height: 18px; border-radius: 50%; display: grid; place-items: center;
+    flex: none; background: var(--wa-header); color: #fff; font-size: 9.5px; font-weight: 700;
+  }
+  .trace-call-name {
+    min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    font-size: 11.5px; font-weight: 700; color: var(--wa-header);
+  }
+  .trace-call-time { margin-left: auto; color: var(--wa-sub); font-size: 10px; white-space: nowrap; }
+  .status-badge {
+    border-radius: 9px; padding: 2px 6px; font-size: 9px; font-weight: 700;
+    text-transform: uppercase; letter-spacing: .02em; background: #e7ecef; color: #45545c;
+  }
+  .status-badge.success { background: #d9f7e4; color: #08783f; }
+  .status-badge.error { background: #fde2e1; color: #a32622; }
+  .status-badge.handoff { background: #fff0d6; color: #8a5600; }
+  .trace-call-meta { margin: 5px 0 0 24px; color: var(--wa-sub); font-size: 9.5px; }
+  .trace-call details { margin: 6px 0 0 24px; }
+  .trace-call summary { cursor: pointer; color: var(--wa-sub); font-size: 10px; font-weight: 600; }
+  .trace-call pre {
+    margin: 5px 0 0; padding: 7px; max-height: 190px; overflow: auto; border-radius: 6px;
+    background: #0000000d; white-space: pre-wrap; word-break: break-word; font-size: 9.5px;
+  }
+  .trace-call-actions { display: flex; justify-content: flex-end; margin-top: 7px; }
+  .copy-trace-btn {
+    padding: 4px 7px; border-radius: 5px; background: #eef2f1; color: #45545c; font-size: 9.5px;
+  }
+  .trace-no-calls, .trace-request-error {
+    border-top: 1px solid var(--wa-border); padding: 10px; font-size: 11px; color: var(--wa-sub);
+  }
+  .trace-request-error { color: #a32622; }
+  .inspector-toggle, .inspector-close { display: none; }
+
+  /* ---------- Sidebar ---------- */
+  .sidebar {
+    background: var(--wa-panel);
+    border-right: 1px solid var(--wa-border);
+    display: flex; flex-direction: column;
+    min-width: 0;
+  }
+  .sidebar-header {
+    background: var(--wa-header);
+    color: #fff;
+    padding: 16px 18px;
+    display: flex; align-items: center; gap: 12px;
+  }
+  .sidebar-header .avatar {
+    width: 40px; height: 40px; border-radius: 50%;
+    background: #fff; display: grid; place-items: center; font-size: 20px;
+  }
+  .sidebar-header h1 { font-size: 16px; margin: 0; font-weight: 600; }
+  .sidebar-header p { margin: 2px 0 0; font-size: 11.5px; opacity: .85; }
+
+  .sidebar-body { padding: 14px 16px; overflow-y: auto; flex: 1; }
+  .field { margin-bottom: 14px; }
+  .field label {
+    display: block; font-size: 11.5px; font-weight: 700; color: var(--wa-sub);
+    text-transform: uppercase; letter-spacing: .03em; margin-bottom: 6px;
+  }
+  .field input[type=text], .field input[type=password] {
+    width: 100%; border: 1px solid var(--wa-border); border-radius: 8px;
+    padding: 9px 11px; font-size: 13.5px; font-family: inherit; background: #f7f8f9;
+    color: var(--wa-text);
+  }
+  .field input[type=text]:focus, .field input[type=password]:focus { outline: 2px solid var(--wa-accent); outline-offset: -1px; }
+
+  button {
+    border: none; border-radius: 8px; padding: 9px 14px; font-size: 13px; font-weight: 600;
+    cursor: pointer; background: var(--wa-header); color: white; font-family: inherit;
+  }
+  button:hover { filter: brightness(1.08); }
+  button.secondary { background: #eef2f1; color: #111b21; }
+  button.block { width: 100%; }
+
+  .example-list { display: flex; flex-direction: column; gap: 6px; margin-top: 6px; }
+  .example-list button {
+    text-align: left; background: #f7f8f9; border: 1px solid var(--wa-border);
+    color: var(--wa-text); font-weight: 500; font-size: 12.5px; padding: 9px 10px;
+  }
+  .example-list button:hover { background: #eef2f1; }
+
+  .sidebar-note {
+    font-size: 11px; color: var(--wa-sub); line-height: 1.5; margin: 4px 0 16px;
+    padding: 10px 11px; background: #f7f8f9; border-radius: 8px;
+  }
+  .sidebar-note code { background: #eaeef0; padding: 1px 4px; border-radius: 4px; }
+
+  /* ---------- Chat pane ---------- */
+  .chat-pane { display: flex; flex-direction: column; min-width: 0; height: 100vh; }
+  .chat-header {
+    background: var(--wa-header);
+    color: #fff; padding: 12px 20px;
+    display: flex; align-items: center; gap: 12px;
+  }
+  .chat-header .avatar {
+    width: 40px; height: 40px; border-radius: 50%;
+    background: rgba(255,255,255,.2); display: grid; place-items: center; font-size: 20px;
+  }
+  .chat-header .who h2 { margin: 0; font-size: 15.5px; font-weight: 600; }
+  .chat-header .who p { margin: 1px 0 0; font-size: 11.5px; opacity: .85; }
+  .chat-header .who { min-width: 0; }
+  .chat-header .inspector-toggle { margin-left: auto; background: rgba(255,255,255,.16); }
+
+  .transcript {
+    flex: 1; overflow-y: auto; padding: 18px 8%;
+    background-color: var(--wa-bg);
+    background-image:
+      linear-gradient(rgba(255,255,255,.35), rgba(255,255,255,.35)),
+      repeating-linear-gradient(45deg, rgba(0,0,0,.025) 0 2px, transparent 2px 26px),
+      repeating-linear-gradient(-45deg, rgba(0,0,0,.025) 0 2px, transparent 2px 26px);
+    display: flex; flex-direction: column; gap: 2px;
+  }
+  .day-chip {
+    align-self: center; background: #e1f2fb; color: #54656f;
+    font-size: 11.5px; padding: 5px 12px; border-radius: 8px; margin: 10px 0;
+    box-shadow: 0 1px 1px rgba(0,0,0,.08);
+  }
+
+  .row-wrap { display: flex; margin: 2px 0; }
+  .row-wrap.user { justify-content: flex-end; }
+  .row-wrap.assistant { justify-content: flex-start; }
+
+  .bubble {
+    max-width: 65%; padding: 7px 10px 8px; border-radius: 8px;
+    font-size: 14.2px; line-height: 1.42; position: relative;
+    box-shadow: 0 1px .5px rgba(0,0,0,.13);
+    white-space: pre-wrap; word-wrap: break-word;
+  }
+  .bubble.user { background: var(--wa-bubble-out); border-top-right-radius: 2px; }
+  .bubble.assistant { background: var(--wa-bubble-in); border-top-left-radius: 2px; }
+  .bubble.assistant.error { background: #fde2e1; }
+
+  .bubble .meta {
+    font-size: 10.5px; color: var(--wa-sub); margin-top: 4px;
+    display: flex; gap: 6px; align-items: center; justify-content: flex-end;
+  }
+  .bubble.assistant .meta { justify-content: flex-start; }
+  .bubble .ticks { color: #53bdeb; }
+
+  .document-card {
+    display: flex; align-items: center; gap: 10px; margin-top: 9px; padding: 9px 10px;
+    border: 1px solid var(--wa-border); border-radius: 8px; background: #f7f8f9;
+    color: var(--wa-text); text-decoration: none; white-space: normal;
+  }
+  .document-card:hover { background: #eef2f1; }
+  .document-card .document-icon { font-size: 24px; line-height: 1; flex: none; }
+  .document-card .document-copy { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+  .document-card .document-title { font-size: 12.5px; font-weight: 700; overflow-wrap: anywhere; }
+  .document-card .document-status { color: var(--wa-sub); font-size: 10.5px; }
+  .document-card.delivery-failed { border-color: #d9534f; }
+
+  details.trace { margin-top: 6px; }
+  details.trace summary {
+    cursor: pointer; color: var(--wa-header); font-size: 11px; font-weight: 600;
+    list-style: none;
+  }
+  details.trace summary::-webkit-details-marker { display: none; }
+  details.trace summary::before { content: "▸ "; }
+  details.trace[open] summary::before { content: "▾ "; }
+  details.trace pre {
+    background: #0000000d; border-radius: 8px; padding: 8px; font-size: 10.5px;
+    max-height: 240px; overflow: auto; margin: 6px 0 0; white-space: pre-wrap;
+  }
+
+  .composer {
+    background: #f0f2f5; padding: 10px 14px; display: flex; gap: 10px; align-items: flex-end;
+  }
+  .composer textarea {
+    flex: 1; min-height: 42px; max-height: 140px; resize: none;
+    border: none; border-radius: 21px; padding: 11px 16px; font-size: 14px;
+    font-family: inherit; background: #fff; color: var(--wa-text);
+  }
+  .composer textarea:focus { outline: none; box-shadow: 0 0 0 2px var(--wa-accent) inset; }
+  .composer button#sendBtn {
+    background: var(--wa-accent); color: #fff; width: 42px; height: 42px; border-radius: 50%;
+    font-size: 16px; padding: 0; flex: none;
+  }
+
+  .empty-state {
+    margin: auto; text-align: center; color: var(--wa-sub); max-width: 340px;
+  }
+  .empty-state .big { font-size: 46px; margin-bottom: 10px; }
+
+  /* ---------- Dark mode ---------- */
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --wa-bg: #0b141a;
+      --wa-panel: #111b21;
+      --wa-header: #202c33;
+      --wa-bubble-out: #005c4b;
+      --wa-bubble-in: #202c33;
+      --wa-text: #e9edef;
+      --wa-sub: #8696a0;
+      --wa-border: #2a3942;
+    }
+    body { background: #000; }
+    .field input[type=text], .field input[type=password] { background: #2a3942; border-color: #2a3942; color: #e9edef; }
+    .sidebar-note { background: #202c33; }
+    .sidebar-note code { background: #2a3942; }
+    .example-list button { background: #202c33; border-color: #2a3942; }
+    .example-list button:hover { background: #2a3942; }
+    button.secondary { background: #2a3942; color: #e9edef; }
+    .transcript {
+      background-image:
+        linear-gradient(rgba(0,0,0,.25), rgba(0,0,0,.25)),
+        repeating-linear-gradient(45deg, rgba(255,255,255,.02) 0 2px, transparent 2px 26px),
+        repeating-linear-gradient(-45deg, rgba(255,255,255,.02) 0 2px, transparent 2px 26px);
+    }
+    .day-chip { background: #182229; color: #8696a0; }
+    .bubble.assistant.error { background: #4a2323; }
+    .document-card { background: #2a3942; }
+    .document-card:hover { background: #34454f; }
+    .composer { background: #202c33; }
+    .composer textarea { background: #2a3942; color: #e9edef; }
+    details.trace pre { background: #ffffff0d; }
+    .flow-tool { background: #202c33; border-color: #2a3942; }
+    .flow-tool pre { background: #ffffff0d; }
+    .flow-tool summary { color: #8696a0; }
+    .flow-step .flow-sub code { background: #2a3942; }
+    .inspector-tab:hover { background: #ffffff08; }
+    .inspector-tab .count, .trace-filter, .copy-trace-btn { background: #2a3942; color: #c7d0d5; }
+    .trace-turn, .trace-turn-head, .trace-call { background: #202c33; }
+    .trace-call pre { background: #ffffff0d; }
+    .status-badge.success { background: #123c2c; color: #7ce4ac; }
+    .status-badge.error { background: #4a2323; color: #ffaaa7; }
+    .status-badge.handoff { background: #493718; color: #ffd28a; }
+  }
+
+  @media (max-width: 1100px) {
+    .app-shell { grid-template-columns: 270px 1fr; }
+    .flow-pane {
+      position: fixed; inset: 0 0 0 auto; width: min(92vw, 420px); z-index: 8;
+      box-shadow: -12px 0 30px rgba(0,0,0,.25); transform: translateX(102%);
+      transition: transform .2s ease;
+    }
+    .flow-pane.open { transform: translateX(0); }
+    .inspector-toggle, .inspector-close { display: inline-flex; align-items: center; justify-content: center; }
+    .inspector-close { width: 28px; height: 28px; padding: 0; background: rgba(255,255,255,.13); }
+  }
+
+  @media (max-width: 860px) {
+    .app-shell { grid-template-columns: 1fr; }
+    .sidebar { position: fixed; inset: 0; z-index: 5; transform: translateX(-100%); transition: transform .2s; }
+    .sidebar.open { transform: translateX(0); }
+  }
+</style>
+</head>
+<body>
+<div class="app-shell">
+  <aside class="sidebar" id="sidebar">
+    <div class="sidebar-header">
+      <div class="avatar">🐾</div>
+      <div>
+        <h1>Pawfect LLM Console</h1>
+        <p>Live /chat tester</p>
+      </div>
+    </div>
+    <div class="sidebar-body">
+      <div class="field">
+        <label>API base URL</label>
+        <input id="apiBase" type="text" value="http://127.0.0.1:8000">
+      </div>
+      <div class="field">
+        <label>Chat API key <span style="font-weight:400;text-transform:none;">(optional in local debug)</span></label>
+        <input id="chatApiKey" type="password" autocomplete="off" placeholder="Sent as X-Chat-Key; never stored">
+      </div>
+      <div class="field">
+        <label>Test phone number</label>
+        <input id="testPhone" type="text" value="+60 12-345 6701">
+      </div>
+      <div class="field">
+        <button id="resetSessionBtn" class="secondary block">↺ Reset session for this phone</button>
+      </div>
+
+      <div class="sidebar-note">
+        Points at the local FastAPI backend (project root <code>main.py</code>).
+        If opened as <code>file://</code> and requests fail, serve this folder
+        instead: <code>python -m http.server 8080</code>.
+      </div>
+
+      <div class="field">
+        <label>Quick examples</label>
+        <div style="margin-bottom:6px;">
+          <button id="randomBtn" class="secondary block">🎲 Send random message</button>
+        </div>
+        <div id="exampleList" class="example-list"></div>
+      </div>
+
+      <div class="field">
+        <label>Document templates</label>
+        <div class="sidebar-note" style="margin-bottom:8px;">
+          Renders with this company's real logo/name/address, sample
+          booking/payment data. Opens the PDF in a new tab.
+        </div>
+        <div class="example-list">
+          <button id="previewConfirmationBtn" class="secondary">📄 Preview booking confirmation</button>
+          <button id="previewInvoiceBtn" class="secondary">🧾 Preview invoice</button>
+        </div>
+      </div>
+    </div>
+  </aside>
+
+  <section class="chat-pane">
+    <div class="chat-header">
+      <div class="avatar">🐾</div>
+      <div class="who">
+        <h2>Pawfect Assistant</h2>
+        <p id="phoneLabel">+60 12-345 6701</p>
+      </div>
+      <button id="inspectorToggle" class="inspector-toggle" type="button">⚙ Tools</button>
+    </div>
+
+    <div id="transcript" class="transcript">
+      <div class="empty-state" id="emptyState">
+        <div class="big">💬</div>
+        <div>Type a message below, or pick a quick example from the sidebar, to start chatting with the assistant.</div>
+      </div>
+    </div>
+
+    <div class="composer">
+      <textarea id="consoleMessage" placeholder="Type a message… (Enter to send, Shift+Enter for newline)"></textarea>
+      <button id="sendBtn" title="Send">➤</button>
+    </div>
+  </section>
+
+  <aside class="flow-pane" id="inspectorPane">
+    <div class="flow-header">
+      <h2>⚙️ LLM Inspector</h2>
+      <div class="flow-header-actions">
+        <span class="flow-latency" id="flowLatency" style="display:none;"></span>
+        <button id="inspectorClose" class="inspector-close" type="button" aria-label="Close inspector">×</button>
+      </div>
+    </div>
+    <div class="inspector-tabs" role="tablist" aria-label="LLM inspector views">
+      <button class="inspector-tab active" id="toolCallsTab" data-panel="toolCallsPanel" role="tab" aria-selected="true">
+        Tool calls <span class="count" id="toolCallTotal">0</span>
+      </button>
+      <button class="inspector-tab" id="flowTab" data-panel="flowPanel" role="tab" aria-selected="false">Flow</button>
+    </div>
+    <div id="toolCallsPanel" class="inspector-panel trace-panel" role="tabpanel">
+      <div class="trace-toolbar" aria-label="Tool call filters">
+        <button class="trace-filter active" data-filter="all" type="button">All</button>
+        <button class="trace-filter" data-filter="errors" type="button">Errors / handoff</button>
+        <button class="trace-filter" data-filter="writes" type="button">Writes</button>
+      </div>
+      <div id="traceHistory" class="trace-history" aria-live="polite"></div>
+    </div>
+    <div id="flowPanel" class="inspector-panel" role="tabpanel" hidden>
+      <div id="flowBody" class="flow-body">
+        <div class="flow-empty" id="flowEmpty">
+          Send a message to see the actual <code>POST /chat</code> pipeline: session and identity lookup,
+          scenario-scoped tool loop, reply generation, state save, and delivery.
+        </div>
+        <div class="flow-steps" id="flowSteps" style="display:none;"></div>
+      </div>
+    </div>
+  </aside>
+</div>
+
+<script>
+const EXAMPLE_MESSAGES = [
+  "Hi",
+  "Do you have grooming slots available tomorrow?",
+  "What's your cancellation policy?",
+  "How many loyalty points do I have?",
+  "What breeds can go for boarding?",
+  "Can I reschedule my booking to next Monday afternoon?",
+  "I want to cancel my booking",
+  "What's the price for a full groom?",
+];
+
+function apiBase() {
+  return document.getElementById('apiBase').value.trim().replace(/\/$/, '');
+}
+
+function currentPhone() {
+  return document.getElementById('testPhone').value.trim();
+}
+
+document.getElementById('testPhone').addEventListener('input', () => {
+  document.getElementById('phoneLabel').textContent = currentPhone() || '(no phone set)';
+});
+
+async function callChat(phone, message) {
+  const headers = { 'Content-Type': 'application/json' };
+  const chatKey = document.getElementById('chatApiKey').value.trim();
+  if (chatKey) headers['X-Chat-Key'] = chatKey;
+  const res = await fetch(apiBase() + '/chat', {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({ message, phone_number: phone }),
+  });
+  if (!res.ok) {
+    const text = await res.text().catch(() => '');
+    throw new Error('HTTP ' + res.status + ' ' + text.slice(0, 200));
+  }
+  return res.json();
+}
+
+async function resetSession(phone) {
+  const res = await fetch(apiBase() + '/debug/clear-session', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ phone_number: phone }),
+  });
+  if (!res.ok) {
+    const text = await res.text().catch(() => '');
+    throw new Error('HTTP ' + res.status + ' ' + text.slice(0, 200));
+  }
+  return res.json();
+}
+
+document.getElementById('resetSessionBtn').addEventListener('click', async () => {
+  const phone = currentPhone();
+  try {
+    const data = await resetSession(phone);
+    if (data.cleared) {
+      alert('Session reset for ' + phone);
+    } else {
+      alert('No active session found for ' + phone + ' (nothing to reset — this is fine if you never chatted with this number yet).');
+    }
+    transcriptEl.innerHTML = '';
+    ensureEmptyState();
+    document.getElementById('flowSteps').style.display = 'none';
+    document.getElementById('flowLatency').style.display = 'none';
+    document.getElementById('flowEmpty').style.display = '';
+    clearTraceHistory();
+  } catch (e) {
+    alert('Reset FAILED for ' + phone + ': ' + (e && e.message || e) + '\n\nCheck the API base URL and that the backend is running.');
+  }
+});
+
+// ---------- Console ----------
+const transcriptEl = document.getElementById('transcript');
+
+function ensureEmptyState() {
+  if (!transcriptEl.querySelector('.bubble')) {
+    const div = document.createElement('div');
+    div.className = 'empty-state';
+    div.id = 'emptyState';
+    div.innerHTML = '<div class="big">💬</div><div>Type a message below, or pick a quick example from the sidebar, to start chatting with the assistant.</div>';
+    transcriptEl.appendChild(div);
+  }
+}
+
+function removeEmptyState() {
+  const el = document.getElementById('emptyState');
+  if (el) el.remove();
+}
+
+function nowLabel() {
+  const d = new Date();
+  return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+}
+
+function appendBubble(role, text, opts) {
+  opts = opts || {};
+  removeEmptyState();
+  const wrap = document.createElement('div');
+  wrap.className = 'row-wrap ' + role;
+  const div = document.createElement('div');
+  div.className = 'bubble ' + role + (opts.isError ? ' error' : '');
+  const metaBits = [nowLabel()];
+  if (opts.latency != null) metaBits.unshift(opts.latency + ' ms');
+  const ticks = role === 'user' ? '<span class="ticks">✓✓</span>' : '';
+  div.innerHTML = escapeHtml(text).replace(/\n/g, '<br>') +
+    `<div class="meta">${opts.toolsList ? escapeHtml(opts.toolsList) + ' · ' : ''}${metaBits.join(' · ')} ${ticks}</div>`;
+  wrap.appendChild(div);
+  transcriptEl.appendChild(wrap);
+  transcriptEl.scrollTop = transcriptEl.scrollHeight;
+  return div;
+}
+
+function documentsFromResponse(data) {
+  if (Array.isArray(data?.documents) && data.documents.length) return data.documents;
+  // Backward-compatible fallback for an older backend response contract.
+  const documents = [];
+  for (const t of (data?.tool_trace || [])) {
+    let parsed;
+    try { parsed = typeof t.result === 'object' ? t.result : JSON.parse(t.result); }
+    catch (e) { continue; }
+    const details = parsed?.data || {};
+    const url = details._internal_document_url || details._internal_confirmation_url;
+    if (!url) continue;
+    const deliveryStatus = details.delivery_status || details.confirmation_delivery_status || '';
+    documents.push({
+      kind: 'document',
+      document_type: 'booking_confirmation',
+      label: 'Booking confirmation',
+      url,
+      delivery_status: deliveryStatus,
+      delivered: ['sent', 'sent_console'].includes(deliveryStatus),
+      source_tool: t.tool,
+    });
+  }
+  return documents;
+}
+
+function appendDocumentCards(bubble, documents) {
+  const meta = bubble.querySelector('.meta');
+  for (const documentItem of documents) {
+    if (!documentItem?.url) continue;
+    const link = document.createElement('a');
+    link.className = 'document-card' + (documentItem.delivered ? '' : ' delivery-failed');
+    link.href = documentItem.url;
+    link.target = '_blank';
+    link.rel = 'noopener';
+
+    const icon = document.createElement('span');
+    icon.className = 'document-icon';
+    icon.textContent = '📄';
+
+    const copy = document.createElement('span');
+    copy.className = 'document-copy';
+    const title = document.createElement('span');
+    title.className = 'document-title';
+    title.textContent = documentItem.label || 'Booking confirmation';
+    const status = document.createElement('span');
+    status.className = 'document-status';
+    status.textContent = documentItem.delivered
+      ? `Document dispatched · ${documentItem.delivery_status || 'sent'}`
+      : `PDF generated, but delivery was not confirmed · ${documentItem.delivery_status || 'unknown'}`;
+    copy.append(title, status);
+    link.append(icon, copy);
+    bubble.insertBefore(link, meta);
+  }
+}
+
+async function sendConsoleMessage(message) {
+  if (!message.trim()) return;
+  appendBubble('user', message);
+  const phone = currentPhone();
+  const started = performance.now();
+  startFlow(phone, message);
+  try {
+    const data = await callChat(phone, message);
+    const latency = data.latency_ms ?? Math.round(performance.now() - started);
+    const toolsList = (data.tool_trace || []).map(t => t.tool).join(', ') || '';
+    const bubble = appendBubble('assistant', data.error ? ('Error: ' + data.error) : (data.reply || '(empty reply)'), {
+      latency, toolsList, isError: !!data.error,
+    });
+    appendDocumentCards(bubble, documentsFromResponse(data));
+    if ((data.tool_trace || []).length) {
+      const details = document.createElement('details');
+      details.className = 'trace';
+      details.innerHTML = `<summary>tool trace (${data.tool_trace.length})</summary><pre>${escapeHtml(JSON.stringify(data.tool_trace, null, 2))}</pre>`;
+      bubble.appendChild(details);
+    }
+    finishFlow(phone, message, data, latency);
+    recordTraceTurn(phone, message, data, latency);
+  } catch (e) {
+    appendBubble('assistant', 'Request failed: ' + (e && e.message || e), { isError: true });
+    errorFlow(phone, message, e);
+    recordTraceTurn(phone, message, null, Math.round(performance.now() - started), e);
+  }
+}
+
+// ---------- Tool call inspector ----------
+// Stores this browser tab's complete turn history. The backend remains the
+// source of truth: every entry shown here came back in /chat.tool_trace.
+const WRITE_TOOLS = new Set([
+  'create_customer', 'create_pet', 'update_pet_vaccination',
+  'create_booking', 'cancel_booking', 'reschedule_booking',
+  'redeem_reward', 'register_loyalty_member', 'update_conversation_state',
+]);
+let traceTurns = [];
+let traceTurnCounter = 0;
+let activeTraceFilter = 'all';
+
+function parseToolResult(toolCall) {
+  if (toolCall && typeof toolCall.result === 'object') return toolCall.result;
+  try { return JSON.parse(toolCall?.result); }
+  catch (e) { return toolCall?.result ?? null; }
+}
+
+function inspectToolOutcome(toolCall) {
+  const result = parseToolResult(toolCall);
+  const status = String(result?.status || '').toLowerCase();
+  const handoff = Boolean(result?.handoff_required);
+  const error = Boolean(result?.error) || ['error', 'failed', 'failure', 'rejected'].includes(status);
+  if (error) return { kind: 'error', label: status || 'error', result };
+  if (handoff) return { kind: 'handoff', label: 'handoff', result };
+  if (['success', 'ok', 'completed'].includes(status)) return { kind: 'success', label: status, result };
+  return { kind: 'neutral', label: status || 'returned', result };
+}
+
+function toolMatchesFilter(toolCall) {
+  if (activeTraceFilter === 'all') return true;
+  if (activeTraceFilter === 'writes') return WRITE_TOOLS.has(toolCall.tool);
+  const outcome = inspectToolOutcome(toolCall);
+  return outcome.kind === 'error' || outcome.kind === 'handoff';
+}
+
+function recordTraceTurn(phone, message, data, latency, requestError) {
+  traceTurns.push({
+    id: ++traceTurnCounter,
+    phone,
+    message,
+    latency,
+    requestError: requestError ? ((requestError && requestError.message) || String(requestError)) : '',
+    response: data || null,
+    calls: data?.tool_trace || [],
+  });
+  renderTraceHistory();
+}
+
+function clearTraceHistory() {
+  traceTurns = [];
+  traceTurnCounter = 0;
+  renderTraceHistory();
+}
+
+function renderToolCall(toolCall, callIndex, turnId) {
+  const outcome = inspectToolOutcome(toolCall);
+  const result = outcome.result;
+  const duration = toolCall.duration_ms == null ? '—' : `${toolCall.duration_ms} ms`;
+  const iteration = toolCall.iteration == null ? 'legacy trace' : `iteration ${toolCall.iteration}`;
+  const executionMode = toolCall.execution_mode || 'legacy / unknown mode';
+  const batchDuration = toolCall.batch_duration_ms == null ? '' : ` / ${toolCall.batch_duration_ms} ms`;
+  const batchSize = toolCall.batch_size == null ? '' : ` · batch ${toolCall.batch_size}${batchDuration}`;
+  const executorInfo = toolCall.executor_max_workers == null ? '' : ` · pool ${toolCall.executor_max_workers}`;
+  const queueInfo = toolCall.queue_wait_ms == null ? '' : ` · queue ${toolCall.queue_wait_ms} ms`;
+  const executionOrder = toolCall.execution_order == null ? '' : ` · executed #${toolCall.execution_order}`;
+  const blockReason = toolCall.parallel_block_reason
+    ? `<div class="trace-call-meta">Parallel gate: ${escapeHtml(toolCall.parallel_block_reason)}</div>` : '';
+  const handoffReason = result?.handoff_reason
+    ? `<div class="trace-call-meta">Handoff reason: ${escapeHtml(result.handoff_reason)}</div>` : '';
+  return `<section class="trace-call ${outcome.kind === 'error' ? 'error' : ''} ${outcome.kind === 'handoff' ? 'handoff' : ''}">
+    <div class="trace-call-head">
+      <span class="trace-call-index">${callIndex + 1}</span>
+      <span class="trace-call-name" title="${escapeHtml(toolCall.tool)}">${escapeHtml(toolCall.tool || '(unnamed tool)')}</span>
+      <span class="status-badge ${outcome.kind}">${escapeHtml(outcome.label)}</span>
+      <span class="trace-call-time">${escapeHtml(duration)}</span>
+    </div>
+    <div class="trace-call-meta">${escapeHtml(iteration)}${escapeHtml(batchSize)} · ${escapeHtml(executionMode)}${escapeHtml(executionOrder)}${escapeHtml(executorInfo)}${escapeHtml(queueInfo)} · id ${escapeHtml(toolCall.tool_call_id || 'not returned')}</div>
+    ${blockReason}
+    ${handoffReason}
+    <details><summary>Executed args</summary><pre>${escapeHtml(JSON.stringify(toolCall.args ?? {}, null, 2))}</pre></details>
+    <details><summary>Tool result</summary><pre>${escapeHtml(JSON.stringify(result, null, 2))}</pre></details>
+    <div class="trace-call-actions"><button class="copy-trace-btn" type="button" data-turn-id="${turnId}" data-call-index="${callIndex}">Copy JSON</button></div>
+  </section>`;
+}
+
+function renderTraceHistory() {
+  const historyEl = document.getElementById('traceHistory');
+  if (!historyEl) return;
+  const totalCalls = traceTurns.reduce((sum, turn) => sum + turn.calls.length, 0);
+  document.getElementById('toolCallTotal').textContent = String(totalCalls);
+  if (!traceTurns.length) {
+    historyEl.innerHTML = '<div class="trace-empty">No requests yet.<br>Each turn will show the actual tool name, executed args, result, iteration, parallel/sequential mode, gate reason, status, and duration.</div>';
+    return;
+  }
+
+  const rendered = [];
+  for (const turn of [...traceTurns].reverse()) {
+    const matchingCalls = turn.calls.filter(toolMatchesFilter);
+    const agentState = turn.response?.agent_state || null;
+    const includeRequestError = activeTraceFilter !== 'writes' && Boolean(turn.requestError);
+    if (activeTraceFilter !== 'all' && !matchingCalls.length && !includeRequestError) continue;
+    const hasIssue = Boolean(turn.requestError) || turn.calls.some(call => {
+      const kind = inspectToolOutcome(call).kind;
+      return kind === 'error' || kind === 'handoff';
+    });
+    const callsHtml = matchingCalls.length
+      ? matchingCalls.map(call => renderToolCall(call, turn.calls.indexOf(call), turn.id)).join('')
+      : (turn.requestError
+          ? `<div class="trace-request-error">Request error: ${escapeHtml(turn.requestError)}</div>`
+          : '<div class="trace-no-calls">No model-requested tool call ran this turn; server prefetch or cached evidence may still have been used.</div>');
+    const stateHtml = agentState
+      ? `<div class="trace-call-meta">Agent state: scenario ${escapeHtml(agentState.active_scenario || '—')} · service ${escapeHtml(agentState.service_type || '—')} · step ${escapeHtml(agentState.current_step || '—')} · completion ${escapeHtml(agentState.completion_status || '—')} · evidence ${escapeHtml(String(agentState.recent_evidence_count ?? 0))}</div>`
+      : '';
+    rendered.push(`<article class="trace-turn ${hasIssue ? 'has-error' : ''}">
+      <header class="trace-turn-head">
+        <div class="trace-turn-title"><strong>Turn ${turn.id}</strong><span>${turn.calls.length} call${turn.calls.length === 1 ? '' : 's'}</span><span class="turn-latency">${Math.round(turn.latency || 0)} ms total</span></div>
+        <div class="trace-message" title="${escapeHtml(turn.message)}">Customer: ${escapeHtml(turn.message)}</div>
+      </header>
+      ${stateHtml}
+      ${callsHtml}
+    </article>`);
+  }
+  historyEl.innerHTML = rendered.join('') || '<div class="trace-empty">No tool calls match this filter.</div>';
+}
+
+function selectInspectorPanel(panelId) {
+  document.querySelectorAll('.inspector-tab').forEach(tab => {
+    const selected = tab.dataset.panel === panelId;
+    tab.classList.toggle('active', selected);
+    tab.setAttribute('aria-selected', String(selected));
+  });
+  document.querySelectorAll('.inspector-panel').forEach(panel => {
+    panel.hidden = panel.id !== panelId;
+  });
+}
+
+document.querySelectorAll('.inspector-tab').forEach(tab => {
+  tab.addEventListener('click', () => selectInspectorPanel(tab.dataset.panel));
+});
+document.querySelectorAll('.trace-filter').forEach(button => {
+  button.addEventListener('click', () => {
+    activeTraceFilter = button.dataset.filter;
+    document.querySelectorAll('.trace-filter').forEach(item => item.classList.toggle('active', item === button));
+    renderTraceHistory();
+  });
+});
+document.getElementById('traceHistory').addEventListener('click', async event => {
+  const button = event.target.closest('.copy-trace-btn');
+  if (!button) return;
+  const turn = traceTurns.find(item => item.id === Number(button.dataset.turnId));
+  const toolCall = turn?.calls[Number(button.dataset.callIndex)];
+  if (!toolCall) return;
+  try {
+    await navigator.clipboard.writeText(JSON.stringify(toolCall, null, 2));
+    button.textContent = 'Copied';
+    setTimeout(() => { button.textContent = 'Copy JSON'; }, 1200);
+  } catch (e) {
+    alert('Clipboard access failed. Open Executed args / Tool result and copy manually.');
+  }
+});
+document.getElementById('inspectorToggle').addEventListener('click', () => {
+  document.getElementById('inspectorPane').classList.add('open');
+});
+document.getElementById('inspectorClose').addEventListener('click', () => {
+  document.getElementById('inspectorPane').classList.remove('open');
+});
+
+// ---------- Backend Flow Process ----------
+// Mirrors the real /chat pipeline in main.py + app/orchestrator.py:
+//   1. request received (phone_number + message)
+//   2. company/session/identity resolved (get_relational_company_id,
+//      ConversationMemory.get, _resolve_identity)
+//   3. Evidence-driven tool-calling loop (runtime context refresh -> model
+//      decision -> dependency-aware tool execution -> observed result, up to
+//      MAX_TOOL_ITERATIONS). Scenario changes rebind tools during the turn;
+//      one narrow grounding repair is allowed when a live claim has no tool
+//      evidence. Every tool_trace entry is a real call, not a mock.
+//   4. final reply text produced once the model stops calling tools
+//   5. ConversationMemory.save persists turn_counter/history/etc.
+//   6. HTTP response returned with tool_trace + latency_ms
+// startFlow() renders steps 1-2 optimistically the instant the request is
+// sent; finishFlow()/errorFlow() re-render the whole list once the real
+// response (or a network error) comes back.
+function flowStepHtml(state, dotContent, title, subHtml) {
+  // state: 'done' | 'active' | 'pending' | 'error'
+  const cls = state === 'pending' ? '' : (state + ' shown');
+  return `<div class="flow-step ${cls}">
+    <div class="flow-dot">${dotContent}</div>
+    <h4>${title}</h4>
+    <div class="flow-sub">${subHtml}</div>
+  </div>`;
+}
+
+function toolStepHtml(t, i) {
+  let argsResult = '';
+  try {
+    argsResult = JSON.stringify({ args: t.args, result: JSON.parse(t.result) }, null, 2);
+  } catch (e) {
+    argsResult = JSON.stringify({ args: t.args, result: t.result }, null, 2);
+  }
+  const order = t.execution_order == null ? '' : ` · executed #${t.execution_order}`;
+  return `<div class="flow-tool">
+    <div class="flow-tool-name"><span class="n">${i + 1}</span> ${escapeHtml(t.tool)}${escapeHtml(order)}</div>
+    <details><summary></summary><pre>${escapeHtml(argsResult)}</pre></details>
+  </div>`;
+}
+
+function startFlow(phone, message) {
+  document.getElementById('flowEmpty').style.display = 'none';
+  document.getElementById('flowLatency').style.display = 'none';
+  const stepsEl = document.getElementById('flowSteps');
+  stepsEl.style.display = '';
+  stepsEl.innerHTML =
+    flowStepHtml('done', '1', '📥 Message Received',
+      `<code>POST /chat</code> · phone <code>${escapeHtml(phone || '(none)')}</code><br>"${escapeHtml(message)}"`) +
+    flowStepHtml('active', '2', '🔑 Resolving company, session &amp; identity',
+      'get_relational_company_id() · ConversationMemory.get() · _resolve_identity() …');
+}
+
+function finishFlow(phone, message, data, latency) {
+  const stepsEl = document.getElementById('flowSteps');
+  const trace = data.tool_trace || [];
+
+  const step2 = flowStepHtml('done', '2', '🔑 Company, session &amp; identity resolved',
+    `company_id <code>${escapeHtml(String(data.company_id ?? '—'))}</code> · ` +
+    `customer_id <code>${escapeHtml(String(data.customer_id ?? '—'))}</code>`);
+
+  const step3sub = trace.length
+    ? `The evidence-driven loop called <strong>${trace.length}</strong> tool${trace.length === 1 ? '' : 's'} before answering (dynamic context + dependency ordering, max 9 iterations):` +
+      `<div class="flow-tool-list">${trace.map(toolStepHtml).join('')}</div>`
+    : 'No model-requested tool call was executed this turn. Server-side identity/pet/booking prefetch or cached runtime evidence may still have been used.';
+  const step3 = flowStepHtml('done', '3', '🧠 LLM tool-calling loop', step3sub);
+
+  const step4 = flowStepHtml(data.error ? 'error' : 'done', '4',
+    data.error ? '⚠️ Error during processing' : '✍️ Final reply generated',
+    data.error
+      ? escapeHtml(data.error)
+      : `"${escapeHtml((data.reply || '').slice(0, 140))}${(data.reply || '').length > 140 ? '…' : ''}"`);
+
+  const step5 = flowStepHtml('done', '5', '💾 Conversation state saved',
+    'ConversationMemory.save() — history, evidence, cached pet/booking context persisted for the next turn.' +
+    (data.agent_state
+      ? `<br>scenario <code>${escapeHtml(data.agent_state.active_scenario || '—')}</code> · service <code>${escapeHtml(data.agent_state.service_type || '—')}</code> · step <code>${escapeHtml(data.agent_state.current_step || '—')}</code> · completion <code>${escapeHtml(data.agent_state.completion_status || '—')}</code>`
+      : ''));
+
+  const step6 = flowStepHtml('done', '6', '📤 Response returned to console',
+    `<code>tool_trace</code> (${trace.length}) + <code>latency_ms</code> sent back in the HTTP response.`);
+
+  stepsEl.innerHTML =
+    flowStepHtml('done', '1', '📥 Message Received',
+      `<code>POST /chat</code> · phone <code>${escapeHtml(phone || '(none)')}</code><br>"${escapeHtml(message)}"`) +
+    step2 + step3 + step4 + step5 + step6;
+
+  const latencyEl = document.getElementById('flowLatency');
+  latencyEl.textContent = Math.round(latency) + ' ms';
+  latencyEl.style.display = '';
+}
+
+function errorFlow(phone, message, e) {
+  const stepsEl = document.getElementById('flowSteps');
+  stepsEl.innerHTML =
+    flowStepHtml('done', '1', '📥 Message Received',
+      `<code>POST /chat</code> · phone <code>${escapeHtml(phone || '(none)')}</code><br>"${escapeHtml(message)}"`) +
+    flowStepHtml('error', '2', '⚠️ Request failed before reaching the backend',
+      escapeHtml((e && e.message) || String(e)) + '<br>Check the API base URL and that the backend is running.');
+}
+
+document.getElementById('sendBtn').addEventListener('click', () => {
+  const box = document.getElementById('consoleMessage');
+  const msg = box.value;
+  box.value = '';
+  sendConsoleMessage(msg);
+});
+document.getElementById('consoleMessage').addEventListener('keydown', e => {
+  if (e.key === 'Enter' && !e.shiftKey) {
+    e.preventDefault();
+    document.getElementById('sendBtn').click();
+  }
+});
+document.getElementById('randomBtn').addEventListener('click', () => {
+  const msg = EXAMPLE_MESSAGES[Math.floor(Math.random() * EXAMPLE_MESSAGES.length)];
+  sendConsoleMessage(msg);
+});
+
+function renderExampleList() {
+  const el = document.getElementById('exampleList');
+  el.innerHTML = '';
+  EXAMPLE_MESSAGES.forEach(msg => {
+    const btn = document.createElement('button');
+    btn.textContent = msg;
+    btn.addEventListener('click', () => sendConsoleMessage(msg));
+    el.appendChild(btn);
+  });
+}
+
+function escapeHtml(s) {
+  return String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
+
+renderExampleList();
+renderTraceHistory();
+document.getElementById('phoneLabel').textContent = currentPhone();
+
+document.getElementById('previewConfirmationBtn').addEventListener('click', () => {
+  window.open(apiBase() + '/documents/preview/booking-confirmation', '_blank');
+});
+document.getElementById('previewInvoiceBtn').addEventListener('click', () => {
+  window.open(apiBase() + '/documents/preview/invoice', '_blank');
+});
+</script>
+</body>
+</html>

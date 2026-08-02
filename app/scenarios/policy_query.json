@@ -1,0 +1,8 @@
+{
+  "scenario": "POLICY_QUERY",
+  "goal": "Answer the customer's company-specific policy or service-information question from verified knowledge.",
+  "required_evidence": ["verified_company_context_or_policy_retrieval"],
+  "completion_condition": "The answer is grounded in runtime company context or retrieve_policy/get_booking_service_options output.",
+  "flow_policy": "Answer directly once evidence is sufficient; preserve any unrelated active customer task as a side question.",
+  "rag_required": true
+}

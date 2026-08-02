@@ -32,7 +32,7 @@ logs/
 data/
 archive/
 docs/
-tools/
+/tools/
 notebooks/
 .ipynb_checkpoints/
 

@@ -8,6 +8,7 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Playfair+Display:wght@600;700&family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="index.css">
+  <link rel="stylesheet" href="admin-theme.css">
 </head>
 
 <body class="dash-page">
@@ -17,10 +18,13 @@
   <aside class="dash-sidebar">
 
     <div class="dash-brand">
-      <div class="dash-brand-avatar"><img src="icon/logo.png" alt="Pawfect AI" class="brand-logo-img"></div>
-      <div class="dash-brand-text">
-        <span class="dash-brand-name">Pawfect AI</span>
-        <span class="dash-brand-sub">Staff portal</span>
+      <div class="sidebar-account">
+        <div class="sidebar-account-avatar" id="sidebarAccountAvatar">👤</div>
+        <div class="sidebar-account-info">
+          <span class="sidebar-account-role" id="sidebarAccountRole">Staff</span>
+          <span class="sidebar-account-business" id="sidebarAccountBusiness"></span>
+          <span class="sidebar-account-email" id="sidebarAccountEmail"></span>
+        </div>
       </div>
       <button type="button" class="mobile-nav-toggle" id="mobileNavToggle" onclick="toggleMobileNav()" aria-label="Toggle navigation menu">
         <img src="icon/list-view.png" alt="">
@@ -41,21 +45,16 @@
     </nav>
 
     <div class="dash-sidebar-footer">
-      <div class="sidebar-account">
-        <div class="sidebar-account-avatar" id="sidebarAccountAvatar">👤</div>
-        <div class="sidebar-account-info">
-          <span class="sidebar-account-role" id="sidebarAccountRole">Staff</span>
-          <span class="sidebar-account-business" id="sidebarAccountBusiness"></span>
-          <span class="sidebar-account-email" id="sidebarAccountEmail"></span>
-        </div>
-      </div>
-
       <div class="sidebar-switch-wrap">
         <button type="button" class="btn btn-secondary sidebar-switch-btn" onclick="toggleSwitchAccountMenu()"><span class="nav-icon-wrap switch-btn-icon-wrap"><img src="icon/switchacc.png" alt="" class="nav-icon"></span>Switch Account</button>
         <div class="sidebar-switch-menu" id="switchAccountMenu"></div>
       </div>
 
       <a href="login.html" id="logoutBtn" class="btn btn-logout" style="width:100%;justify-content:center;font-size:0.88rem;">Logout</a>
+
+      <div class="dash-brand-copyright">
+        <span class="dash-brand-name">&copy; 2026 Pawfect AI</span>
+      </div>
     </div>
 
   </aside>
@@ -75,7 +74,7 @@
       </div>
 
       <!-- Search row -->
-      <div style="display:flex;gap:12px;flex-wrap:wrap;margin-top:20px;padding-top:20px;border-top:1px solid var(--accent-sand);">
+      <div style="display:flex;gap:12px;flex-wrap:wrap;margin-top:12px;">
         <input
           type="text"
           id="loyaltySearchInput"
@@ -95,25 +94,21 @@
     <!-- KPI Cards -->
     <section class="bk-section bk-section-slim">
       <div class="bk-kpi-grid">
-        <div class="metric-card">
+        <div class="metric-card" style="border-color:#059669;">
           <h3>Total Members</h3>
           <p id="loyaltyTotalMembers">0</p>
-          <small style="font-size:0.78rem;color:var(--text-muted);">Enrolled in loyalty program</small>
         </div>
-        <div class="metric-card" style="border-color:#FEF3C7;">
-          <h3 style="color:#92400E;">Total Redemptions</h3>
+        <div class="metric-card" style="border-color:#059669;">
+          <h3>Total Redemptions</h3>
           <p id="loyaltyPendingCount">0</p>
-          <small style="font-size:0.78rem;color:var(--text-muted);">Point-spending transactions in range</small>
         </div>
         <div class="metric-card">
           <h3>Gold+ Members</h3>
           <p id="loyaltyGoldCount">0</p>
-          <small style="font-size:0.78rem;color:var(--text-muted);">Gold &amp; Platinum tier members</small>
         </div>
         <div class="metric-card">
           <h3>Points Redeemed</h3>
           <p id="loyaltyPointsRedeemed">0</p>
-          <small style="font-size:0.78rem;color:var(--text-muted);">Points redeemed on selected date</small>
         </div>
       </div>
     </section>
@@ -133,7 +128,6 @@
       <div class="bk-view-header" style="margin-bottom:16px;">
         <div>
           <h2 style="font-family:var(--font-serif);font-size:1.15rem;font-weight:700;margin-bottom:2px;">Pending Redemption</h2>
-          <p style="font-size:0.78rem;color:var(--text-muted);">Redemption records whose current status is Pending</p>
         </div>
         <span id="loyaltyPendingRedemptionRecordCount" style="font-size:0.78rem;font-weight:700;color:var(--text-muted);white-space:nowrap;">0 records</span>
       </div>
@@ -155,7 +149,6 @@
       <div class="bk-view-header" style="margin-bottom:16px;">
         <div>
           <h2 style="font-family:var(--font-serif);font-size:1.15rem;font-weight:700;margin-bottom:2px;">Redemption History</h2>
-          <p style="font-size:0.78rem;color:var(--text-muted);">Every point-earning or point-spending transaction, logged automatically when a payment is verified</p>
         </div>
         <span id="loyaltyPendingRecordCount" style="font-size:0.78rem;font-weight:700;color:var(--text-muted);white-space:nowrap;">0 records</span>
       </div>
@@ -177,7 +170,6 @@
       <div class="bk-view-header" style="margin-bottom:16px;">
         <div>
           <h2 style="font-family:var(--font-serif);font-size:1.15rem;font-weight:700;margin-bottom:2px;">Member List</h2>
-          <p style="font-size:0.78rem;color:var(--text-muted);">All current loyalty members with tier and points balance</p>
         </div>
         <span id="loyaltyMemberRecordCount" style="font-size:0.78rem;font-weight:700;color:var(--text-muted);white-space:nowrap;">0 members</span>
       </div>
@@ -199,17 +191,15 @@
       <div class="bk-view-header" style="margin-bottom:16px;">
         <div>
           <h2 style="font-family:var(--font-serif);font-size:1.15rem;font-weight:700;margin-bottom:2px;">Point Earning Rate</h2>
-          <p style="font-size:0.78rem;color:var(--text-muted);">How many loyalty points a member earns per RM spent</p>
         </div>
       </div>
       <div style="display:flex;gap:12px;flex-wrap:wrap;align-items:flex-end;">
         <p style="font-size:0.85rem;color:var(--text-muted);">Configured server-side via the <code>LOYALTY_EARN_RATE</code> environment variable — not editable from this screen.</p>
       </div>
 
-      <div class="bk-view-header" style="margin:28px 0 16px;padding-top:20px;border-top:1px solid var(--accent-sand);">
+      <div class="bk-view-header" style="margin:28px 0 16px;padding-top:20px;border-top:1px solid var(--divider-brown);">
         <div>
           <h2 style="font-family:var(--font-serif);font-size:1.15rem;font-weight:700;margin-bottom:2px;">Redemption Rules</h2>
-          <p style="font-size:0.78rem;color:var(--text-muted);">How many points a member needs to redeem a discount or free service</p>
         </div>
         <button class="btn btn-primary" onclick="openRuleForm()">+ Add Rule</button>
       </div>

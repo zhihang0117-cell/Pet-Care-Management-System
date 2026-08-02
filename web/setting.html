@@ -8,6 +8,7 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Playfair+Display:wght@600;700&family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="index.css">
+  <link rel="stylesheet" href="admin-theme.css">
 </head>
 
 <body class="dash-page">
@@ -17,10 +18,13 @@
   <aside class="dash-sidebar">
 
     <div class="dash-brand">
-      <div class="dash-brand-avatar"><img src="icon/logo.png" alt="Pawfect AI" class="brand-logo-img"></div>
-      <div class="dash-brand-text">
-        <span class="dash-brand-name">Pawfect AI</span>
-        <span class="dash-brand-sub">Staff portal</span>
+      <div class="sidebar-account">
+        <div class="sidebar-account-avatar" id="sidebarAccountAvatar">👤</div>
+        <div class="sidebar-account-info">
+          <span class="sidebar-account-role" id="sidebarAccountRole">Staff</span>
+          <span class="sidebar-account-business" id="sidebarAccountBusiness"></span>
+          <span class="sidebar-account-email" id="sidebarAccountEmail"></span>
+        </div>
       </div>
       <button type="button" class="mobile-nav-toggle" id="mobileNavToggle" onclick="toggleMobileNav()" aria-label="Toggle navigation menu">
         <img src="icon/list-view.png" alt="">
@@ -41,21 +45,16 @@
     </nav>
 
     <div class="dash-sidebar-footer">
-      <div class="sidebar-account">
-        <div class="sidebar-account-avatar" id="sidebarAccountAvatar">👤</div>
-        <div class="sidebar-account-info">
-          <span class="sidebar-account-role" id="sidebarAccountRole">Staff</span>
-          <span class="sidebar-account-business" id="sidebarAccountBusiness"></span>
-          <span class="sidebar-account-email" id="sidebarAccountEmail"></span>
-        </div>
-      </div>
-
       <div class="sidebar-switch-wrap">
         <button type="button" class="btn btn-secondary sidebar-switch-btn" onclick="toggleSwitchAccountMenu()"><span class="nav-icon-wrap switch-btn-icon-wrap"><img src="icon/switchacc.png" alt="" class="nav-icon"></span>Switch Account</button>
         <div class="sidebar-switch-menu" id="switchAccountMenu"></div>
       </div>
 
       <a href="login.html" id="logoutBtn" class="btn btn-logout" style="width:100%;justify-content:center;font-size:0.88rem;">Logout</a>
+
+      <div class="dash-brand-copyright">
+        <span class="dash-brand-name">&copy; 2026 Pawfect AI</span>
+      </div>
     </div>
 
   </aside>
@@ -75,7 +74,7 @@
         </div>
       </div>
 
-      <div class="bk-tab-group" id="settingsTabs" style="margin-top:20px;padding-top:20px;border-top:1px solid var(--accent-sand);">
+      <div class="bk-tab-group" id="settingsTabs" style="margin-top:12px;">
         <button class="tab-btn active" data-panel="general"><img src="icon/edit.png" alt="" class="tab-icon">General</button>
         <button class="tab-btn" data-panel="payment"><img src="icon/payment-card.png" alt="" class="tab-icon">Payment</button>
         <button class="tab-btn" data-panel="localization"><img src="icon/location.png" alt="" class="tab-icon">Localization</button>

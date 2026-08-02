@@ -233,7 +233,8 @@ async function saveServiceConfiguration() {
 
     const requiredSetupFields = [
         'hour_Mon', 'hour_Tue', 'hour_Wed', 'hour_Thu', 'hour_Fri', 'hour_Sat', 'hour_Sun',
-        'cfg_language', 'timezone', 'currency', 'height', 'cfg_confirmRule'
+        'cfg_invoicePrefix', 'cfg_taxName',
+        'cfg_language', 'timezone', 'currency', 'height', 'weight', 'cfg_confirmRule'
     ];
     if (requiredSetupFields.some(id => !q(id)?.value.trim())) {
         alert('Please complete all required service configuration fields.');
@@ -278,10 +279,13 @@ async function saveServiceConfiguration() {
             qr: q('pay_qr').checked,
             online: q('pay_online').checked,
         },
+        invoice_prefix: q('cfg_invoicePrefix').value.trim(),
+        tax_name: q('cfg_taxName').value.trim(),
         language: q('cfg_language').value,
         timezone: q('timezone').value,
         currency: q('currency').value,
         height_unit: q('height').value,
+        weight_unit: q('weight').value,
         booking_url: q('cfg_bookingUrl').value.trim(),
         whatsapp_number: q('cfg_whatsapp').value.trim(),
         confirm_rule: q('cfg_confirmRule').value,

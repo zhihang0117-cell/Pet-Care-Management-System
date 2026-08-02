@@ -8,6 +8,7 @@ import {
   availabilityAsSettings,
   normalizeAvailabilitySettings,
 } from "../lib/availabilitySettings.js";
+import { callAiBackend } from "../lib/aiBackend.js";
 
 export const companiesRouter = Router();
 
@@ -85,33 +86,6 @@ function safeStorageName(name) {
   return String(name || "policy.docx").replace(/[^a-zA-Z0-9._-]+/g, "-").slice(-120);
 }
 
-async function callAiBackend(path, body) {
-  const configuredUrl = String(
-    process.env.CLOUD_RUN_AI_BACKEND_URL
-      || process.env.AI_BACKEND_URL
-      || "http://127.0.0.1:8000"
-  ).trim().replace(/\/$/, "");
-  const baseUrl = /^https?:\/\//i.test(configuredUrl) ? configuredUrl : `http://${configuredUrl}`;
-  const internalKey = process.env.CLOUD_RUN_AI_BACKEND_INTERNAL_KEY
-    || process.env.AI_BACKEND_INTERNAL_KEY;
-  let response;
-  try {
-    response = await fetch(`${baseUrl}${path}`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        ...(internalKey ? { "X-Internal-Key": internalKey } : {}),
-      },
-      body: JSON.stringify(body),
-    });
-  } catch (error) {
-    const cause = error?.cause?.message || error?.message || "Unknown connection error";
-    throw new Error(`Could not reach AI backend at ${baseUrl}: ${cause}`);
-  }
-  const payload = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(payload.detail || payload.error || `AI backend failed (${response.status})`);
-  return payload;
-}
 
 // GET /api/companies/me — full profile (including settings_json) for
 // setting.html to prefill its form. accounts.js's /me only returns a small

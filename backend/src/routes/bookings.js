@@ -2,7 +2,8 @@ import { Router } from "express";
 import { supabase } from "../supabaseClient.js";
 import { asyncHandler } from "../middleware/auth.js";
 import { BOOKING_TYPES, createBooking, updateBooking, deleteBooking } from "../lib/bookingService.js";
-import { assertAllowedQueryKeys, parsePagination } from "../lib/queryValidation.js";
+import { assertAllowedQueryKeys, parsePagination, safePostgrestSearch } from "../lib/queryValidation.js";
+import { callAiBackend } from "../lib/aiBackend.js";
 
 const SEARCHABLE = {
   grooming: ["service_name", "notes"],
@@ -68,7 +69,8 @@ bookingsRouter.get(
 
     const searchableColumns = SEARCHABLE[req.params.type] || [];
     if (req.query.search && searchableColumns.length) {
-      query = query.or(searchableColumns.map((c) => `${c}.ilike.%${req.query.search}%`).join(","));
+      const search = safePostgrestSearch(req.query.search);
+      query = query.or(searchableColumns.map((c) => `${c}.ilike.%${search}%`).join(","));
     }
 
     const orderColumn = req.query.order || idColumn;
@@ -119,7 +121,40 @@ bookingsRouter.patch(
   "/:type/:id",
   asyncHandler(async (req, res) => {
     if (!req.bookingTypeEnabled) return res.status(403).json({ error: "This service module is not enabled for your company." });
+
+    // Fetched BEFORE the update so we know what status transition (if any)
+    // just happened — req.body.booking_status is only the new value.
+    let previousStatus = null;
+    if (req.body.booking_status) {
+      const { table, idColumn } = req.bookingConfig;
+      const { data: before } = await supabase
+        .from(table)
+        .select("booking_status")
+        .eq("company_id", req.companyId)
+        .eq(idColumn, req.params.id)
+        .maybeSingle();
+      previousStatus = before?.booking_status || null;
+    }
+
     const data = await updateBooking(req.params.type, req.companyId, req.params.id, req.body);
+
+    // Fire-and-forget: a customer notice failing must never block the
+    // staff member's status update from succeeding — that already happened
+    // for real by the time this runs. See main.py's
+    // /documents/booking-status-notice for which transitions actually
+    // produce a message (most don't, and this is a no-op for those).
+    if (previousStatus && data.booking_status && previousStatus !== data.booking_status) {
+      callAiBackend("/documents/booking-status-notice", {
+        company_id: req.companyId,
+        service_type: req.params.type.toUpperCase(),
+        booking_id: Number(req.params.id),
+        old_status: previousStatus,
+        new_status: data.booking_status,
+      }).catch((error) => {
+        console.warn(`booking-status-notice failed for ${req.params.type} #${req.params.id}:`, error.message);
+      });
+    }
+
     res.json(data);
   })
 );

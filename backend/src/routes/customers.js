@@ -12,6 +12,15 @@ function customerPayload(req, { creating = false } = {}) {
     error.status = 400;
     throw error;
   }
+  if (payload.phone_number !== undefined) {
+    const raw = payload.phone_number;
+    const digits = raw.replace(/\D/g, "");
+    if (!/^\+?[0-9][0-9\s().-]*$/.test(raw) || digits.length < 8 || digits.length > 15) {
+      const error = new Error("Phone number must contain between 8 and 15 digits.");
+      error.status = 400;
+      throw error;
+    }
+  }
   if (!creating && Object.keys(payload).length === 0) {
     const error = new Error("Nothing to update.");
     error.status = 400;

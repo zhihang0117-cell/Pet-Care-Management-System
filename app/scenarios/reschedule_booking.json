@@ -1,0 +1,22 @@
+{
+  "scenario": "RESCHEDULE_BOOKING",
+  "goal": "Move the exact active booking to a customer-approved available date and time.",
+  "required_evidence": [
+    "resolved_customer",
+    "resolved_active_booking",
+    "resolved_new_datetime",
+    "verified_new_availability",
+    "typed_pet_name_confirmation"
+  ],
+  "completion_condition": "reschedule_booking returned status=success.",
+  "flow_policy": "Step labels are optional observability vocabulary, not a mandatory order; skip facts already verified and preserve typed pet-name confirmation.",
+  "step_vocabulary": [
+    "FIND_BOOKING",
+    "RESOLVE_TARGET_BOOKING",
+    "WAITING_FOR_NEW_DATE",
+    "RESOLVE_NEW_DATETIME",
+    "CHECK_NEW_AVAILABILITY",
+    "WAITING_FOR_CONFIRMATION",
+    "RESCHEDULE_BOOKING"
+  ]
+}

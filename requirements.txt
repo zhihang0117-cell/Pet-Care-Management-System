@@ -1,0 +1,16 @@
+langchain
+langchain-openai
+langchain-core
+langchain-text-splitters
+openai
+supabase
+python-dotenv
+pydantic
+sentence-transformers
+torch
+python-docx
+fastapi
+uvicorn
+reportlab
+requests
+pytest

@@ -41,9 +41,13 @@ test("policy documents have a private authenticated preview flow", async () => {
 });
 
 test("Render private hostnames are normalized before AI backend fetches", async () => {
-  const routes = await source("backend/src/routes/companies.js");
-  assert.match(routes, /\^https\?:\\\/\\\//i);
-  assert.match(routes, /`http:\/\/\$\{configuredUrl\}`/);
+  // This normalization logic used to live inline in companies.js; it was
+  // extracted into the shared callAiBackend() helper (lib/aiBackend.js) so
+  // routes/payments.js could call it too, without duplicating the fetch/
+  // error-handling logic a second time.
+  const aiBackend = await source("backend/src/lib/aiBackend.js");
+  assert.match(aiBackend, /\^https\?:\\\/\\\//i);
+  assert.match(aiBackend, /`http:\/\/\$\{configuredUrl\}`/);
 });
 
 test("document deletion is atomic inside Postgres", async () => {

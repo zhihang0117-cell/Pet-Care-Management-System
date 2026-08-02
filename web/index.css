@@ -15,7 +15,7 @@
     --radius-large: 24px;
     --radius-medium: 14px;
     --radius-small: 8px;
-    --font-serif: 'Playfair Display', Georgia, serif;
+    --font-serif: Arial, "Helvetica Neue", Helvetica, sans-serif;
     --font-sans: 'Plus Jakarta Sans', system-ui, sans-serif;
     --transition-smooth: all 0.35s cubic-bezier(0.25, 1, 0.5, 1);
 }
@@ -117,8 +117,17 @@ a {
     box-shadow: 0 6px 18px rgba(192, 57, 43, 0.25);
 }
 
+.text-btn {
+    display: inline-flex;
+    align-items: center;
+    padding: 13px 28px;
+    border-radius: 40px;
+    border: 1px solid var(--accent-sand);
+    transition: var(--transition-smooth);
+}
 .text-btn:hover {
     color: var(--btn-brown-hover);
+    border-color: var(--btn-brown);
     opacity: 0.8;
 }
 
@@ -176,9 +185,19 @@ a {
 .hero-container {
     background-color: var(--bg-warm-cream);
     border-radius: var(--radius-large);
-    padding: 80px 60px;
+    /* Vertical padding trimmed (was 80px) — with a big photo column the
+       container's own height is already driven by the image, so the old
+       padding stacked on top and made the whole box feel oversized. Photo
+       size itself is unchanged; this just tightens the box around it. */
+    padding: 48px 60px;
     display: grid;
-    grid-template-columns: 1.1fr 0.9fr;
+    /* Was 1.1fr:0.9fr (text-favoured) — the photo column is the actual
+       hard cap on its rendered size at typical (non-ultrawide) viewport
+       widths, since `width:100%` fills the column before max-width ever
+       kicks in. Flipping the ratio in the photo's favour grows it at every
+       viewport size, not just on very wide screens where the vw-based
+       max-width below has room to matter. */
+    grid-template-columns: 1fr 1.15fr;
     gap: 40px;
     align-items: center;
     box-shadow: var(--shadow-soft);
@@ -206,37 +225,65 @@ a {
 
 .hero-visual-area {
     position: relative;
-    height: 420px;
+    /* Match the image's own max-width exactly (see .pet-cutout-frame img)
+       instead of filling the whole 1.15fr grid column — the floating
+       cards below are positioned in px relative to THIS box, so if it's
+       wider than the image (column has slack once the image hits its
+       max-width ceiling on wide screens), the cards drift away from the
+       image's actual edges into empty space instead of overlapping its
+       corners. min(100%, ...) keeps it from overflowing a narrower column
+       at in-between viewport widths. */
+    width: min(100%, clamp(680px, 50vw, 1160px));
+    margin-left: auto;
+    /* No explicit height: the image is a fixed 16:9 ratio, so its rendered
+       height is fully determined by the width above (height = width/1.78) —
+       an independent height clamp here almost never matches that number
+       exactly, leaving slack above/below the image inside this box. Since
+       floating-card is absolutely positioned (out of flow), letting this
+       box size to its only in-flow child (the image) keeps it pixel-exact
+       in both dimensions, not just width. */
     display: flex;
     align-items: center;
-    justify-content: flex-end;
+    justify-content: center;
     overflow: visible;
 }
 
 .abstract-shape {
     position: absolute;
-    width: 320px;
-    height: 320px;
+    width: 380px;
+    height: 380px;
     background-color: var(--accent-sand);
     border-radius: 41% 59% 40% 60% / 65% 43% 57% 35%;
     opacity: 0.6;
-    animation: shapeMorph 10s ease-in-out infinite alternate;
+    animation: shapeMorph 7s ease-in-out infinite alternate;
 }
 
 @keyframes shapeMorph {
-    0%   { border-radius: 41% 59% 40% 60% / 65% 43% 57% 35%; }
-    100% { border-radius: 60% 40% 62% 38% / 40% 60% 40% 60%; }
+    0%   { border-radius: 41% 59% 40% 60% / 65% 43% 57% 35%; transform: scale(1) rotate(0deg); }
+    100% { border-radius: 60% 40% 62% 38% / 40% 60% 40% 60%; transform: scale(1.12) rotate(8deg); }
 }
 
 .pet-cutout-frame {
     position: relative;
     z-index: 1;
-    img {
-        display: block;
-        max-width: 100%;
-        height: auto;
-        max-height: 380px;
-    }
+}
+.pet-cutout-frame img {
+    display: block;
+    width: 100%;
+    /* Scales with viewport (unlike a flat px cap, which looks proportionally
+       smaller on very wide monitors) — 50vw between a 680px floor and 1160px
+       ceiling. The grid-template-columns ratio above is the real limiter at
+       typical (non-ultrawide) widths, since width:100% fills the column
+       before this max-width ever applies. */
+    max-width: clamp(680px, 50vw, 1160px);
+    height: auto;
+    border-radius: var(--radius-large);
+    box-shadow: 0 24px 60px rgba(92, 80, 71, 0.30);
+    transition: transform 0.4s ease, box-shadow 0.4s ease;
+}
+.pet-cutout-frame img:hover {
+    transform: translateY(-8px) scale(1.025);
+    box-shadow: 0 34px 76px rgba(92, 80, 71, 0.4);
 }
 
 @keyframes floatBob {
@@ -258,18 +305,19 @@ a {
     align-items: center;
     gap: 10px;
     box-shadow: var(--shadow-card);
-    transition: box-shadow 0.3s ease;
+    transition: box-shadow 0.3s ease, transform 0.3s ease;
 }
 .floating-card:hover {
-    box-shadow: 0 10px 28px rgba(92, 80, 71, 0.18);
+    box-shadow: 0 18px 40px rgba(92, 80, 71, 0.28);
+    transform: scale(1.06);
 }
 .floating-card h4 { font-size: 0.85rem; font-weight: 700; color: var(--text-charcoal); }
 .floating-card p  { font-size: 0.75rem; color: var(--text-muted); }
 .card-icon { font-size: 1.2rem; }
 
-.card-1 { top: 20px;    left: -10px;  animation: floatBob       3.2s ease-in-out infinite; }
-.card-2 { bottom: 60px; left: 20px;   animation: floatBob       3.8s ease-in-out infinite 0.7s; }
-.card-3 { right: -10px; top: 50%;     animation: floatBobCenter 4.4s ease-in-out infinite 1.4s; }
+.card-1 { top: -20px;   left: -20px;  animation: floatBob       2.6s ease-in-out infinite; }
+.card-2 { bottom: -16px; left: -20px; animation: floatBob       3.1s ease-in-out infinite 0.7s; }
+.card-3 { right: -20px; top: 50%;     animation: floatBobCenter 3.6s ease-in-out infinite 1.4s; }
 
 .metrics-bar {
     display: flex;
@@ -711,10 +759,19 @@ body.showcase-demo-open {
     box-shadow: var(--shadow-soft);
     overflow: hidden;
     padding: 40px;
-    transition: box-shadow 0.3s ease;
+    transition: box-shadow 0.35s ease, transform 0.35s ease;
 }
-.content-block:hover {
-    box-shadow: 0 20px 52px rgba(92, 80, 71, 0.12);
+/* Specificity note: page sections add a JS-driven "reveal visible" class to
+   .content-block for scroll-in fade-up (see .reveal.visible further down),
+   which also sets `transform` at equal specificity (0,2,0) and wins on
+   source order, silently cancelling out a plain `.content-block:hover`
+   lift. Scoping through the always-present .section-container/.section-wrapper
+   ancestor bumps this to (0,3,0) so the hover lift actually applies once
+   the block has scrolled into view. */
+.section-container .content-block:hover,
+.section-wrapper .content-block:hover {
+    box-shadow: 0 28px 64px rgba(92, 80, 71, 0.2);
+    transform: translateY(-4px);
 }
 .content-block-flush { padding: 0; }
 
@@ -751,6 +808,10 @@ body.showcase-demo-open {
     align-items: center;
     padding: 50px;
 }
+/* Photo-first variant (image in column 1, text in column 2) — same column
+   proportions as the default, just mirrored so the text still gets the
+   larger share. */
+.feature-content-reverse { grid-template-columns: 0.9fr 1.1fr; }
 .feature-content:not(:last-child) { position: relative; }
 .feature-content:not(:last-child)::after {
     content: '';
@@ -768,6 +829,12 @@ body.showcase-demo-open {
     height: auto;
     display: block;
     border-radius: var(--radius-large);
+    transition: transform 0.4s ease, box-shadow 0.4s ease;
+}
+.about-pic img:hover,
+.feature-content > img:hover {
+    transform: scale(1.035);
+    box-shadow: 0 22px 48px rgba(92, 80, 71, 0.24);
 }
 
 .overflow-right { margin-right: -60px; }
@@ -1232,7 +1299,7 @@ body.showcase-demo-open {
     align-items: center;
     gap: 8px;
 }
-.footer-logo .inline-logo-img { width: 28px; height: 28px; }
+.footer-logo .inline-logo-img { width: auto; height: 24px; }
 .footer-tagline { color: var(--text-muted); font-size: 0.9rem; line-height: 1.6; text-align: right; }
 
 .footer-divider { height: 1px; background-color: var(--accent-sand); }
@@ -1995,10 +2062,33 @@ body.modal-open { overflow: hidden; }
     object-fit: contain;
 }
 
+/* logo with title.png is a wide wordmark (crop ratio ~4.4:1), not a square
+   mark — a fixed 44x44 box with object-fit:contain was shrinking it down to
+   fit the smaller dimension, rendering it as a tiny sliver in the navbar
+   (.indexnav .logo, .auth-nav-logo on login/register/reg-setup). Sized by
+   height with auto width instead so it reads at a normal navbar-logo size. */
 .inline-logo-img {
-    width: 44px;
-    height: 44px;
+    width: auto;
+    height: 28px;
     object-fit: contain;
+}
+
+/* Sidebar footer "copyright" line — the brand mark that used to sit at the
+   top of the sidebar (paired with a "Staff portal" subtitle) now lives here
+   instead, below the Logout button, as a plain muted "© Pawfect AI" line
+   (no logo mark). */
+.dash-brand-copyright {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    margin-top: 16px;
+}
+
+.dash-brand-copyright .dash-brand-name {
+    font-family: var(--font-sans);
+    font-size: 0.72rem;
+    font-weight: 600;
+    color: rgba(240, 228, 208, 0.45);
 }
 
 .tab-icon {
@@ -3777,8 +3867,64 @@ body.modal-open { overflow: hidden; }
 .top-service-bar {
     height: 100%;
     border-radius: 4px;
-    background-color: var(--btn-brown);
+    display: flex;
+    overflow: hidden;
 }
+
+.top-service-bar-segment { height: 100%; }
+
+.top-services-legend {
+    display: flex;
+    gap: 16px;
+    margin-top: 2px;
+    font-size: 0.76rem;
+    font-weight: 600;
+    color: var(--text-muted);
+}
+.top-services-legend span { display: inline-flex; align-items: center; gap: 6px; }
+.top-services-legend .legend-swatch { width: 10px; height: 10px; border-radius: 3px; }
+
+.trend-delta-badge {
+    font-size: 0.78rem;
+    font-weight: 700;
+    padding: 4px 10px;
+    border-radius: 999px;
+    white-space: nowrap;
+}
+.trend-delta-badge.up    { color: #059669; background-color: #D1FAE5; }
+.trend-delta-badge.down  { color: #DC2626; background-color: #FEE2E2; }
+.trend-delta-badge.flat  { color: var(--text-muted); background-color: var(--bg-warm-cream); }
+
+.heatmap-grid {
+    display: grid;
+    grid-template-columns: 42px repeat(10, 1fr);
+    gap: 3px;
+}
+
+.heatmap-cell {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 28px;
+    border-radius: 4px;
+    font-size: 0.68rem;
+}
+
+.heatmap-corner { }
+
+.heatmap-hour-label,
+.heatmap-day-label {
+    font-weight: 700;
+    color: var(--text-muted);
+}
+
+.heatmap-value {
+    background-color: var(--bg-warm-cream);
+    font-weight: 600;
+    cursor: pointer;
+    transition: outline-color 0.15s ease;
+}
+.heatmap-value:hover { outline: 2px solid var(--btn-brown); outline-offset: -2px; }
 
 /* Operations row */
 .dash-ops-grid {

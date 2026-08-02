@@ -1,6 +1,7 @@
 import { Router } from "express";
 import { supabase } from "../supabaseClient.js";
 import { asyncHandler } from "../middleware/auth.js";
+import { safePostgrestSearch } from "./queryValidation.js";
 
 const RESERVED_QUERY_KEYS = new Set(["search", "limit", "offset", "order", "ascending"]);
 
@@ -46,8 +47,9 @@ export function makeCrudRouter({
       }
 
       if (req.query.search && searchableColumns.length) {
+        const search = safePostgrestSearch(req.query.search);
         const orFilter = searchableColumns
-          .map((col) => `${col}.ilike.%${req.query.search}%`)
+          .map((col) => `${col}.ilike.%${search}%`)
           .join(",");
         query = query.or(orFilter);
       }

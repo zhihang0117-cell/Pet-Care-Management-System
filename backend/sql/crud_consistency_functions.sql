@@ -34,6 +34,9 @@ grant execute on function delete_customer_with_pets(int, int)
 
 -- Create the booking first, then its pending payment, and finally link the
 -- payment back to the booking. Any failure rolls back all three steps.
+alter table daycare_booking add column if not exists add_on text;
+alter table daycare_booking add column if not exists add_on_price numeric default 0;
+
 create or replace function create_booking_atomic(
   p_company_id int,
   p_booking_type text,
@@ -69,13 +72,15 @@ begin
   elsif p_booking_type = 'daycare' then
     insert into daycare_booking (
       company_id, pet_id, staff_id, booking_date, check_in_time,
-      check_out_time, package_type, price, special_instruction, booking_status,
+      check_out_time, package_type, price, add_on, add_on_price,
+      special_instruction, booking_status,
       created_date, created_time
     ) values (
       p_company_id, (p_booking->>'pet_id')::int, (p_booking->>'staff_id')::int,
       (p_booking->>'booking_date')::date,
       (p_booking->>'check_in_time')::time, (p_booking->>'check_out_time')::time,
       p_booking->>'package_type', (p_booking->>'price')::numeric,
+      p_booking->>'add_on', (p_booking->>'add_on_price')::numeric,
       p_booking->>'special_instruction', p_booking->>'booking_status',
       (p_booking->>'created_date')::date, (p_booking->>'created_time')::time
     )
@@ -184,6 +189,8 @@ begin
       check_out_time = coalesce((p_booking_patch->>'check_out_time')::time, b.check_out_time),
       package_type = coalesce(p_booking_patch->>'package_type', b.package_type),
       price = coalesce((p_booking_patch->>'price')::numeric, b.price),
+      add_on = coalesce(p_booking_patch->>'add_on', b.add_on),
+      add_on_price = coalesce((p_booking_patch->>'add_on_price')::numeric, b.add_on_price),
       special_instruction = coalesce(p_booking_patch->>'special_instruction', b.special_instruction),
       booking_status = coalesce(p_booking_patch->>'booking_status', b.booking_status)
       where company_id = p_company_id and daycare_booking_id = p_booking_id

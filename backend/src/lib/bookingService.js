@@ -51,6 +51,9 @@ function validateBookingInput(type, booking, { creating = false } = {}) {
     }
     if (booking.check_out_time <= booking.check_in_time) invalidBooking("Check-out time must be after check-in time.");
     if (!Number.isFinite(Number(booking.price)) || Number(booking.price) < 0) invalidBooking("Price must be zero or greater.");
+    if (booking.add_on_price != null && (!Number.isFinite(Number(booking.add_on_price)) || Number(booking.add_on_price) < 0)) {
+      invalidBooking("Add-on price must be zero or greater.");
+    }
   } else if (type === "boarding") {
     if (!String(booking.room_type || "").trim() || !booking.check_in_date || !booking.check_out_date || !booking.check_in_time || !booking.check_out_time) {
       invalidBooking("Room, check-in/out dates, and check-in/out times are required.");
@@ -173,6 +176,24 @@ export async function createBooking(type, companyId, body) {
     created_time: createdTime,
   };
 
+  if (config.hasAddOn) {
+    const hasAddOnName = !["", "-"].includes(String(body.add_on || "").trim());
+    const hasAddOnPrice = body.add_on_price !== undefined
+      && body.add_on_price !== null
+      && String(body.add_on_price).trim() !== "";
+    if (hasAddOnName !== hasAddOnPrice) {
+      invalidBooking("Add-on name and add-on price must be supplied together.");
+    }
+  } else {
+    const hasUnsupportedName = !["", "-"].includes(String(body.add_on || "").trim());
+    const hasUnsupportedPrice = body.add_on_price !== undefined
+      && body.add_on_price !== null
+      && String(body.add_on_price).trim() !== "";
+    if (hasUnsupportedName || hasUnsupportedPrice) {
+      invalidBooking("Boarding bookings do not support add-ons.");
+    }
+  }
+
   if (type === "grooming") {
     addOnPrice = Number(body.add_on_price) || 0;
     basePriceForPayment = Number(body.price) || 0;
@@ -189,6 +210,7 @@ export async function createBooking(type, companyId, body) {
   } else if (type === "daycare") {
     // No "notes" column on daycare_booking — it only has special_instruction.
     basePriceForPayment = Number(body.price) || 0;
+    addOnPrice = Number(body.add_on_price) || 0;
     bookingRow = {
       ...bookingRow,
       booking_date: body.booking_date,
@@ -196,6 +218,8 @@ export async function createBooking(type, companyId, body) {
       check_out_time: body.check_out_time,
       package_type: body.package_type,
       price: basePriceForPayment,
+      add_on: body.add_on || "-",
+      add_on_price: addOnPrice,
       special_instruction: body.special_instruction || "-",
     };
   } else if (type === "boarding") {
@@ -258,6 +282,8 @@ function paymentPayloadForBooking(type, booking) {
   } else if (type === "daycare") {
     service = booking.package_type;
     basePrice = Number(booking.price) || 0;
+    addOnPrice = Number(booking.add_on_price) || 0;
+    addOns = booking.add_on && booking.add_on !== "-" ? `${booking.add_on} (+RM${addOnPrice})` : "";
   } else {
     service = booking.room_type;
     basePrice = Number(booking.total_price) || 0;

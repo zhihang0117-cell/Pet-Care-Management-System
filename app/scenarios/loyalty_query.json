@@ -1,0 +1,15 @@
+{
+  "scenario": "LOYALTY_QUERY",
+  "goal": "Answer the loyalty question or submit the exact customer-approved redemption.",
+  "required_evidence": [
+    "resolved_customer",
+    "verified_loyalty_balance_or_membership"
+  ],
+  "optional_evidence": ["eligible_coupon", "linked_payment"],
+  "completion_condition": "The verified question is answered, or redeem_reward returned status=success.",
+  "flow_policy": "Only redeem after explicit customer choice; these step labels are optional observability vocabulary and informational questions do not require a redemption flow.",
+  "step_vocabulary": [
+    "GET_LOYALTY_BALANCE",
+    "REDEEM_REWARD"
+  ]
+}

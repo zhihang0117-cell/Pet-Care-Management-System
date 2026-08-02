@@ -49,7 +49,16 @@ src/
     customers.js, pets.js, staff.js, coupons.js, chatMessages.js   — thin, built with makeCrudRouter
     leaveRequests.js       — makeCrudRouter + one custom action (/decision)
     memberInfo.js          — custom (read-only + a guarded manual-adjustment endpoint)
-    redemptions.js         — custom (read-only — rows only ever come from verify_payment)
+    redemptions.js         — GET / and GET /:id are read-only, but POST
+                             /:id/decision (manager-only — approve/reject,
+                             this is what actually deducts points, via
+                             decide_redemption) and POST /:id/cancel
+                             (manager-only) are real writes. Rows are first
+                             created by request_redemption (see payments.js
+                             /:id/redemption-request), not verify_payment.
+    rooms.js               — read-only room catalog (room_id is a manually
+                             assigned text code, not a DB identity column,
+                             so create/update/delete aren't wired up)
     bookings.js            — thin wrapper around bookingService
     payments.js            — thin wrapper around paymentService
     dashboard.js           — aggregation queries, no writes
@@ -61,7 +70,7 @@ sql/
   verify_payment_function.sql — atomic payment/loyalty/booking completion (see §5)
   crud_consistency_functions.sql — transactional customer deletion and booking/payment CRUD
   crud_hardening_migration.sql — points-adjustment audit and serialized account guards
-frontend-integration/
+frontend integration/
   api-client.js, payment-page.js — example of how an HTML page consumes this API
 ```
 
@@ -99,8 +108,10 @@ different pet-care businesses' data from leaking into each other.
 `llm/tableAllowlist.js` is a safety boundary, not a technicality — read it
 before adding a new LLM tool. The rule: anything that touches loyalty points
 or the payment ledger must go through a dedicated service function
-(`verifyPayment`), never through the generic `create_record`/`update_record`
-tools. If you add a new table with money/points implications, default it to
+(`verifyPayment`, or the `request_redemption`/`decide_redemption`/
+`refund_payment` SQL RPCs for the points-redemption-approval flow), never
+through the generic `create_record`/`update_record` tools. If you add a new
+table with money/points implications, default it to
 `{ create: false, update: false, delete: false }` and write a dedicated tool
 instead, following `verify_payment`'s pattern.
 

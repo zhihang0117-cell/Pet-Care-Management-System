@@ -6,6 +6,7 @@ import { fileURLToPath } from "url";
 
 import { resolveCompany } from "./middleware/auth.js";
 import { requireAuthUser } from "./middleware/authUser.js";
+import { apiRateLimit } from "./middleware/rateLimit.js";
 
 import { authRouter } from "./routes/auth.js";
 import { accountsRouter } from "./routes/accounts.js";
@@ -20,6 +21,7 @@ import { memberInfoRouter } from "./routes/memberInfo.js";
 import { redemptionsRouter } from "./routes/redemptions.js";
 import { bookingsRouter } from "./routes/bookings.js";
 import { paymentsRouter } from "./routes/payments.js";
+import { roomsRouter } from "./routes/rooms.js";
 import { dashboardRouter } from "./routes/dashboard.js";
 import { llmRouter } from "./routes/llm.js";
 
@@ -27,6 +29,7 @@ const app = express();
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const webPath = path.join(__dirname, "../../web");
+app.set("trust proxy", 1);
 
 const allowedOrigins = (process.env.CORS_ORIGINS || "")
   .split(",")
@@ -43,6 +46,7 @@ app.use(
 // A 10 MB DOCX becomes ~13.4 MB after base64 encoding.
 app.use(express.json({ limit: "15mb" }));
 app.use(express.urlencoded({ extended: true }));
+app.use("/api", apiRateLimit);
 
 app.get("/health", (_req, res) => {
   res.status(200).json({ ok: true });
@@ -64,6 +68,7 @@ app.use("/api/member-info", requireAuthUser, memberInfoRouter);
 app.use("/api/redemptions", requireAuthUser, redemptionsRouter);
 app.use("/api/bookings", requireAuthUser, bookingsRouter);
 app.use("/api/payments", requireAuthUser, paymentsRouter);
+app.use("/api/rooms", requireAuthUser, roomsRouter);
 app.use("/api/dashboard", requireAuthUser, dashboardRouter);
 
 // LLM service routes

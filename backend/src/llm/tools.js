@@ -83,8 +83,8 @@ export const TOOL_SCHEMA = [
         booking_date: { type: "string", description: "grooming/daycare, format YYYY-MM-DD" },
         booking_time: { type: "string", description: "grooming only, HH:MM:SS" },
         price: { type: "number", description: "grooming/daycare base price" },
-        add_on: { type: "string", description: "grooming only" },
-        add_on_price: { type: "number", description: "grooming only" },
+        add_on: { type: "string", description: "grooming/daycare add-on name" },
+        add_on_price: { type: "number", description: "grooming/daycare add-on price; keep separate from base price" },
         check_in_time: { type: "string" },
         check_out_time: { type: "string" },
         package_type: { type: "string", description: "daycare only" },
@@ -137,21 +137,22 @@ export const TOOL_SCHEMA = [
         payment_id: { type: "number" },
         coupon_id: { type: "number", description: "omit if no voucher is being redeemed" },
         staff_id: { type: "number", description: "who verified it" },
+        payment_method: { type: "string", enum: ["Cash", "Card", "E-Wallet", "Bank Transfer", "Online"] },
       },
-      required: ["payment_id"],
+      required: ["payment_id", "payment_method"],
     },
   },
   {
     name: "decide_leave_request",
-    description: "Approve or reject a staff leave request.",
+    description: "Approve or reject a staff leave request. reviewed_by_staff_id must be a staff member linked to an active manager account for this company — this mirrors the manager-only restriction the dashboard's own decision button enforces.",
     input_schema: {
       type: "object",
       properties: {
         leave_id: { type: "number" },
         status: { type: "string", enum: ["Approved", "Rejected"] },
-        reviewed_by_staff_id: { type: "number" },
+        reviewed_by_staff_id: { type: "number", description: "must resolve to an active manager account" },
       },
-      required: ["leave_id", "status"],
+      required: ["leave_id", "status", "reviewed_by_staff_id"],
     },
   },
 ];
@@ -206,11 +207,16 @@ export async function executeTool(companyId, toolName, input = {}) {
       return quoteVoucher(companyId, input.payment_id, input.coupon_id);
 
     case "verify_payment":
+      // paymentMethod is required — paymentService.js's verifyPayment()
+      // throws "Select a valid payment method" when it's missing, and this
+      // case previously never passed one at all, so this tool could never
+      // actually succeed.
       return verifyPayment({
         companyId,
         paymentId: input.payment_id,
         couponId: input.coupon_id || null,
         staffId: input.staff_id || null,
+        paymentMethod: input.payment_method,
       });
 
     case "decide_leave_request": {
@@ -219,14 +225,45 @@ export async function executeTool(companyId, toolName, input = {}) {
         err.status = 400;
         throw err;
       }
-      if (input.reviewed_by_staff_id != null) {
-        const { data: reviewer } = await supabase.from("staff").select("staff_id")
-          .eq("company_id", companyId).eq("staff_id", input.reviewed_by_staff_id).maybeSingle();
-        if (!reviewer) {
-          const err = new Error("Reviewer does not belong to this company.");
-          err.status = 400;
-          throw err;
+      // The human-facing equivalent (POST /api/leave-requests/:id/decision)
+      // requires requireManager — a real logged-in manager session. This
+      // LLM plane has no session (just x-llm-api-key + x-company-id), so it
+      // can't check req.accountRole the same way. Reproduce the same
+      // guarantee instead: reviewed_by_staff_id is now required, and must
+      // resolve to a staff row whose email matches an active manager
+      // account for this company. Without this, any caller holding the
+      // shared LLM key could approve/reject any staff member's leave.
+      if (input.reviewed_by_staff_id == null) {
+        const err = new Error("reviewed_by_staff_id is required and must be a manager.");
+        err.status = 400;
+        throw err;
+      }
+      const { data: reviewer } = await supabase.from("staff").select("staff_id, email")
+        .eq("company_id", companyId).eq("staff_id", input.reviewed_by_staff_id).maybeSingle();
+      if (!reviewer) {
+        const err = new Error("Reviewer does not belong to this company.");
+        err.status = 400;
+        throw err;
+      }
+      // accounts has no email column (email only lives in Supabase Auth) —
+      // so unlike the staff-email lookups elsewhere in this codebase, this
+      // has to go the other way: list this company's active manager
+      // accounts and resolve each one's email via the Auth admin API.
+      const reviewerEmail = String(reviewer.email || "").trim().toLowerCase();
+      const { data: managerAccounts } = await supabase.from("accounts").select("auth_user_id")
+        .eq("company_id", companyId).eq("role", "manager").eq("account_status", "active");
+      let isManager = false;
+      for (const acct of managerAccounts || []) {
+        const { data: userData } = await supabase.auth.admin.getUserById(acct.auth_user_id);
+        if (reviewerEmail && String(userData?.user?.email || "").trim().toLowerCase() === reviewerEmail) {
+          isManager = true;
+          break;
         }
+      }
+      if (!isManager) {
+        const err = new Error("Only an active manager account can approve or reject a leave request.");
+        err.status = 403;
+        throw err;
       }
       const { date, time } = todayStamp();
       const { data, error } = await supabase

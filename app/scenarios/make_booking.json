@@ -1,0 +1,54 @@
+{
+  "scenario": "MAKE_BOOKING",
+  "goal": "Create the booking or bookings the customer actually requested.",
+  "required_evidence": [
+    "resolved_customer",
+    "resolved_pet",
+    "verified_service_option_and_price",
+    "resolved_datetime",
+    "verified_availability",
+    "explicit_customer_confirmation"
+  ],
+  "optional_evidence": [
+    "add_on_selection",
+    "preferred_staff",
+    "loyalty_decision",
+    "care_notes"
+  ],
+  "completion_condition": "Each requested create_booking call returned status=success.",
+  "flow_policy": "Step labels are optional observability vocabulary, not a flow. Skip facts already verified, collect missing facts in a natural order, and support more than one requested booking without forcing a fixed sequence.",
+  "step_vocabulary": {
+    "GROOMING": [
+      "RESOLVE_CUSTOMER",
+      "RESOLVE_PET",
+      "SELECT_SERVICE",
+      "WAITING_FOR_DATE",
+      "WAITING_FOR_TIME",
+      "GROOMING_ELIGIBILITY",
+      "CHECK_AVAILABILITY",
+      "WAITING_FOR_CONFIRMATION",
+      "CREATE_BOOKING"
+    ],
+    "DAYCARE": [
+      "RESOLVE_CUSTOMER",
+      "RESOLVE_PET",
+      "DAYCARE_ELIGIBILITY",
+      "DAYCARE_DATE_SELECTION",
+      "DAYCARE_PACKAGE_SELECTION",
+      "DAYCARE_TIME_SELECTION",
+      "CHECK_AVAILABILITY",
+      "WAITING_FOR_CONFIRMATION",
+      "CREATE_BOOKING"
+    ],
+    "BOARDING": [
+      "RESOLVE_CUSTOMER",
+      "RESOLVE_PET",
+      "BOARDING_STAY_DATES",
+      "BOARDING_ELIGIBILITY",
+      "BOARDING_ROOM_AVAILABILITY",
+      "BOARDING_ROOM_SELECTION",
+      "WAITING_FOR_CONFIRMATION",
+      "CREATE_BOOKING"
+    ]
+  }
+}

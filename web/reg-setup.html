@@ -8,6 +8,7 @@
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Playfair+Display:wght@600;700&family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="index.css">
+  <link rel="stylesheet" href="admin-theme.css">
 </head>
 <body class="setup-page">
 
@@ -185,7 +186,16 @@
                     </div>
                 </div>
 
-
+                <div class="form-grid-2">
+                    <div class="form-group">
+                        <label for="cfg_invoicePrefix">Invoice Prefix <span class="req">*</span></label>
+                        <input type="text" id="cfg_invoicePrefix" placeholder="PAW">
+                    </div>
+                    <div class="form-group">
+                        <label for="cfg_taxName">Tax Name <span class="req">*</span></label>
+                        <input type="text" id="cfg_taxName" placeholder="SST 6%">
+                    </div>
+                </div>
 
                 <div class="section-divider-label">Localization</div>
                 <div class="form-grid-2">
@@ -218,6 +228,13 @@
                         <select id="height" required>
                             <option>cm</option>
                             <option>inch</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label for="weight">Weight Unit <span class="req">*</span></label>
+                        <select id="weight" required>
+                            <option>kg</option>
+                            <option>lb</option>
                         </select>
                     </div>
                 </div>

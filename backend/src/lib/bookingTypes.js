@@ -10,9 +10,9 @@ export const BOOKING_TYPES = Object.freeze({
   daycare: Object.freeze({
     table: "daycare_booking",
     idColumn: "daycare_booking_id",
-    hasAddOn: false,
+    hasAddOn: true,
     basePriceCol: "price",
-    addOnPriceCol: null,
+    addOnPriceCol: "add_on_price",
     paymentIdColumn: "payment_id",
   }),
   boarding: Object.freeze({

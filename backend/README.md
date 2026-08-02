@@ -124,7 +124,7 @@ pooling; not worth it at this scale.)
   remain correctly ordered in both JavaScript and Postgres.
 
 **③ Linking Supabase to your HTML pages:**
-- `frontend-integration/api-client.js` — a small `fetch` wrapper (`api.get`,
+- `frontend integration/api-client.js` — a small `fetch` wrapper (`api.get`,
   `api.post`, etc. plus convenience methods) to drop into every page.
 - `web/api-client.js` and `web/common.js` wire the booking, daily overview,
   CRM, loyalty, payment, enquiry, staff, settings, and analytical dashboards
@@ -190,9 +190,10 @@ to that token's `company_id` — you don't need to pass a company id yourself.
 | Chat messages | `GET/POST /api/chat-messages`, `GET/PATCH/DELETE /api/chat-messages/:id` (delete is manager-only) |
 | Leave requests | `GET/POST /api/leave-requests`, `POST /api/leave-requests/:id/decision` |
 | Member info | `GET /api/member-info`, `PATCH /api/member-info/:id/manual-adjustment` |
-| Redemption ledger | `GET /api/redemptions` (read-only) |
+| Redemption ledger | `GET /api/redemptions`, `GET /api/redemptions/:id`, `POST /api/redemptions/:id/decision` (manager — approve/reject, deducts points on approval), `POST /api/redemptions/:id/cancel` (manager) |
+| Rooms | `GET /api/rooms` (read-only) |
 | Bookings | `GET/POST /api/bookings/:type`, `GET/PATCH/DELETE /api/bookings/:type/:id` (`:type` = grooming/daycare/boarding) |
-| Payments | `GET /api/payments`, `GET /api/payments/:id`, `POST /api/payments/:id/quote-voucher`, `POST /api/payments/:id/verify`, `POST /api/payments/:id/refund` (manager) |
+| Payments | `GET /api/payments`, `GET /api/payments/:id`, `POST /api/payments/:id/quote-voucher`, `POST /api/payments/:id/redemption-request`, `POST /api/payments/:id/verify` (the dashboard's "Verify Payment & Redemption" button), `POST /api/payments/:id/mark-paid` (manager — same underlying RPC, allows a manual `final_amount` override), `POST /api/payments/:id/refund` (manager) |
 | Dashboard | `GET /api/dashboard/summary`, `GET /api/dashboard/revenue?period=` |
 | LLM tools | `GET /api/llm/tools-schema`, `POST /api/llm/execute` (needs `x-llm-api-key`) |
 

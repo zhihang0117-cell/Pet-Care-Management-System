@@ -21,19 +21,28 @@ services:
       - key: LLM_API_KEY
         generateValue: true
       - key: AI_BACKEND_URL
-        value: https://pawfect-ai-backend-620576034847.asia-southeast1.run.app
+        fromService:
+          type: web
+          name: pawfectai-ai
+          property: host
 
       - key: AI_BACKEND_INTERNAL_KEY
-        sync: false
+        fromService:
+          type: web
+          name: pawfectai-ai
+          envVarKey: INTERNAL_API_KEY
+      - key: AI_BACKEND_TIMEOUT_MS
+        value: "15000"
+      - key: API_RATE_LIMIT_PER_MINUTE
+        value: "120"
 
   - type: web
     name: pawfectai-ai
     runtime: python
-    # BGE-Large is a local embedding model and needs substantially more memory
+    # BGE-M3 is a local embedding model and needs substantially more memory
     # than Render's free instance. Change this only if the model is externalized.
     plan: standard
     region: singapore
-    rootDir: ai-backend
     buildCommand: pip install -r requirements.txt
     startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
     healthCheckPath: /health
@@ -46,13 +55,37 @@ services:
           type: web
           name: pawfectai
           envVarKey: SUPABASE_URL
-      - key: SUPABASE_SERVICE_KEY
+      - key: SUPABASE_SERVICE_ROLE_KEY
         fromService:
           type: web
           name: pawfectai
           envVarKey: SUPABASE_SERVICE_ROLE_KEY
+      # This deployment is currently single-company. Set it explicitly so
+      # production never relies on customer_context.py's local-dev fallback.
+      - key: RELATIONAL_COMPANY_ID
+        value: "1"
       - key: INTERNAL_API_KEY
         generateValue: true
+      - key: CHAT_API_KEY
+        generateValue: true
+      - key: PAWFECT_DEBUG_MODE
+        value: "false"
+      - key: TOOL_EXECUTOR_MAX_WORKERS
+        value: "4"
+      - key: TOOL_CALL_TIMEOUT_SECONDS
+        value: "20"
+      - key: EMBEDDING_PROVIDER
+        value: sentence_transformers
+      - key: EMBEDDING_MODEL
+        value: BAAI/bge-m3
+      - key: WHATSAPP_PROVIDER
+        value: meta_cloud_api
+      - key: WHATSAPP_ACCESS_TOKEN
+        sync: false
+      - key: WHATSAPP_PHONE_NUMBER_ID
+        sync: false
+      - key: WHATSAPP_GRAPH_API_VERSION
+        sync: false
       - key: HF_HOME
         value: /opt/render/project/.cache/huggingface
       - key: SUPABASE_STORAGE_BUCKET

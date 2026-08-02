@@ -244,6 +244,7 @@ const api = {
   deleteBooking: (type, id) => api.del(`/bookings/${type}/${id}`),
 
   listCoupons: () => api.get("/coupons"),
+  listRooms: () => api.get("/rooms"),
   createCoupon: (data) => api.post("/coupons", data),
   updateCoupon: (id, data) => api.patch(`/coupons/${id}`, data),
   deleteCoupon: (id) => api.del(`/coupons/${id}`),

@@ -1,0 +1,22 @@
+{
+  "scenario": "CANCEL_BOOKING",
+  "goal": "Cancel the exact active booking the customer selected.",
+  "required_evidence": [
+    "resolved_customer",
+    "resolved_active_booking",
+    "applicable_policy_when_relevant",
+    "typed_pet_name_confirmation"
+  ],
+  "completion_condition": "cancel_booking returned status=success.",
+  "flow_policy": "Step labels are optional observability vocabulary, not a mandatory order; never bypass the typed pet-name confirmation.",
+  "step_vocabulary": [
+    "FIND_BOOKING",
+    "RESOLVE_TARGET_BOOKING",
+    "CHECK_CANCELLATION_POLICY",
+    "WAITING_FOR_CONFIRMATION",
+    "CANCEL_BOOKING"
+  ],
+  "rules": {
+    "physical_delete_allowed": false
+  }
+}

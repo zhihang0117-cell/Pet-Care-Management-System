@@ -1,5 +1,99 @@
 function q(id) { return document.getElementById(id); }
 
+/* =========================
+   TOAST / CONFIRM / PROMPT
+   Replaces native alert()/confirm()/prompt() (blocking, unstyled, and in
+   the confirm/prompt case, impossible to test headlessly — see the
+   dashboard.html "Not logged in" alert that stalled a headless browser
+   session earlier). All three lazily build a single shared overlay the
+   first time they're called, so no page's HTML needs a container element.
+========================= */
+function showToast(message, type = "error", duration = 4000) {
+  let container = document.getElementById("toastContainer");
+  if (!container) {
+    container = document.createElement("div");
+    container.id = "toastContainer";
+    container.className = "toast-container";
+    document.body.appendChild(container);
+  }
+  const toast = document.createElement("div");
+  toast.className = `toast toast-${type}`;
+  toast.textContent = message;
+  container.appendChild(toast);
+  requestAnimationFrame(() => toast.classList.add("toast-visible"));
+  const remove = () => {
+    toast.classList.remove("toast-visible");
+    setTimeout(() => toast.remove(), 200);
+  };
+  toast.addEventListener("click", remove);
+  setTimeout(remove, duration);
+}
+
+function _showOverlayModal(innerHtml, { onMount } = {}) {
+  return new Promise(resolve => {
+    const backdrop = document.createElement("div");
+    backdrop.className = "confirm-modal-backdrop";
+    backdrop.innerHTML = `<div class="confirm-modal" role="dialog" aria-modal="true">${innerHtml}</div>`;
+    document.body.appendChild(backdrop);
+
+    const close = value => {
+      backdrop.remove();
+      document.removeEventListener("keydown", onKeydown);
+      resolve(value);
+    };
+    const onKeydown = event => { if (event.key === "Escape") close(undefined); };
+    document.addEventListener("keydown", onKeydown);
+    backdrop.addEventListener("click", event => { if (event.target === backdrop) close(undefined); });
+
+    onMount(backdrop.querySelector(".confirm-modal"), close);
+  });
+}
+
+/** Promise<boolean> — resolves true only if the user clicks the confirm button. */
+function showConfirm(message, { title = "Please confirm", confirmLabel = "Confirm", cancelLabel = "Cancel", danger = false } = {}) {
+  return _showOverlayModal(`
+    <h3 class="confirm-modal-title">${title}</h3>
+    <p class="confirm-modal-message">${message}</p>
+    <div class="confirm-modal-actions">
+      <button type="button" class="btn btn-secondary" data-action="cancel">${cancelLabel}</button>
+      <button type="button" class="btn ${danger ? "bk-danger-btn" : "btn-primary"}" data-action="confirm">${confirmLabel}</button>
+    </div>
+  `, {
+    onMount: (modal, close) => {
+      modal.querySelector('[data-action="cancel"]').addEventListener("click", () => close(false));
+      modal.querySelector('[data-action="confirm"]').addEventListener("click", () => close(true));
+      modal.querySelector('[data-action="confirm"]').focus();
+    }
+  }).then(value => value === true);
+}
+
+/** Promise<string|null> — resolves the trimmed input, or null if cancelled/empty. */
+function showPrompt(message, { title = "", defaultValue = "" } = {}) {
+  return _showOverlayModal(`
+    ${title ? `<h3 class="confirm-modal-title">${title}</h3>` : ""}
+    <p class="confirm-modal-message">${message}</p>
+    <textarea class="confirm-modal-input" rows="3"></textarea>
+    <div class="confirm-modal-actions">
+      <button type="button" class="btn btn-secondary" data-action="cancel">Cancel</button>
+      <button type="button" class="btn btn-primary" data-action="confirm">Submit</button>
+    </div>
+  `, {
+    onMount: (modal, close) => {
+      const input = modal.querySelector(".confirm-modal-input");
+      input.value = defaultValue;
+      input.focus();
+      modal.querySelector('[data-action="cancel"]').addEventListener("click", () => close(null));
+      modal.querySelector('[data-action="confirm"]').addEventListener("click", () => close(input.value));
+      input.addEventListener("keydown", event => {
+        if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) close(input.value);
+      });
+    }
+  }).then(value => {
+    const trimmed = (value ?? "").trim();
+    return trimmed ? trimmed : null;
+  });
+}
+
 const RECORD_ID_PARAMS = [
   "customer_id", "pet_id", "grooming_booking_id", "daycare_booking_id",
   "boarding_booking_id", "payment_id", "message_id", "staff_id",
@@ -219,7 +313,7 @@ document.addEventListener("DOMContentLoaded", async () => {
     await restoreRecordFromUrl();
   } catch (err) {
     console.error("Page init failed:", err);
-    alert(`Something failed to load: ${err.message}`);
+    showToast(`Something failed to load: ${err.message}`);
   }
 });
 
@@ -242,7 +336,7 @@ async function initBookingPage() {
   try {
     await refreshBookingPageData();
   } catch (error) {
-    alert(error.message || "Failed to load bookings.");
+    showToast(error.message || "Failed to load bookings.");
   }
 
   setupTabs();
@@ -461,14 +555,14 @@ function setupModalEvents() {
     const bookingId = document.getElementById("bookingId").value;
     const booking = findBookingRecord(bookingId);
     if (!booking) return;
-    if (!confirm("Delete this booking? This cannot be undone.")) return;
+    if (!await showConfirm("Delete this booking? This cannot be undone.")) return;
 
     try {
       await api.deleteBooking(booking.type, booking.rawId);
       closeModal();
       await refreshBookingPageData();
     } catch (error) {
-      alert(error.message || "Failed to delete booking.");
+      showToast(error.message || "Failed to delete booking.");
     }
   });
 
@@ -509,7 +603,7 @@ function setupCalendarSlotEvents() {
       const newDate = cell.dataset.date;
       const newTime = cell.dataset.time || booking.time;
       if (!canAddBookingToSlot(newDate, newTime, booking.staffId, booking.id)) {
-        alert("This slot is not available. Maximum 3 bookings are allowed per timeslot, and staff cannot be duplicated.");
+        showToast("This slot is not available. Maximum 3 bookings are allowed per timeslot, and staff cannot be duplicated.");
         return;
       }
       rescheduleBooking(booking, newDate, newTime);
@@ -522,7 +616,7 @@ async function rescheduleBooking(booking, newDate, newTime) {
     await api.updateBooking(booking.type, booking.rawId, bookingDateTimePayload(booking, newDate, newTime));
     await refreshBookingPageData();
   } catch (error) {
-    alert(error.message || "Failed to reschedule booking.");
+    showToast(error.message || "Failed to reschedule booking.");
   }
 }
 
@@ -608,6 +702,19 @@ function getKanbanBookings() {
    METRIC CARDS
 ========================= */
 
+// booking.html's own metric labels change per service filter (see
+// buildMetrics) and aren't all literally "Total X" — this reads each
+// label's wording to decide brown/red/green instead of hardcoding per key,
+// matching the same red=pending, green=done, brown=everything-else
+// convention used for the static metric-card tiles on payment/loyalty/
+// staff/enquiries.html.
+function metricCardBorderColor(label) {
+  const l = label.toLowerCase();
+  if (l.includes('pending') || l.includes('no-show') || l.includes('no show')) return '#DC2626';
+  if (l.includes('done')) return '#059669';
+  return '';
+}
+
 function renderMetricCards() {
   const wrapper = document.getElementById("metricCards");
   const serviceBookings = bookingRecords.filter(booking =>
@@ -616,7 +723,7 @@ function renderMetricCards() {
   const metrics = buildMetrics(currentServiceFilter, serviceBookings, bookingFilterDate);
 
   wrapper.innerHTML = metrics.map(metric => `
-    <div class="metric-card">
+    <div class="metric-card" style="${metricCardBorderColor(metric.label) ? `border-color:${metricCardBorderColor(metric.label)};` : ''}">
       <h3>${metric.label}</h3>
       <p>${metric.value}</p>
     </div>
@@ -730,12 +837,12 @@ function renderKanban() {
 
 function renderBookingCard(booking) {
   return `
-    <div class="booking-card" draggable="true" data-booking-id="${booking.id}">
+    <div class="booking-card" draggable="true" data-booking-id="${booking.id}" style="border-color:${bookingStatusBorderColor(booking.status)};">
       <div class="booking-card-top">
         ${renderStatusTag(booking.status)}
       </div>
 
-      <strong>${booking.petName} — ${booking.serviceLabel}</strong>
+      <strong>#${booking.rawId} — ${booking.petName} — ${booking.serviceLabel}</strong>
       <small>${booking.customerName}</small><br>
       <small>${booking.date || "-"} | ${booking.time || "-"}</small><br>
       <small>Staff: ${booking.staffName}</small><br>
@@ -781,7 +888,7 @@ async function updateBookingStatus(booking, newStatusInternal) {
   } catch (error) {
     booking.status = previousStatus;
     renderAll();
-    alert(error.message || "Failed to update booking status.");
+    showToast(error.message || "Failed to update booking status.");
     return false;
   }
 }
@@ -906,7 +1013,29 @@ function renderMonthlyCalendar() {
   visibleDates.forEach(date => {
     const todayClass = date === getToday() ? "today-column" : "";
     const otherMonthClass = isSameMonth(date, monthStart) ? "" : "other-month";
-    const dayBookings = getFilteredBookings().filter(booking => booking.date === date);
+    // NOT getFilteredBookings() — that function filters bookingRecords down
+    // to booking.date === bookingFilterDate (the single day picked via the
+    // Prev/Today/Next controls elsewhere on this page) before returning
+    // anything, so calling it once per day in this month loop meant every
+    // date except that one currently-selected day always got an empty
+    // array back, regardless of what was actually booked. Filter
+    // bookingRecords directly instead, re-applying the same service-type
+    // filter getFilteredBookings would have, plus the same active-only
+    // exclusion Daily/Weekly's getSlotBookings already applies (Monthly
+    // was showing cancelled/no-show bookings that those views hide).
+    // A boarding stay's own .date is just its check-in day (see
+    // normalizeBoardingBooking), so a straight booking.date === date match
+    // only ever showed it on day one of the stay — every other night the
+    // pet is actually boarded looked empty. Show it on every day from
+    // check-in through check-out instead.
+    const dayBookings = bookingRecords.filter(booking => {
+      if (currentServiceFilter !== "all" && booking.type !== currentServiceFilter) return false;
+      if (booking.status === "cancelled" || booking.status === "no_show") return false;
+      if (booking.type === "boarding" && booking.checkInDate && booking.checkOutDate) {
+        return date >= booking.checkInDate && date <= booking.checkOutDate;
+      }
+      return booking.date === date;
+    });
     const availableTime = findFirstAvailableTime(date);
 
     const addButton = availableTime
@@ -941,10 +1070,8 @@ function renderMonthlyCalendar() {
 
 function renderCalendarBooking(booking) {
   return `
-    <div class="calendar-booking" draggable="true" data-booking-id="${booking.id}">
-      <strong>${booking.petName}</strong><br>
-      ${booking.serviceLabel}<br>
-      ${renderStatusTag(booking.status)}
+    <div class="calendar-booking" draggable="true" data-booking-id="${booking.id}" style="border-left-color:${bookingStatusBorderColor(booking.status)};" title="#${booking.rawId} — ${booking.petName} — ${booking.serviceLabel} — ${formatStatus(booking.status)}">
+      <span class="calendar-booking-line">${booking.petName} (${booking.serviceLabel})</span>
     </div>
   `;
 }
@@ -1037,7 +1164,7 @@ function buildNewBookingDraft(type, petId, staffId, date, time) {
 
 function openNewBooking() {
   if (bookingPetOptions.length === 0) {
-    alert("Add a customer and pet in Customer & Pet Profile before creating a booking.");
+    showToast("Add a customer and pet in Customer & Pet Profile before creating a booking.");
     return;
   }
 
@@ -1055,7 +1182,7 @@ function openNewBooking() {
 
 function createBookingFromSlot(date, time) {
   if (bookingPetOptions.length === 0) {
-    alert("Add a customer and pet in Customer & Pet Profile before creating a booking.");
+    showToast("Add a customer and pet in Customer & Pet Profile before creating a booking.");
     return;
   }
 
@@ -1063,7 +1190,7 @@ function createBookingFromSlot(date, time) {
   const availableStaff = getAvailableStaffForSlot(date, time);
 
   if (getSlotBookings(date, time).length >= 3 || availableStaff.length === 0) {
-    alert("This timeslot is fully booked. Maximum 3 bookings are allowed, and each booking must use a different staff.");
+    showToast("This timeslot is fully booked. Maximum 3 bookings are allowed, and each booking must use a different staff.");
     return;
   }
 
@@ -1093,6 +1220,7 @@ function renderListing() {
   tbody.innerHTML = filteredData.map(booking => {
     return `
       <tr>
+        <td>${booking.rawId}</td>
         <td>${booking.date || "-"}</td>
         <td>${booking.customerName}</td>
         <td>${booking.petName}</td>
@@ -1241,8 +1369,8 @@ async function saveBooking() {
   const staffId = document.getElementById("staffName").value;
   const statusInternal = document.getElementById("bookingStatus").value;
 
-  if (!petId) { alert("Please select a pet."); return false; }
-  if (!staffId) { alert("Please select a staff member."); return false; }
+  if (!petId) { showToast("Please select a pet."); return false; }
+  if (!staffId) { showToast("Please select a staff member."); return false; }
 
   const payload = {
     pet_id: Number(petId),
@@ -1260,7 +1388,7 @@ async function saveBooking() {
     const time = document.getElementById("bookingTime").value;
 
     if (!serviceName || price === "" || !date || !time) {
-      alert("Please fill in service name, price, booking date and booking time.");
+      showToast("Please fill in service name, price, booking date and booking time.");
       return false;
     }
 
@@ -1284,11 +1412,11 @@ async function saveBooking() {
     const checkOutTime = document.getElementById("checkOutTime").value;
 
     if (!packageType || price === "" || !date || !checkInTime || !checkOutTime) {
-      alert("Please fill in package type, price, booking date, check-in time and check-out time.");
+      showToast("Please fill in package type, price, booking date, check-in time and check-out time.");
       return false;
     }
     if (checkOutTime <= checkInTime) {
-      alert("Check-out time must be after check-in time.");
+      showToast("Check-out time must be after check-in time.");
       return false;
     }
 
@@ -1310,11 +1438,11 @@ async function saveBooking() {
     const checkOutTime = document.getElementById("checkOutTime").value;
 
     if (!roomType || pricePerNight === "" || !checkInDate || !checkOutDate || !checkInTime || !checkOutTime) {
-      alert("Please fill in room type, price per night, check-in/out date and check-in/out time.");
+      showToast("Please fill in room type, price per night, check-in/out date and check-in/out time.");
       return false;
     }
     if (checkOutDate < checkInDate || (checkOutDate === checkInDate && checkOutTime <= checkInTime)) {
-      alert("Check-out must be after check-in.");
+      showToast("Check-out must be after check-in.");
       return false;
     }
 
@@ -1335,7 +1463,7 @@ async function saveBooking() {
   const leavingActiveSchedule = statusInternal === "cancelled" || statusInternal === "no_show";
   if (!leavingActiveSchedule && slotDate && slotTime &&
       !canAddBookingToSlot(slotDate, slotTime, staffId, bookingId)) {
-    alert("This booking cannot be saved. The selected timeslot already has 3 bookings or the selected staff is already assigned at this time.");
+    showToast("This booking cannot be saved. The selected timeslot already has 3 bookings or the selected staff is already assigned at this time.");
     return false;
   }
 
@@ -1355,7 +1483,7 @@ async function saveBooking() {
     await refreshBookingPageData();
     return true;
   } catch (error) {
-    alert(error.message || "Failed to save booking.");
+    showToast(error.message || "Failed to save booking.");
     return false;
   } finally {
     if (submitBtn) submitBtn.disabled = false;
@@ -1431,22 +1559,39 @@ function toLocalDateString(date) {
   return `${year}-${month}-${day}`;
 }
 
+// A bare "YYYY-MM-DD" string is parsed by `new Date(...)` as UTC midnight
+// (per spec), but every getter used on the result elsewhere in this file
+// (getFullYear/getMonth/getDate, setDate/setMonth) reads/writes in the
+// browser's LOCAL timezone. For any staff browser in a timezone behind UTC,
+// that mismatch silently shifts the date back by a day — e.g. addDays
+// treats UTC-midnight-Aug-1 as 19:00 local Jul-31, so setDate(+1) lands on
+// local Aug-1, not Aug-2. Malaysia/Singapore (UTC+8, ahead of UTC) never
+// see this, which is why it went unnoticed. Force local-midnight parsing
+// instead, matching the fix already used by formatDateFilterLabel — only
+// for genuine date-only strings, so a full timestamp (e.g. payment.paid_at)
+// still parses exactly as before.
+function toLocalMidnight(dateString) {
+  return /^\d{4}-\d{2}-\d{2}$/.test(String(dateString || ""))
+    ? new Date(`${dateString}T00:00:00`)
+    : new Date(dateString);
+}
+
 function addMonths(dateString, months) {
-  const date = new Date(dateString);
+  const date = toLocalMidnight(dateString);
   date.setMonth(date.getMonth() + months);
   return toLocalDateString(date);
 }
 
 function isSameMonth(dateString, monthReference) {
-  const date = new Date(dateString);
-  const reference = new Date(monthReference);
+  const date = toLocalMidnight(dateString);
+  const reference = toLocalMidnight(monthReference);
 
   return date.getFullYear() === reference.getFullYear() &&
     date.getMonth() === reference.getMonth();
 }
 
 function formatMonthDay(dateString) {
-  const date = new Date(dateString);
+  const date = toLocalMidnight(dateString);
 
   return date.toLocaleDateString("en-MY", {
     day: "2-digit",
@@ -1459,6 +1604,24 @@ function formatMonthDay(dateString) {
 ========================= */
 function renderStatusTag(status) {
   return `<span class="status-tag status-${status}">${formatStatus(status)}</span>`;
+}
+
+// Card-border colors for a booking's status — pending/done are intentionally
+// pending is intentionally brighter/red here than its .status-tag badge in
+// index.css (amber) per an explicit request to make that state read as red
+// on the card border specifically. scheduled/done/no_show/cancelled reuse
+// the same colors already used by their .status-tag badges (index.css's
+// .status-scheduled/.status-done/.status-no_show/.status-cancelled) so the
+// border and badge agree for those four.
+const BOOKING_STATUS_BORDER_COLORS = {
+  pending:   '#DC2626', // red
+  scheduled: '#1E40AF', // blue
+  done:      '#059669', // green (matches existing done badge)
+  no_show:   '#991B1B', // red (darker — matches existing no_show badge)
+  cancelled: '#57534E'  // gray
+};
+function bookingStatusBorderColor(status) {
+  return BOOKING_STATUS_BORDER_COLORS[status] || BOOKING_STATUS_BORDER_COLORS.cancelled;
 }
 
 function setActiveTab(groupSelector, activeButton) {
@@ -1487,10 +1650,18 @@ function findRoom(roomId) {
 // date+time match (the same granularity the hourly calendar grid already
 // uses) instead of a start/end window: a conflict is two active bookings
 // sharing the same date and the same time value, not merely overlapping.
+// A booking's own time doesn't have to land exactly on one of CALENDAR_HOURS
+// (e.g. a 10:30 grooming appointment, or anything created outside this
+// calendar's own "+ Add Slot" buttons — the AI/WhatsApp booking flow, or a
+// seeded/imported record) — slotForTime buckets it into the row for the
+// hour it falls within, same as dailyoverview.html's schedule does. An
+// exact-match comparison here used to make any such booking invisible on
+// this Daily/Weekly grid (while still showing on Monthly, which only
+// filters by date) even though the booking was real and unmodified.
 function getSlotBookings(date, time, excludeBookingId = "") {
   return bookingRecords.filter(booking => {
     return booking.date === date &&
-      booking.time === time &&
+      booking.time && slotForTime(booking.time, CALENDAR_HOURS) === time &&
       booking.id !== excludeBookingId &&
       booking.status !== "cancelled" &&
       booking.status !== "no_show";
@@ -1595,7 +1766,7 @@ function getToday() {
 }
 
 function addDays(dateString, days) {
-  const date = new Date(dateString);
+  const date = toLocalMidnight(dateString);
   date.setDate(date.getDate() + days);
   return toLocalDateString(date);
 }
@@ -1684,7 +1855,7 @@ function filterRecordsByDateIfPresent(records, dateString, fields) {
 }
 
 function getStartOfWeek(dateString) {
-  const date = new Date(dateString);
+  const date = toLocalMidnight(dateString);
   const day = date.getDay(); // 0 = Sun
   const diff = day === 0 ? -6 : 1 - day; // shift to Monday
   date.setDate(date.getDate() + diff);
@@ -1692,13 +1863,13 @@ function getStartOfWeek(dateString) {
 }
 
 function getStartOfMonth(dateString) {
-  const date = new Date(dateString);
+  const date = toLocalMidnight(dateString);
   date.setDate(1);
   return toLocalDateString(date);
 }
 
 function formatCalendarHeader(dateString) {
-  const date = new Date(dateString);
+  const date = toLocalMidnight(dateString);
   return date.toLocaleDateString("en-MY", {
     weekday: "short",
     day: "2-digit",
@@ -1708,8 +1879,8 @@ function formatCalendarHeader(dateString) {
 
 function getDateRange(startDate, endDate) {
   const dates = [];
-  let current = new Date(startDate);
-  const end = new Date(endDate);
+  let current = toLocalMidnight(startDate);
+  const end = toLocalMidnight(endDate);
 
   while (current <= end) {
     dates.push(toLocalDateString(current));
@@ -1768,6 +1939,7 @@ function filterBookingsByService(filter) {
 // whenever its linked point redemption has not been approved.
 let enquiryRecords = [];        // normalized /api/chat-messages rows
 let pendingPaymentRecords = []; // raw unpaid /api/payments rows
+let pendingRedemptionRecords = []; // raw /api/redemptions rows with status "Pending"
 
 function normalizeChatMessage(m) {
   const customerId = m.sender_type === "customer" ? m.sender_id : null;
@@ -1796,12 +1968,13 @@ function filterRealBookingsByService(filter) {
 }
 
 const TONES = {
-  alert:   { color: '#DC2626', bg: '#FEE2E2' },
-  info:    { color: '#1E40AF', bg: '#DBEAFE' },
+  alert:   { color: '#DC2626', bg: '#FEE2E2' }, // red    — pending: enquiries, payment, redemption
+  info:    { color: '#1E40AF', bg: '#DBEAFE' }, // blue
+  warning: { color: '#D97706', bg: '#FEF3C7' }, // yellow — grooming + check-ins (boarding/daycare)
+  green:   { color: '#059669', bg: '#D1FAE5' }, // green  — check-outs (boarding/daycare pickup)
   purple:  { color: '#7C3AED', bg: '#EDE9FE' },
   pink:    { color: '#DB2777', bg: '#FCE7F3' },
-  success: { color: '#059669', bg: '#D1FAE5' },
-  warning: { color: '#D97706', bg: '#FEF3C7' }
+  success: { color: '#059669', bg: '#D1FAE5' }
 };
 function toneStyle(tone) {
   const t = TONES[tone] || TONES.info;
@@ -1900,29 +2073,17 @@ function enquiryPriorityBadge(e) {
   return `<span class="status-tag status-off">Normal</span>`;
 }
 
-function computeSlaCompliance() {
-  const pendingGrooming = bookings.filter(b => b.serviceType === 'grooming' && b.date === today && b.status === 'pending');
-  const pendingEnquiries = enquiries.filter(e => e.status === 'pending');
-  const total = pendingGrooming.length + pendingEnquiries.length + pendingPaymentRecords.length;
-  const breaches = slaBreachCount('pendingService', pendingGrooming, 'time')
-    + slaBreachCount('enquiry', pendingEnquiries, 'receivedAt')
-    + paymentSlaBreachCount(pendingPaymentRecords);
-  return { total, breaches, rate: total ? Math.round(((total - breaches) / total) * 100) : 100 };
-}
-
 /* =========================
    PENDING ACTION CARDS
 ========================= */
 
 const CARD_CTA_REAL = {
-  pendingGrooming:            { label: 'Open Service Queue',      href: 'booking.html' },
-  pendingConfirmation:        { label: 'Review Bookings',         href: 'booking.html' },
-  pendingEnquiries:           { label: 'Open Enquiries',          href: 'enquiries.html' },
+  pendingGrooming:            { label: 'Open Booking Dashboard',  href: 'booking.html' },
+  pendingBoarding:            { label: 'Open Booking Dashboard',  href: 'booking.html' },
+  pendingDaycare:             { label: 'Open Booking Dashboard',  href: 'booking.html' },
+  pendingRedemption:          { label: 'Review Redemptions',      href: 'loyalty.html' },
   pendingPaymentVerification: { label: 'Review Payments',         href: 'payment.html' },
-  boardingCheckIn:            { label: 'Open Booking Dashboard',  href: 'booking.html' },
-  boardingCheckOut:           { label: 'Open Booking Dashboard',  href: 'booking.html' },
-  daycareCheckIn:             { label: 'Open Booking Dashboard',  href: 'booking.html' },
-  daycarePendingPickup:       { label: 'Open Booking Dashboard',  href: 'booking.html' }
+  pendingEnquiries:           { label: 'Open Enquiries',          href: 'enquiries.html' }
 };
 
 // Enquiries and pending-payment-verification counts are intentionally NOT
@@ -1936,8 +2097,6 @@ const CARD_CTA_REAL = {
 // with no daily boundary.
 function buildRealActionCards(filter) {
   const todayStr = dailyOverviewDate;
-  const todayBookings = filterRealBookingsByService(filter).filter(b => b.date === todayStr);
-  const pendingConfirmation = todayBookings.filter(b => b.status === 'scheduled').length;
 
   const pendingEnquiries = enquiryRecords.filter(e => e.senderType === 'customer' && e.status === 'pending' && e.receiveDate === todayStr);
   const enquirySlaBreaches = slaBreachCount('enquiry', pendingEnquiries, 'receiveTime');
@@ -1951,38 +2110,20 @@ function buildRealActionCards(filter) {
       key: 'pendingGrooming',
       icon: 'grooming-scissors.png', label: 'Pending Grooming', value: groomingPending.length,
       sub: groomingSlaBreaches > 0 ? `${groomingSlaBreaches} breaching 15-min SLA` : 'Within SLA',
-      tone: groomingSlaBreaches > 0 ? 'alert' : 'info'
+      tone: 'alert'
     });
   }
-
-  cards.push(
-    {
-      key: 'pendingConfirmation',
-      icon: 'confirm-circle.png', label: 'Pending Booking Confirmation', value: pendingConfirmation,
-      sub: `Scheduled today, awaiting confirmation`, tone: 'info'
-    },
-    {
-      key: 'pendingEnquiries',
-      icon: 'chat-message.png', label: 'Pending Enquiries', value: pendingEnquiries.length,
-      sub: enquirySlaBreaches > 0 ? `${enquirySlaBreaches} breaching 3h reply SLA` : 'Within SLA', tone: enquirySlaBreaches > 0 ? 'alert' : 'purple'
-    },
-    {
-      key: 'pendingPaymentVerification',
-      icon: 'payment-card.png', label: 'Pending Payment Verification', value: pendingPaymentRecords.length,
-      sub: paymentSlaBreachCount(pendingPaymentRecords) > 0 ? `${paymentSlaBreachCount(pendingPaymentRecords)} breaching 5h verification SLA` : 'Within SLA',
-      tone: paymentSlaBreachCount(pendingPaymentRecords) > 0 ? 'alert' : (pendingPaymentRecords.length > 0 ? 'warning' : 'pink')
-    }
-  );
 
   if (filter === 'all' || filter === 'boarding') {
     const boardingBookings = bookingRecords.filter(b => b.type === 'boarding');
     const checkInsDue = boardingBookings.filter(b => b.checkInDate === todayStr && b.status !== 'done' && b.status !== 'no_show' && b.status !== 'cancelled').length;
     const checkOutsDue = boardingBookings.filter(b => b.checkOutDate === todayStr && b.status !== 'no_show' && b.status !== 'cancelled').length;
 
-    cards.push(
-      { key: 'boardingCheckIn', icon: 'login.png', label: 'Boarding Check-In Due', value: checkInsDue, sub: `Arrivals to confirm (today)`, tone: 'success' },
-      { key: 'boardingCheckOut', icon: 'logout.png', label: 'Boarding Check-Out Due', value: checkOutsDue, sub: `Departures to confirm (today)`, tone: 'warning' }
-    );
+    cards.push({
+      key: 'pendingBoarding',
+      icon: 'boarding.png', label: 'Pending Boarding', value: checkInsDue + checkOutsDue,
+      sub: `${checkInsDue} arrival(s), ${checkOutsDue} departure(s) today`, tone: 'alert'
+    });
   }
 
   if (filter === 'all' || filter === 'daycare') {
@@ -1990,11 +2131,32 @@ function buildRealActionCards(filter) {
     const checkInsDue = daycareBookings.filter(b => b.status === 'pending' || b.status === 'scheduled').length;
     const pendingPickup = daycareBookings.filter(b => b.status === 'done').length;
 
-    cards.push(
-      { key: 'daycareCheckIn', icon: 'login.png', label: 'Daycare Check-In Due', value: checkInsDue, sub: 'Drop-offs to confirm', tone: 'success' },
-      { key: 'daycarePendingPickup', icon: 'logout.png', label: 'Daycare Pending Pick-Up', value: pendingPickup, sub: 'Waiting for parent pickup', tone: 'warning' }
-    );
+    cards.push({
+      key: 'pendingDaycare',
+      icon: 'dog-play.png', label: 'Pending Daycare', value: checkInsDue + pendingPickup,
+      sub: `${checkInsDue} drop-off(s), ${pendingPickup} pickup(s) today`, tone: 'alert'
+    });
   }
+
+  cards.push({
+    key: 'pendingRedemption',
+    icon: 'loyalty-reward-gift.png', label: 'Pending Loyalty Redemption', value: pendingRedemptionRecords.length,
+    sub: 'Awaiting manager approval', tone: 'alert'
+  });
+
+  cards.push(
+    {
+      key: 'pendingPaymentVerification',
+      icon: 'payment-card.png', label: 'Pending Payment Verification', value: pendingPaymentRecords.length,
+      sub: paymentSlaBreachCount(pendingPaymentRecords) > 0 ? `${paymentSlaBreachCount(pendingPaymentRecords)} breaching 5h verification SLA` : 'Within SLA',
+      tone: 'alert'
+    },
+    {
+      key: 'pendingEnquiries',
+      icon: 'chat-message.png', label: 'Pending Enquiries', value: pendingEnquiries.length,
+      sub: enquirySlaBreaches > 0 ? `${enquirySlaBreaches} breaching 3h reply SLA` : 'Within SLA', tone: 'alert'
+    }
+  );
 
   return cards;
 }
@@ -2002,12 +2164,12 @@ function buildRealActionCards(filter) {
 function renderRealActionCard(card) {
   const tone = TONES[card.tone] || TONES.info;
   return `
-    <div class="kpi-hero-card action-card clickable" style="border-color:${tone.bg};" onclick="openRealCardDetail('${card.key}')" title="${card.sub}">
+    <div class="kpi-hero-card action-card clickable" style="border-color:${tone.color};" onclick="openRealCardDetail('${card.key}')" title="${card.sub}">
       <div class="action-card-head">
         <img src="icon/${card.icon}" alt="" class="card-icon">
         <span class="kpi-hero-label">${card.label}</span>
       </div>
-      <div class="action-card-value">${card.value}</div>
+      <div class="action-card-value" style="color:${tone.color};">${card.value}</div>
     </div>
   `;
 }
@@ -2182,13 +2344,30 @@ function renderRealStatusDonut(filter) {
    ROOM & PLAY AREA STATUS
 ========================= */
 
-// No rooms/capacity table exists anywhere in the real schema, so this panel
-// has no real-backend equivalent at all (unlike the mock `rooms` array,
-// which was entirely invented). Rather than fabricate room/turnover data,
-// this now just states plainly that it isn't tracked yet.
+// Real room_type/capacity from the `room` table (see fetchDailyOverviewData
+// -> api.listRooms()) cross-referenced against real boarding_booking rows
+// covering dailyOverviewDate — bookingsOccupyingRoomOnDate is shared with
+// dashboard.html's computeOccupancyRate() (defined in the ANALYTICAL
+// DASHBOARD section below; function declarations hoist, so this earlier
+// call site is fine).
 function renderRealRoomStatus() {
-  q('roomStatusCount').textContent = 'Not tracked';
-  q('roomStatusList').innerHTML = `<p class="queue-empty">Room &amp; play-area tracking isn't available yet — there's no rooms/capacity table in the connected system.</p>`;
+  if (!rooms.length) {
+    q('roomStatusCount').textContent = 'No rooms configured';
+    q('roomStatusList').innerHTML = `<p class="queue-empty">No boarding rooms are configured for this company yet.</p>`;
+    return;
+  }
+  const occupiedRooms = rooms.filter(r => bookingsOccupyingRoomOnDate(r.id, dailyOverviewDate) > 0);
+  q('roomStatusCount').textContent = `${occupiedRooms.length} / ${rooms.length} occupied`;
+  q('roomStatusList').innerHTML = rooms.map(r => {
+    const occupying = bookingsOccupyingRoomOnDate(r.id, dailyOverviewDate);
+    const full = occupying >= (r.capacity || 1);
+    return renderDetailRow({
+      title: r.name,
+      sub: `Capacity ${r.capacity || 1}`,
+      tag: full ? 'scheduled' : 'done',
+      tagLabel: `${occupying} / ${r.capacity || 1} occupied`,
+    });
+  }).join('');
 }
 
 /* =========================
@@ -2197,9 +2376,9 @@ function renderRealRoomStatus() {
 
 const SCHEDULE_HOURS = ['08:00', '10:00', '12:00', '14:00', '16:00'];
 
-function slotForTime(timeStr) {
-  let chosen = SCHEDULE_HOURS[0];
-  SCHEDULE_HOURS.forEach(h => { if (toMinutes(h) <= toMinutes(timeStr)) chosen = h; });
+function slotForTime(timeStr, hours = SCHEDULE_HOURS) {
+  let chosen = hours[0];
+  hours.forEach(h => { if (toMinutes(h) <= toMinutes(timeStr)) chosen = h; });
   return chosen;
 }
 
@@ -2537,7 +2716,7 @@ function realBookingDetailRow(b) {
   }[b.status] || { tag: 'pending', tagLabel: b.status };
 
   return renderDetailRow({
-    title: `${b.petName} (${b.customerName})`,
+    title: `#${b.rawId} — ${b.petName} (${b.customerName})`,
     sub: `${b.serviceLabel} · ${b.date || '-'}${b.time ? ' ' + b.time : ''}`,
     ...statusMeta
   });
@@ -2570,6 +2749,19 @@ function computeRealEnquiryPriority(e) {
   return 'normal';
 }
 
+// Daily Overview's own summary row for a pending redemption — deliberately
+// simpler than loyalty.html's full pending-redemption table (member name,
+// search, decide buttons): this is just a count-and-link card, same as
+// every other card here, not a place to approve/reject from.
+function realRedemptionDetailRow(r) {
+  return renderDetailRow({
+    title: `Redemption #${r.redemption_id}${r.coupon_id ? ' — Coupon ' + r.coupon_id : ''}`,
+    sub: `${Number(r.loyalty_spend) || 0} points requested${r.create_date ? ' · ' + r.create_date : ''}`,
+    tag: 'pending',
+    tagLabel: 'Awaiting Approval',
+  });
+}
+
 // Real counterpart of the retired "Pending Loyalty Redemption" concept —
 // a pending `payment` row, exactly what payment.html's pending queue shows.
 // No inline verify action here (verifying needs coupon/staff selection),
@@ -2587,34 +2779,29 @@ function realPaymentDetailRow(p) {
 }
 
 function openRealCardDetail(cardKey) {
-  const filter = currentFilter;
   const todayStr = dailyOverviewDate;
-  const todayBookings = filterRealBookingsByService(filter).filter(b => b.date === todayStr);
   const cta = CARD_CTA_REAL[cardKey];
 
   if (cardKey === 'pendingGrooming') {
     const items = bookingRecords.filter(b => b.type === 'grooming' && b.date === todayStr && b.status === 'pending');
     openDetailModal('Pending Grooming', `${items.length} booking(s) need grooming service on ${formatShortDate(todayStr)}. SLA: start within 15 minutes.`, items.map(realBookingDetailRow).join(''), cta);
-  } else if (cardKey === 'pendingConfirmation') {
-    const items = todayBookings.filter(b => b.status === 'scheduled');
-    openDetailModal('Pending Booking Confirmation', `${items.length} booking(s) scheduled today, awaiting confirmation.`, items.map(realBookingDetailRow).join(''), cta);
+  } else if (cardKey === 'pendingRedemption') {
+    openDetailModal('Pending Loyalty Redemption', `${pendingRedemptionRecords.length} redemption(s) awaiting manager approval.`, pendingRedemptionRecords.map(realRedemptionDetailRow).join(''), cta);
   } else if (cardKey === 'pendingEnquiries') {
     const items = enquiryRecords.filter(e => e.senderType === 'customer' && e.status === 'pending' && e.receiveDate === todayStr);
     openDetailModal('Pending Enquiries', `${items.length} enquiries awaiting a reply on ${formatShortDate(todayStr)}. SLA: reply within 3 hours.`, items.map(realEnquiryDetailRow).join(''), cta);
   } else if (cardKey === 'pendingPaymentVerification') {
     openDetailModal('Pending Payment Verification', `${pendingPaymentRecords.length} payment(s) awaiting staff verification.`, pendingPaymentRecords.map(realPaymentDetailRow).join(''), cta);
-  } else if (cardKey === 'boardingCheckIn') {
-    const items = bookingRecords.filter(b => b.type === 'boarding' && b.checkInDate === todayStr && b.status !== 'done' && b.status !== 'no_show' && b.status !== 'cancelled');
-    openDetailModal('Boarding Check-In Due', `${items.length} arrival(s) to confirm.`, items.map(realBookingDetailRow).join(''), cta);
-  } else if (cardKey === 'boardingCheckOut') {
-    const items = bookingRecords.filter(b => b.type === 'boarding' && b.checkOutDate === todayStr && b.status !== 'no_show' && b.status !== 'cancelled');
-    openDetailModal('Boarding Check-Out Due', `${items.length} departure(s) to confirm.`, items.map(realBookingDetailRow).join(''), cta);
-  } else if (cardKey === 'daycareCheckIn') {
-    const items = bookingRecords.filter(b => b.type === 'daycare' && b.date === todayStr && (b.status === 'pending' || b.status === 'scheduled'));
-    openDetailModal('Daycare Check-In Due', `${items.length} drop-off(s) to confirm.`, items.map(realBookingDetailRow).join(''), cta);
-  } else if (cardKey === 'daycarePendingPickup') {
-    const items = bookingRecords.filter(b => b.type === 'daycare' && b.date === todayStr && b.status === 'done');
-    openDetailModal('Daycare Pending Pick-Up', `${items.length} pet(s) waiting for pickup.`, items.map(realBookingDetailRow).join(''), cta);
+  } else if (cardKey === 'pendingBoarding') {
+    const checkIns = bookingRecords.filter(b => b.type === 'boarding' && b.checkInDate === todayStr && b.status !== 'done' && b.status !== 'no_show' && b.status !== 'cancelled');
+    const checkOuts = bookingRecords.filter(b => b.type === 'boarding' && b.checkOutDate === todayStr && b.status !== 'no_show' && b.status !== 'cancelled');
+    const items = [...checkIns, ...checkOuts];
+    openDetailModal('Pending Boarding', `${checkIns.length} arrival(s) and ${checkOuts.length} departure(s) to confirm today.`, items.map(realBookingDetailRow).join(''), cta);
+  } else if (cardKey === 'pendingDaycare') {
+    const checkIns = bookingRecords.filter(b => b.type === 'daycare' && b.date === todayStr && (b.status === 'pending' || b.status === 'scheduled'));
+    const pickups = bookingRecords.filter(b => b.type === 'daycare' && b.date === todayStr && b.status === 'done');
+    const items = [...checkIns, ...pickups];
+    openDetailModal('Pending Daycare', `${checkIns.length} drop-off(s) and ${pickups.length} pickup(s) today.`, items.map(realBookingDetailRow).join(''), cta);
   }
 }
 
@@ -2661,13 +2848,21 @@ async function fetchDailyOverviewData() {
   // bookingCustomerOptions/bookingStaffOptions for this page's own load.
   await fetchBookingPageData();
 
-  const [messages, pendingPayments] = await Promise.all([
+  const [messages, pendingPayments, roomRows, redemptions] = await Promise.all([
     api.get('/chat-messages'),
     api.get('/payments'),
+    api.listRooms(),
+    api.get('/redemptions'),
   ]);
 
   enquiryRecords = messages.map(normalizeChatMessage);
   pendingPaymentRecords = pendingPayments.filter(isPaymentAwaitingVerification);
+  pendingRedemptionRecords = redemptions.filter(r => String(r.status || '').toLowerCase() === 'pending');
+  rooms.splice(0, rooms.length, ...roomRows.map(r => ({
+    id: r.room_type,
+    name: r.room_type,
+    capacity: Number(r.capacity) || 1,
+  })));
 }
 
 async function refreshDailyOverviewData() {
@@ -2690,14 +2885,14 @@ async function confirmRealBooking(id) {
     closeDetailModal();
     await refreshDailyOverviewData();
   } catch (error) {
-    alert(error.message || 'Failed to update booking.');
+    showToast(error.message || 'Failed to update booking.');
   }
 }
 
 async function resolveRealEnquiry(id) {
   const enquiry = enquiryRecords.find(e => e.id === id);
   if (!enquiry) return;
-  const replyText = prompt("Enter the reply sent to this customer:");
+  const replyText = await showPrompt("Enter the reply sent to this customer:");
   if (!replyText?.trim()) return;
   const stamp = todayStampLocal(); // reused from STAFF MANAGEMENT section (generic {date,time} helper)
   try {
@@ -2705,7 +2900,7 @@ async function resolveRealEnquiry(id) {
     closeDetailModal();
     await refreshDailyOverviewData();
   } catch (error) {
-    alert(error.message || 'Failed to update enquiry.');
+    showToast(error.message || 'Failed to update enquiry.');
   }
 }
 
@@ -2728,7 +2923,7 @@ async function initDailyOverviewReal() {
   try {
     await fetchDailyOverviewData();
   } catch (error) {
-    alert(error.message || 'Failed to load daily overview data.');
+    showToast(error.message || 'Failed to load daily overview data.');
   }
 
   document.querySelectorAll('#overviewServiceFilterTabs .tab-btn').forEach(btn => {
@@ -2757,141 +2952,21 @@ async function initDailyOverviewReal() {
 }
 
 /* ==========================================================================
-   CRM (profile.html) — derived from the shared `bookings` dataset so
-   customer/pet records always match what's actually booked.
+   CRM (profile.html) — real backend data via initCRM()/customerRecords/
+   petRecords below. `customers`/`pets` here are a SEPARATE pair of globals
+   dashboard.html's own real init (loadAnalyticsDashboardData) populates for
+   its own KPI/System-panel lookups (see getCustomerById) — kept as plain
+   empty-by-default arrays so a page that hasn't loaded them yet renders
+   empty instead of stale data, not because anything here seeds them.
    ========================================================================== */
-
-function buildCrmCustomers() {
-  const list = [];
-  const seen = new Set();
-
-  bookings.forEach(b => {
-    if (seen.has(b.customerName)) return;
-    seen.add(b.customerName);
-
-    const n = list.length + 1;
-    list.push({
-      customer_id: `CUST-${String(n).padStart(4, "0")}`,
-      loyalty_id: `LOY-${String(n).padStart(4, "0")}`,
-      full_name: b.customerName,
-      phone: `+60 12-345 ${String(6700 + n).padStart(4, "0")}`,
-      address: "",
-      photo_icon: n % 2 === 0 ? "👩" : "👨",
-      notes: ""
-    });
-  });
-
-  return list;
-}
-
-const PET_SPECIES = {
-  Milo: "Dog", Coco: "Dog", Luna: "Cat", Buddy: "Dog", Simba: "Cat", Snowy: "Cat",
-  Rocky: "Dog", Bella: "Dog", Max: "Dog", Cleo: "Cat", Tommy: "Dog", Nala: "Cat",
-  Oreo: "Cat", Chichi: "Dog", Leo: "Cat", Mochi: "Dog"
-};
-
-const SPECIES_DEFAULTS = {
-  Dog: { breed: "Mixed Breed", weight: "8kg", colour: "Brown" },
-  Cat: { breed: "Domestic Shorthair", weight: "4kg", colour: "Grey" }
-};
-
-function buildCrmPets(customerList) {
-  return bookings.map((b, i) => {
-    const customer = customerList.find(c => c.full_name === b.customerName);
-    const species = PET_SPECIES[b.petName] || "Dog";
-    const defaults = SPECIES_DEFAULTS[species];
-
-    return {
-      pet_id: `PET-${String(i + 1).padStart(4, "0")}`,
-      customer_id: customer.customer_id,
-      pet_name: b.petName,
-      species,
-      gender: i % 2 === 0 ? "Male" : "Female",
-      birthdate: "",
-      breed: defaults.breed,
-      weight: defaults.weight,
-      colour: defaults.colour,
-      service_preference: b.serviceType.charAt(0).toUpperCase() + b.serviceType.slice(1),
-      special_care_note: b.specialNote || "",
-      additional_note: ""
-    };
-  });
-}
-
-function buildCrmBookings(customerList, petList) {
-  return bookings.map((b, i) => {
-    const customer = customerList.find(c => c.full_name === b.customerName);
-    const pet = petList.find(p => p.pet_name === b.petName && p.customer_id === customer.customer_id);
-
-    return {
-      booking_id: `BOOK-${String(i + 1).padStart(4, "0")}`,
-      customer_id: customer.customer_id,
-      pet_id: pet.pet_id,
-      service_type: b.serviceType.charAt(0).toUpperCase() + b.serviceType.slice(1),
-      booking_date: b.date
-    };
-  });
-}
-
-function customersStorageKey() {
-  const account = getCurrentAccount();
-  return "pawfect_customers_" + (account?.businessKey || "default");
-}
-function loadCustomers(seedCustomers) {
-  try {
-    const raw = localStorage.getItem(customersStorageKey());
-    return raw ? JSON.parse(raw) : seedCustomers;
-  } catch (e) {
-    return seedCustomers;
-  }
-}
-// Set true once loadRealCrmData() overwrites `customers`/`pets` with real
-// Supabase rows, so persistCustomers()/persistPets() never write real-shaped
-// records into the mock localStorage key (still read by dashboard.html's
-// System panel and loyalty.html's member list, neither converted yet).
-let crmDataIsReal = false;
-
-function persistCustomers() {
-  if (crmDataIsReal) return;
-  localStorage.setItem(customersStorageKey(), JSON.stringify(customers));
-}
-
-function petsStorageKey() {
-  const account = getCurrentAccount();
-  return "pawfect_pets_" + (account?.businessKey || "default");
-}
-function loadPets(seedPets) {
-  try {
-    const raw = localStorage.getItem(petsStorageKey());
-    return raw ? JSON.parse(raw) : seedPets;
-  } catch (e) {
-    return seedPets;
-  }
-}
-function persistPets() {
-  if (crmDataIsReal) return;
-  localStorage.setItem(petsStorageKey(), JSON.stringify(pets));
-}
 
 let customers = [];
 let pets = [];
-let crmBookings = [];
 
-/* =========================
-   REAL CRM DATA (profile.html only)
-   Overwrites the mock `customers`/`pets` globals above — same pattern as
-   loadRealBookingData(): only runs from profile.html's own init path, every
-   other still-mock page (dashboard.html's System panel, loyalty.html's
-   member list) keeps reading pristine mock data on its own page load.
-
-   Your real `pet` table stores date_of_birth/vaccination_expired_date as
-   DD/MM/YYYY text (not a real Postgres `date` column, unlike the booking
-   tables) — parseDDMMYYYY/formatDDMMYYYY convert to/from the ISO format
-   <input type="date"> requires.
-========================= */
-
-let loyaltyMemberByCustomerId = new Map();
-
+// Your real `pet` table stores date_of_birth/vaccination_expired_date as
+// DD/MM/YYYY text (not a real Postgres `date` column, unlike the booking
+// tables) — these convert to/from the ISO format <input type="date">
+// requires, used by openPetForm() below.
 function parseDDMMYYYY(str) {
   const parts = String(str || "").split("/");
   if (parts.length !== 3) return "";
@@ -2904,32 +2979,6 @@ function formatDDMMYYYY(iso) {
   if (parts.length !== 3) return "";
   const [y, m, d] = parts;
   return `${d}/${m}/${y}`;
-}
-
-async function loadRealCrmData() {
-  const [customersRes, petsRes, membersRes] = await Promise.all([
-    api.listCustomers({ limit: 1000 }),
-    api.listPets({ limit: 1000 }),
-    api.listMembers({ limit: 1000 }),
-  ]);
-  // Also load real bookings — needed for "Last Booking Made"/"Total
-  // Bookings" per customer and the "New Customers" heuristic below.
-  await loadRealBookingData();
-
-  loyaltyMemberByCustomerId = new Map(membersRes.map(m => [m.customer_id, m]));
-  customers = customersRes;
-  pets = petsRes;
-  crmDataIsReal = true;
-}
-
-function petIdsForCustomer(customerId) {
-  return new Set(pets.filter(p => p.customer_id === customerId).map(p => p.pet_id));
-}
-
-function firstBookingCreatedDate(customerId) {
-  const petIds = petIdsForCustomer(customerId);
-  const dates = bookings.filter(b => petIds.has(b.petId) && b.createdDate).map(b => b.createdDate);
-  return dates.length ? dates.sort()[0] : null;
 }
 
 const profileTypeFilter = document.getElementById("profileTypeFilter");
@@ -3460,7 +3509,7 @@ function openCustomerForm(customerId = null) {
     };
 
     if (!payload.full_name || !payload.phone_number || !payload.address) {
-      alert("Name, mobile number, and address are required.");
+      showToast("Name, mobile number, and address are required.");
       return;
     }
 
@@ -3476,7 +3525,7 @@ function openCustomerForm(customerId = null) {
       closeDetailPage();
       await refreshCrmData();
     } catch (error) {
-      alert(error.message || "Failed to save customer record.");
+      showToast(error.message || "Failed to save customer record.");
     } finally {
       if (submitBtn) submitBtn.disabled = false;
     }
@@ -3489,7 +3538,7 @@ function openCustomerForm(customerId = null) {
 // modal, same as openPaymentDetail/openEnquiryDetailPage do elsewhere.
 async function openCustomerBookingDetail(type, id) {
   const booking = await api.get(`/bookings/${type}/${id}`).catch(error => {
-    alert(error.message || "Failed to load booking.");
+    showToast(error.message || "Failed to load booking.");
     return null;
   });
   if (!booking) return;
@@ -3543,7 +3592,7 @@ async function openCustomerBookingDetail(type, id) {
 function openPetForm(petId = null) {
   const isEdit = petId !== null && petId !== undefined;
   if (!isEdit && customerRecords.length === 0) {
-    alert("Create a customer before adding a pet.");
+    showToast("Create a customer before adding a pet.");
     return;
   }
   const pet = isEdit
@@ -3608,7 +3657,7 @@ function openPetForm(petId = null) {
 
     <div class="form-group">
       <label>Date of Birth</label>
-      <input type="date" name="date_of_birth" max="${getToday()}" value="${String(pet.date_of_birth || "").slice(0, 10)}" />
+      <input type="date" name="date_of_birth" max="${getToday()}" value="${parseDDMMYYYY(pet.date_of_birth)}" />
     </div>
 
     <div class="form-group">
@@ -3637,7 +3686,7 @@ function openPetForm(petId = null) {
 
     <div class="form-group">
       <label>Vaccination Expiry Date</label>
-      <input type="date" name="vaccination_expired_date" value="${String(pet.vaccination_expired_date || "").slice(0, 10)}" />
+      <input type="date" name="vaccination_expired_date" value="${parseDDMMYYYY(pet.vaccination_expired_date)}" />
     </div>
 
     <div class="form-group full">
@@ -3666,22 +3715,22 @@ function openPetForm(petId = null) {
       pet_name: String(formData.get("pet_name") || "").trim(),
       pet_type: formData.get("pet_type"),
       gender: formData.get("gender"),
-      date_of_birth: formData.get("date_of_birth") || null,
+      date_of_birth: formData.get("date_of_birth") ? formatDDMMYYYY(formData.get("date_of_birth")) : null,
       breed: formData.get("breed") || null,
       height_cm: formData.get("height_cm") ? Number(formData.get("height_cm")) : null,
       size: formData.get("size") || null,
       vaccination_status: formData.get("vaccination_status"),
-      vaccination_expired_date: formData.get("vaccination_expired_date") || null,
+      vaccination_expired_date: formData.get("vaccination_expired_date") ? formatDDMMYYYY(formData.get("vaccination_expired_date")) : null,
       health_notes: formData.get("health_notes") || null,
       service_notes: formData.get("service_notes") || null,
     };
 
     if (!payload.customer_id || !payload.pet_name) {
-      alert("Owner and pet name are required.");
+      showToast("Owner and pet name are required.");
       return;
     }
     if (payload.height_cm != null && payload.height_cm < 0) {
-      alert("Height cannot be negative.");
+      showToast("Height cannot be negative.");
       return;
     }
 
@@ -3697,7 +3746,7 @@ function openPetForm(petId = null) {
       closeDetailPage();
       await refreshCrmData();
     } catch (error) {
-      alert(error.message || "Failed to save pet record.");
+      showToast(error.message || "Failed to save pet record.");
     } finally {
       if (submitBtn) submitBtn.disabled = false;
     }
@@ -3711,26 +3760,26 @@ function closeDetailPage() {
 }
 
 async function removeCustomer(customerId) {
-  if (!confirm(`Remove customer CUST-${customerId} and all their linked pets? This cannot be undone.`)) return;
+  if (!await showConfirm(`Remove customer CUST-${customerId} and all their linked pets? This cannot be undone.`)) return;
 
   try {
     await api.del(`/customers/${customerId}/with-pets`);
     closeDetailPage();
     await refreshCrmData();
   } catch (error) {
-    alert(error.message || "Failed to remove customer.");
+    showToast(error.message || "Failed to remove customer.");
   }
 }
 
 async function removePet(petId) {
-  if (!confirm(`Remove pet PET-${petId}? This cannot be undone.`)) return;
+  if (!await showConfirm(`Remove pet PET-${petId}? This cannot be undone.`)) return;
 
   try {
     await api.del(`/pets/${petId}`);
     closeDetailPage();
     await refreshCrmData();
   } catch (error) {
-    alert(error.message || "Failed to remove pet.");
+    showToast(error.message || "Failed to remove pet.");
   }
 }
 
@@ -3739,7 +3788,7 @@ function getPetIcon(petType) {
 }
 
 function formatDate(dateString) {
-  return new Date(dateString).toLocaleDateString("en-MY", {
+  return toLocalMidnight(dateString).toLocaleDateString("en-MY", {
     day: "2-digit",
     month: "short",
     year: "numeric"
@@ -3748,28 +3797,10 @@ function formatDate(dateString) {
 
 /* ==========================================================================
    LOYALTY PROGRAM (loyalty.html)
-   Members are derived from the shared CRM customer records (existing
-   loyalty_id), plus any approved new-member sign-up requests below. Point
-   balances/tiers are deterministic mock values, not tracked transactionally.
+   Members/redemptions come from the real loyaltymember/redemption tables
+   (see refreshLoyaltyPageData() and loadAnalyticsDashboardData()) — real,
+   transactional data, not mock values.
    ========================================================================== */
-
-function loyaltyMemberRequestsStorageKey() {
-  const account = getCurrentAccount();
-  return "pawfect_loyalty_member_requests_" + (account?.businessKey || "default");
-}
-function loadLoyaltyMemberRequests(seedRequests) {
-  try {
-    const raw = localStorage.getItem(loyaltyMemberRequestsStorageKey());
-    return raw ? JSON.parse(raw) : seedRequests;
-  } catch (e) {
-    return seedRequests;
-  }
-}
-function persistLoyaltyMemberRequests() {
-  localStorage.setItem(loyaltyMemberRequestsStorageKey(), JSON.stringify(loyaltyMemberRequests));
-}
-
-let loyaltyMemberRequests = [];
 
 const LOYALTY_TIERS = [
   { min: 1200, name: 'Platinum' },
@@ -3872,7 +3903,7 @@ async function refreshLoyaltyPageData() {
     loyaltyEarnRate = company.settings_json?.loyalty_earn_rate ?? null;
     bookingCustomerOptions = customersList; // populates findBookingCustomer() used below
   } catch (error) {
-    alert(error.message || "Failed to load loyalty data.");
+    showToast(error.message || "Failed to load loyalty data.");
   }
 
   updateLoyaltyKPI();
@@ -3980,7 +4011,7 @@ function renderLoyaltyPendingTable(searchValue) {
 
 async function openRedemptionDetail(redemptionId) {
   const redemption = await api.getRedemption(redemptionId).catch(error => {
-    alert(error.message || "Failed to load redemption.");
+    showToast(error.message || "Failed to load redemption.");
     return null;
   });
   if (!redemption) return;
@@ -4048,9 +4079,9 @@ async function openRedemptionDetail(redemptionId) {
 }
 
 async function cancelPointRedemption(redemptionId) {
-  const reason = prompt("Why is this approved redemption being cancelled?");
+  const reason = await showPrompt("Why is this approved redemption being cancelled?");
   if (!reason?.trim()) return;
-  if (!confirm(`Cancel REDM-${redemptionId} and return its spent points?`)) return;
+  if (!await showConfirm(`Cancel REDM-${redemptionId} and return its spent points?`)) return;
   const buttons = detailForm.querySelectorAll(".form-actions button");
   buttons.forEach(button => { button.disabled = true; });
   try {
@@ -4058,14 +4089,14 @@ async function cancelPointRedemption(redemptionId) {
     closeDetailPage();
     await refreshLoyaltyPageData();
   } catch (error) {
-    alert(error.message || "Failed to cancel redemption.");
+    showToast(error.message || "Failed to cancel redemption.");
     buttons.forEach(button => { button.disabled = false; });
   }
 }
 
 async function decidePointRedemption(redemptionId, status) {
   const action = status === "Approved" ? "approve" : "reject";
-  if (!confirm(`${action.charAt(0).toUpperCase() + action.slice(1)} REDM-${redemptionId}?`)) return;
+  if (!await showConfirm(`${action.charAt(0).toUpperCase() + action.slice(1)} REDM-${redemptionId}?`)) return;
   const buttons = detailForm.querySelectorAll(".form-actions button");
   buttons.forEach(button => { button.disabled = true; });
   try {
@@ -4073,7 +4104,7 @@ async function decidePointRedemption(redemptionId, status) {
     closeDetailPage();
     await refreshLoyaltyPageData();
   } catch (error) {
-    alert(error.message || `Failed to ${action} redemption.`);
+    showToast(error.message || `Failed to ${action} redemption.`);
     buttons.forEach(button => { button.disabled = false; });
   }
 }
@@ -4217,24 +4248,24 @@ function renderLoyaltyRulesPanel() {
 
 async function saveLoyaltyEarnRate() {
   const rate = Number(document.getElementById("loyaltyEarnRateInput").value);
-  if (Number.isNaN(rate) || rate < 0) { alert("Please enter a valid earn rate."); return; }
+  if (Number.isNaN(rate) || rate < 0) { showToast("Please enter a valid earn rate."); return; }
 
   try {
     await api.patch("/companies/me", { settings: { loyalty_earn_rate: rate } });
     await refreshLoyaltyPageData();
   } catch (error) {
-    alert(error.message || "Failed to save earn rate.");
+    showToast(error.message || "Failed to save earn rate.");
   }
 }
 
 async function removeLoyaltyRule(couponId) {
-  if (!confirm("Remove this redemption rule? This cannot be undone.")) return;
+  if (!await showConfirm("Remove this redemption rule? This cannot be undone.")) return;
   try {
     await api.del(`/coupons/${couponId}`);
     closeDetailPage();
     await refreshLoyaltyPageData();
   } catch (error) {
-    alert(error.message || "Failed to remove rule.");
+    showToast(error.message || "Failed to remove rule.");
   }
 }
 
@@ -4311,7 +4342,7 @@ function openRuleForm(couponId = null) {
       closeDetailPage();
       await refreshLoyaltyPageData();
     } catch (error) {
-      alert(error.message || "Failed to save rule.");
+      showToast(error.message || "Failed to save rule.");
     } finally {
       if (submitBtn) submitBtn.disabled = false;
     }
@@ -4587,7 +4618,7 @@ async function confirmVerifyPayment(paymentId) {
       note.style.color = "#DC2626";
       note.textContent = error.message || "Failed to verify payment.";
     } else {
-      alert(error.message || "Failed to verify payment.");
+      showToast(error.message || "Failed to verify payment.");
     }
   }
 }
@@ -4630,7 +4661,7 @@ async function confirmRefundPayment(paymentId) {
     }
     return;
   }
-  if (!confirm(`Refund PAY-${String(paymentId).padStart(4, "0")}? Revenue and linked loyalty points will be reversed.`)) return;
+  if (!await showConfirm(`Refund PAY-${String(paymentId).padStart(4, "0")}? Revenue and linked loyalty points will be reversed.`)) return;
 
   try {
     await api.refundPayment(paymentId, reason);
@@ -4641,14 +4672,14 @@ async function confirmRefundPayment(paymentId) {
       note.style.color = "#DC2626";
       note.textContent = error.message || "Failed to refund payment.";
     } else {
-      alert(error.message || "Failed to refund payment.");
+      showToast(error.message || "Failed to refund payment.");
     }
   }
 }
 
 async function openPaymentDetail(paymentId) {
   const detail = await api.getPaymentDetail(paymentId).catch(error => {
-    alert(error.message || "Failed to load payment.");
+    showToast(error.message || "Failed to load payment.");
     return null;
   });
   if (!detail) return;
@@ -4889,7 +4920,7 @@ async function refreshEnquiryPageData() {
     currentEnquiryAccountRole = me.role;
     enquiryRecords = messages.map(normalizeChatMessage);
   } catch (error) {
-    alert(error.message || "Failed to load enquiries.");
+    showToast(error.message || "Failed to load enquiries.");
   }
 
   updateEnquiryKPI();
@@ -5153,7 +5184,7 @@ function openNewEnquiryForm() {
       closeDetailPage();
       await refreshEnquiryPageData();
     } catch (error) {
-      alert(error.message || "Failed to log enquiry.");
+      showToast(error.message || "Failed to log enquiry.");
     }
   };
 }
@@ -5161,7 +5192,7 @@ function openNewEnquiryForm() {
 async function saveEnquiryReply(id) {
   const replyText = q("enquiryReplyText")?.value.trim();
   if (!replyText) {
-    alert("Enter the reply text before saving.");
+    showToast("Enter the reply text before saving.");
     return;
   }
   const stamp = todayStampLocal();
@@ -5174,18 +5205,18 @@ async function saveEnquiryReply(id) {
     closeDetailPage();
     await refreshEnquiryPageData();
   } catch (error) {
-    alert(error.message || "Failed to save reply.");
+    showToast(error.message || "Failed to save reply.");
   }
 }
 
 async function deleteEnquiry(id) {
-  if (!confirm(`Delete ENQ-${String(id).padStart(4, "0")}? This cannot be undone.`)) return;
+  if (!await showConfirm(`Delete ENQ-${String(id).padStart(4, "0")}? This cannot be undone.`)) return;
   try {
     await api.del(`/chat-messages/${id}`);
     closeDetailPage();
     await refreshEnquiryPageData();
   } catch (error) {
-    alert(error.message || "Failed to delete enquiry.");
+    showToast(error.message || "Failed to delete enquiry.");
   }
 }
 
@@ -5195,14 +5226,14 @@ async function resolveEnquiryAndRefresh(id) {
   // which target #detailModal/#actionCards etc., elements that don't exist
   // on this page (enquiries.html uses #detailPage/closeDetailPage()).
   const stamp = todayStampLocal();
-  const replyText = prompt("Enter the reply sent to this customer:");
+  const replyText = await showPrompt("Enter the reply sent to this customer:");
   if (!replyText?.trim()) return;
   try {
     await api.patch(`/chat-messages/${id}`, { reply_text: replyText.trim(), reply_date: stamp.date, reply_time: stamp.time });
     closeDetailPage();
     await refreshEnquiryPageData();
   } catch (error) {
-    alert(error.message || "Failed to update enquiry.");
+    showToast(error.message || "Failed to update enquiry.");
   }
 }
 
@@ -5214,12 +5245,12 @@ async function resolveEnquiryAndRefresh(id) {
    on a staff member's off day / approved leave).
    ========================================================================== */
 
-// Dual-shape: staff.html converts `staff`/`leaveRequests` to real Supabase
-// data, but dashboard.html still calls these same functions against the
-// mock arrays (not converted yet). `leaveDataIsReal` (set by
-// loadRealStaffPageData(), which calls loadRealBookingData()) is the shared
-// signal for which shape is currently loaded — real staff uses
-// staff_id/off_days_json, mock staff uses id/offDays.
+// Dual-shape: dashboard.html's loadRealBookingData() and staff.html's
+// loadRealStaffPageData() both populate the real `staff`/`leaveRequests`
+// globals, but from different endpoints with different field names.
+// `leaveDataIsReal` is the shared signal for which shape is currently
+// loaded — staff.html's shape uses staff_id/off_days_json, dashboard.html's
+// uses id/offDays.
 function findStaffAny(staffId) {
   return leaveDataIsReal ? findStaffRecord(staffId) : findStaff(staffId);
 }
@@ -5255,9 +5286,8 @@ function countBookingsForStaffToday(staffId) {
   return bookings.filter(b => String(b.staffId) === String(staffId) && b.date === todayDate).length;
 }
 
-// Real staff/leave data (staff.html only) — same pattern as
-// loadRealBookingData()/loadRealCrmData(): only runs from staff.html's own
-// init, every other still-mock page keeps its pristine mock arrays.
+// Real staff/leave data (staff.html only) — only runs from staff.html's own
+// init; see the dual-shape note above findStaffAny/staffOffDays.
 let leaveDataIsReal = false;
 
 function mapLeaveRequest(row) {
@@ -5556,7 +5586,7 @@ function openStaffForm(staffId = null) {
       closeDetailPage();
       await refreshStaffPageData();
     } catch (error) {
-      alert(error.message || "Failed to save staff record.");
+      showToast(error.message || "Failed to save staff record.");
     } finally {
       if (submitBtn) submitBtn.disabled = false;
     }
@@ -5564,14 +5594,14 @@ function openStaffForm(staffId = null) {
 }
 
 async function removeStaffMember(staffId) {
-  if (!confirm("Remove this staff member? This cannot be undone.")) return;
+  if (!await showConfirm("Remove this staff member? This cannot be undone.")) return;
 
   try {
     await api.del(`/staff/${staffId}`);
     closeDetailPage();
     await refreshStaffPageData();
   } catch (error) {
-    alert(error.message || "Failed to remove staff member.");
+    showToast(error.message || "Failed to remove staff member.");
   }
 }
 
@@ -5608,7 +5638,7 @@ async function decideLeaveRequest(leaveId, status) {
     await api.post(`/leave-requests/${leaveId}/decision`, { status });
     await refreshStaffPageData();
   } catch (error) {
-    alert(error.message || "Failed to update leave request.");
+    showToast(error.message || "Failed to update leave request.");
   }
 }
 
@@ -5653,7 +5683,7 @@ function openApplyLeaveForm() {
     ? null
     : staffRecords.find(s => String(s.email || "").trim().toLowerCase() === loginEmail);
   if (!manager && !currentStaff) {
-    alert("Your login email is not linked to a staff record. Ask a manager to update the staff email first.");
+    showToast("Your login email is not linked to a staff record. Ask a manager to update the staff email first.");
     return;
   }
 
@@ -5699,7 +5729,7 @@ function openApplyLeaveForm() {
     const formData = new FormData(detailForm);
     const { date: appliedDate, time: appliedTime } = todayStampLocal();
     if (formData.get("end_date") < formData.get("start_date")) {
-      alert("End date cannot be before start date.");
+      showToast("End date cannot be before start date.");
       return;
     }
 
@@ -5719,7 +5749,7 @@ function openApplyLeaveForm() {
       closeDetailPage();
       await refreshStaffPageData();
     } catch (error) {
-      alert(error.message || "Failed to submit leave application.");
+      showToast(error.message || "Failed to submit leave application.");
     } finally {
       if (submitBtn) submitBtn.disabled = false;
     }
@@ -5814,10 +5844,11 @@ let realPayments = [];
 const SERVICE_MIX_COLORS = { grooming: "#3B82F6", boarding: "#10B981", daycare: "#F59E0B" };
 
 const KPI_DEFS = [
-  { key: "revenue",   icon: "payment-card.png",      label: "Total Revenue",              onClick: "openKpiDetail('revenue')" },
-  { key: "bookings",  icon: "calendar-simple.png",   label: "Total Bookings",             onClick: "openKpiDetail('bookings')" },
-  { key: "repeat",    icon: "users.png",             label: "Repeat Customer Rate",       onClick: "openKpiDetail('repeat')" },
-  { key: "occupancy", icon: "line-chart.png",        label: "Occupancy / Slot Utilisation", onClick: "openKpiDetail('occupancy')" }
+  { key: "revenue",     icon: "payment-card.png",    label: "Total Revenue",              onClick: "openKpiDetail('revenue')",     color: "#059669" },
+  { key: "outstanding", icon: "payment-card.png",    label: "Outstanding Payments",        onClick: "openKpiDetail('outstanding')", color: "#DC2626" },
+  { key: "bookings",    icon: "calendar-simple.png", label: "Total Bookings",             onClick: "openKpiDetail('bookings')",    color: "#059669" },
+  { key: "repeat",      icon: "users.png",           label: "Repeat Customer Rate",       onClick: "openKpiDetail('repeat')",      color: "#059669" },
+  { key: "occupancy",   icon: "line-chart.png",      label: "Occupancy / Slot Utilisation", onClick: "openKpiDetail('occupancy')", color: "#059669" }
 ];
 
 let currentDashboardPeriod = "weekly";
@@ -5830,7 +5861,7 @@ let dashboardLastLoadedAt = null;
 async function loadAnalyticsDashboardData() {
   await fetchBookingPageData();
 
-  const [messages, members, coupons, redemptions, payments, leaves, company] = await Promise.all([
+  const [messages, members, coupons, redemptions, payments, leaves, company, roomRows] = await Promise.all([
     api.get("/chat-messages"),
     api.get("/member-info"),
     api.get("/coupons"),
@@ -5838,7 +5869,17 @@ async function loadAnalyticsDashboardData() {
     api.get("/payments"),
     api.get("/leave-requests"),
     api.get("/companies/me"),
+    api.listRooms(),
   ]);
+
+  // Real room_type/capacity from the `room` table (policy: how many pets
+  // that room can actually hold), used by computeOccupancyRate() below
+  // instead of guessing capacity from booking counts.
+  rooms.splice(0, rooms.length, ...roomRows.map(r => ({
+    id: r.room_type,
+    name: r.room_type,
+    capacity: Number(r.capacity) || 1,
+  })));
 
   const paymentById = new Map(payments.map(p => [String(p.payment_id), p]));
   bookings = bookingRecords.map(record => {
@@ -5847,6 +5888,12 @@ async function loadAnalyticsDashboardData() {
     return {
       ...record,
       serviceType: record.type,
+      // Aliases several existing call sites read (b.bookingType, b.roomLabel)
+      // that this mapping never actually set — record.type/serviceLabel
+      // were always the real field names, so every b.bookingType===... check
+      // elsewhere was silently always false before this.
+      bookingType: record.type,
+      roomLabel: record.type === "boarding" ? record.serviceLabel : undefined,
       serviceId,
       amount: linkedPayment?.status === "Paid" ? Number(linkedPayment.final_amount || 0) : 0,
       roomId: record.type === "boarding" ? record.serviceLabel : null,
@@ -6002,39 +6049,45 @@ function formatPeriodChip(period, range) {
   return `<img src="icon/calendar-simple.png" alt="" class="row-icon">${periodRangeLabel(period, range)}`;
 }
 
-// Your real schema has no rooms/capacity catalog — only boarding_booking's
-// free-text room_type per booking (see dailyoverview.html's
-// getActiveRoomLabels(), reused here). "Occupancy" is redefined as: of the
-// distinct real room labels currently in use, what fraction are occupied on
-// a given day — there's no fixed total room count to divide by instead.
-function isRoomLabelOccupiedOnDate(roomLabel, date) {
-  return bookings.some(b =>
-    b.bookingType === "boarding" && b.roomLabel === roomLabel &&
+// How many boarding bookings for this room_type actually cover `date` —
+// not just whether at least one does, since a room's real `capacity` (see
+// rooms population in loadAnalyticsDashboardData()) can hold more than one
+// stay at once.
+// Reads bookingRecords (not the shared `bookings` global) since that's the
+// one both dashboard.html AND dailyoverview.html always populate via
+// fetchBookingPageData() — dailyoverview.html never assigns `bookings`.
+function bookingsOccupyingRoomOnDate(roomLabel, date) {
+  return bookingRecords.filter(b =>
+    b.type === "boarding" && b.serviceLabel === roomLabel &&
     b.status !== "no_show" && b.status !== "cancelled" &&
     b.checkInDate && b.checkOutDate && date >= b.checkInDate && date <= b.checkOutDate
-  );
+  ).length;
 }
 
+// Occupancy = booked capacity-units / total real capacity-units, using each
+// room_type's actual `capacity` from the `room` table (via GET /api/rooms)
+// — not a guess derived from booking counts. If rooms hasn't loaded (API
+// unavailable), there is no real basis to compute this from, so it reports
+// 0 rather than falling back to an arbitrary formula.
 function computeOccupancyRate(range) {
   const days = getDateRange(range.start, range.end);
-  if (!days.length) return 0;
-  if (!rooms.length) {
-    const activeBookings = bookings.filter(booking =>
-      booking.date >= range.start && booking.date <= range.end &&
-      booking.status !== "cancelled" && booking.status !== "no_show"
-    ).length;
-    const availableSlots = days.length * CALENDAR_HOURS.length * 3;
-    return availableSlots ? Math.min(100, (activeBookings / availableSlots) * 100) : 0;
-  }
-  const dailyRates = days.map(d => rooms.filter(r => isRoomLabelOccupiedOnDate(r.id, d)).length / rooms.length);
+  if (!days.length || !rooms.length) return 0;
+  const totalCapacity = rooms.reduce((sum, r) => sum + (r.capacity || 1), 0);
+  if (!totalCapacity) return 0;
+  const dailyRates = days.map(d => {
+    const bookedUnits = rooms.reduce((sum, r) => {
+      const occupying = bookingsOccupyingRoomOnDate(r.id, d);
+      return sum + Math.min(occupying, r.capacity || 1); // can't exceed the room's own real capacity
+    }, 0);
+    return bookedUnits / totalCapacity;
+  });
   return (dailyRates.reduce((a, b) => a + b, 0) / dailyRates.length) * 100;
 }
 
-// dailyoverview.html's computeSlaCompliance() reads the mock enquiries/
-// loyaltyRequests arrays — dashboard.html now has real bookings but no real
-// pending/SLA concept for messages or loyalty (see enquiries.html/
-// loyalty.html conversions), so this only tracks the one SLA that's real:
-// grooming service pending past its 15-minute window.
+// dashboard.html has real bookings but no real pending/SLA concept for
+// messages or loyalty (see enquiries.html/loyalty.html conversions), so
+// this only tracks the one SLA that's real: grooming service pending past
+// its 15-minute window.
 function computeRealSlaCompliance() {
   const pendingGrooming = bookings.filter(b => b.bookingType === "grooming" && b.date === today && b.status === "pending");
   const breaches = slaBreachCount("pendingService", pendingGrooming, "time");
@@ -6068,6 +6121,17 @@ function computeDashboardMetrics(period) {
   const totalRevenue = periodBookings.reduce((sum, b) => sum + b.amount, 0);
   const totalBookings = periodBookings.length;
 
+  // Previous period = same number of days immediately before this range, so
+  // "weekly" compares to the prior 7 days and "monthly" to the prior ~30 —
+  // an approximation for monthly (calendar months vary in length) but good
+  // enough for a directional delta badge.
+  const rangeDayCount = getDateRange(range.start, range.end).length;
+  const prevRange = { start: addDays(range.start, -rangeDayCount), end: addDays(range.start, -1) };
+  const prevRevenue = bookings
+    .filter(b => b.date >= prevRange.start && b.date <= prevRange.end && b.status !== "cancelled" && b.status !== "no_show")
+    .reduce((sum, b) => sum + b.amount, 0);
+  const revenueDeltaPct = prevRevenue > 0 ? ((totalRevenue - prevRevenue) / prevRevenue) * 100 : (totalRevenue > 0 ? 100 : 0);
+
   const doneCount = periodBookings.filter(b => b.status === "done").length;
   const completionRate = totalBookings ? (doneCount / totalBookings) * 100 : 0;
 
@@ -6078,6 +6142,10 @@ function computeDashboardMetrics(period) {
   const occupancyRate = computeOccupancyRate(range);
   const repeatCustomerRate = computeRepeatCustomerRate(periodBookings);
 
+  const outstandingPayments = realPayments
+    .filter(p => p.status !== "Paid" && p.date >= range.start && p.date <= range.end)
+    .reduce((sum, p) => sum + Number(p.final_amount || 0), 0);
+
   const serviceMix = getEnabledServices().map(type => ({
     type, count: periodBookings.filter(b => b.serviceType === type).length
   }));
@@ -6085,20 +6153,32 @@ function computeDashboardMetrics(period) {
   // No services catalog in your real schema — group by the free-text
   // service label instead of a serviceId, prefixed with bookingType since a
   // grooming service name and a daycare package name could otherwise collide.
+  const petById = new Map(pets.map(p => [String(p.pet_id), p]));
   const revenueByService = {};
   periodBookings.forEach(b => {
     const key = `${b.bookingType}:${b.serviceLabel}`;
-    if (!revenueByService[key]) revenueByService[key] = { key, bookingType: b.bookingType, serviceLabel: b.serviceLabel, revenue: 0 };
+    if (!revenueByService[key]) revenueByService[key] = { key, bookingType: b.bookingType, serviceLabel: b.serviceLabel, revenue: 0, bySpecies: {} };
     revenueByService[key].revenue += b.amount;
+    const species = petById.get(String(b.petId))?.species || "Other";
+    revenueByService[key].bySpecies[species] = (revenueByService[key].bySpecies[species] || 0) + b.amount;
   });
   const topServices = Object.values(revenueByService).sort((a, b) => b.revenue - a.revenue);
+
+  const revenueByCustomer = {};
+  periodBookings.forEach(b => {
+    const key = bookingCustomerKey(b);
+    if (!revenueByCustomer[key]) revenueByCustomer[key] = { key, name: b.customerName, revenue: 0, bookings: 0 };
+    revenueByCustomer[key].revenue += b.amount;
+    revenueByCustomer[key].bookings += 1;
+  });
+  const topCustomers = Object.values(revenueByCustomer).sort((a, b) => b.revenue - a.revenue);
 
   const pendingTasks = buildActionQueue("all").length;
 
   return {
-    period, range, periodBookings, totalRevenue, totalBookings,
+    period, range, periodBookings, totalRevenue, totalBookings, outstandingPayments, revenueDeltaPct,
     completionRate, noShowRate, slaCompliance, occupancyRate, repeatCustomerRate,
-    serviceMix, topServices, pendingTasks
+    serviceMix, topServices, topCustomers, pendingTasks
   };
 }
 
@@ -6109,6 +6189,7 @@ function getCustomerById(customerId) {
 function renderKpiHeroGrid(metrics) {
   const values = {
     revenue: formatCurrency(metrics.totalRevenue),
+    outstanding: formatCurrency(metrics.outstandingPayments),
     bookings: metrics.totalBookings.toLocaleString("en-MY"),
     repeat: `${Math.round(metrics.repeatCustomerRate)}%`,
     occupancy: `${Math.round(metrics.occupancyRate)}%`
@@ -6116,84 +6197,15 @@ function renderKpiHeroGrid(metrics) {
 
   q("kpiHeroGrid").innerHTML = KPI_DEFS.map(def => {
     return `
-      <div class="kpi-hero-card ${def.onClick ? "clickable" : ""}" ${def.onClick ? `onclick="${def.onClick}"` : ""}>
-        <div class="kpi-hero-top">
+      <div class="kpi-hero-card ${def.onClick ? "clickable" : ""}" style="border-color:${def.color};" ${def.onClick ? `onclick="${def.onClick}"` : ""}>
+        <div class="action-card-head">
           <div class="kpi-hero-icon"><img src="icon/${def.icon}" alt="" class="kpi-icon-img"></div>
-          <div>
-            <div class="kpi-hero-label">${def.label}</div>
-            <div class="kpi-hero-value">${values[def.key]}</div>
-          </div>
+          <span class="kpi-hero-label">${def.label}</span>
         </div>
+        <div class="action-card-value" style="color:${def.color};">${values[def.key]}</div>
       </div>
     `;
   }).join("");
-}
-
-// Patches the KPI hero grid (rendered above from mock `bookings`) with real
-// numbers from /api/dashboard/summary + /api/dashboard/revenue. The backend
-// only exposes current-period totals (no historical prev/next navigation,
-// no itemized per-transaction breakdown), so — unlike the mock version —
-// these cards aren't clickable and Repeat Customer Rate / Occupancy have no
-// real source at all, so they're shown as "Not available" rather than a
-// fabricated percentage.
-async function loadRealOperationKpis(period) {
-  const apiPeriod = period === "daily" ? "today" : period === "monthly" ? "month" : "week";
-  const periodNote = dashboardRange ? periodRangeLabel(period, dashboardRange) : formatShortDate(dashboardAnchorDate);
-
-  try {
-    const [summary, revenue] = await Promise.all([
-      api.get(`/dashboard/summary?date=${dashboardAnchorDate}`),
-      api.get(`/dashboard/revenue?period=${apiPeriod}&anchor=${dashboardAnchorDate}`),
-    ]);
-
-    const grid = q("kpiHeroGrid");
-    if (!grid) return;
-
-    grid.innerHTML = `
-      <div class="kpi-hero-card">
-        <div class="kpi-hero-top">
-          <div class="kpi-hero-icon"><img src="icon/payment-card.png" alt="" class="kpi-icon-img"></div>
-          <div>
-            <div class="kpi-hero-label">Total Revenue</div>
-            <div class="kpi-hero-value">${formatCurrency(revenue.totalRevenue)}</div>
-          </div>
-        </div>
-        <div class="kpi-hero-delta">${revenue.paymentCount} payment(s) · ${periodNote}</div>
-      </div>
-      <div class="kpi-hero-card">
-        <div class="kpi-hero-top">
-          <div class="kpi-hero-icon"><img src="icon/calendar-simple.png" alt="" class="kpi-icon-img"></div>
-          <div>
-            <div class="kpi-hero-label">Bookings on ${formatShortDate(summary.date)}</div>
-            <div class="kpi-hero-value">${summary.todayBookingsTotal.toLocaleString("en-MY")}</div>
-          </div>
-        </div>
-        <div class="kpi-hero-delta">Across grooming, boarding &amp; daycare</div>
-      </div>
-      <div class="kpi-hero-card">
-        <div class="kpi-hero-top">
-          <div class="kpi-hero-icon"><img src="icon/users.png" alt="" class="kpi-icon-img"></div>
-          <div>
-            <div class="kpi-hero-label">Repeat Customer Rate</div>
-            <div class="kpi-hero-value">—</div>
-          </div>
-        </div>
-        <div class="kpi-hero-delta">Not available yet</div>
-      </div>
-      <div class="kpi-hero-card">
-        <div class="kpi-hero-top">
-          <div class="kpi-hero-icon"><img src="icon/line-chart.png" alt="" class="kpi-icon-img"></div>
-          <div>
-            <div class="kpi-hero-label">Occupancy / Slot Utilisation</div>
-            <div class="kpi-hero-value">—</div>
-          </div>
-        </div>
-        <div class="kpi-hero-delta">Not available yet</div>
-      </div>
-    `;
-  } catch (error) {
-    console.error(error);
-  }
 }
 
 function openKpiDetail(key) {
@@ -6206,15 +6218,25 @@ function openKpiDetail(key) {
   } else if (key === "bookings") {
     const items = [...metrics.periodBookings].sort((a, b) => a.date.localeCompare(b.date) || a.time.localeCompare(b.time));
     openDetailModal("Total Bookings", `${items.length} booking(s) · ${label}`, items.map(bookingDetailRow).join(""), { label: "Open Booking Dashboard", href: "booking.html" });
+  } else if (key === "outstanding") {
+    const items = realPayments
+      .filter(p => p.status !== "Paid" && p.date >= metrics.range.start && p.date <= metrics.range.end)
+      .sort((a, b) => Number(b.final_amount || 0) - Number(a.final_amount || 0));
+    const rows = items.map(p => renderDetailRow({
+      title: p.customer_name || p.service || `PAY-${String(p.payment_id).padStart(4, "0")}`,
+      sub: `${p.service || "—"} · ${p.date || "—"}`,
+      tag: "pending", tagLabel: `RM ${Number(p.final_amount || 0).toLocaleString("en-MY")}`
+    })).join("");
+    openDetailModal("Outstanding Payments", `${formatCurrency(metrics.outstandingPayments)} across ${items.length} unpaid payment(s) · ${label}`, rows, { label: "Open Payments", href: "payment.html" });
   } else if (key === "occupancy") {
     const days = getDateRange(metrics.range.start, metrics.range.end);
+    const totalCapacity = rooms.reduce((sum, r) => sum + (r.capacity || 1), 0);
     const rows = days.map(date => {
-      const booked = bookings.filter(booking => booking.date === date && booking.status !== "cancelled" && booking.status !== "no_show").length;
-      const capacity = CALENDAR_HOURS.length * 3;
-      const pct = capacity ? Math.round((booked / capacity) * 100) : 0;
-      return renderDetailRow({ title: formatShortDate(date), sub: `${booked} active booking(s) · ${capacity} available slots`, tag: pct >= 50 ? "scheduled" : "done", tagLabel: `${pct}% used` });
+      const booked = rooms.reduce((sum, r) => sum + Math.min(bookingsOccupyingRoomOnDate(r.id, date), r.capacity || 1), 0);
+      const pct = totalCapacity ? Math.round((booked / totalCapacity) * 100) : 0;
+      return renderDetailRow({ title: formatShortDate(date), sub: `${booked} boarding stay(s) · ${totalCapacity} real room capacity`, tag: pct >= 50 ? "scheduled" : "done", tagLabel: `${pct}% used` });
     }).join("");
-    openDetailModal("Slot Utilisation", `Average ${Math.round(metrics.occupancyRate)}% utilisation · ${label}`, rows, { label: "Open Booking Dashboard", href: "booking.html" });
+    openDetailModal("Room Occupancy", `Average ${Math.round(metrics.occupancyRate)}% occupancy (real room capacity) · ${label}`, rows, { label: "Open Booking Dashboard", href: "booking.html" });
   } else if (key === "repeat") {
     const lifetimeCountByCustomer = {};
     bookings.forEach(b => {
@@ -6547,21 +6569,112 @@ function openTopServiceDetail(bookingType, serviceLabel) {
   openDetailModal(`${serviceLabel} — Bookings`, `${items.length} booking(s) · RM ${revenue.toLocaleString("en-MY")} total revenue · ${label}`, items.map(bookingDetailRow).join(""), { label: "Open Booking Dashboard", href: "booking.html" });
 }
 
+const SPECIES_COLORS = { Dog: "#1E40AF", Cat: "#7C3AED", Other: "#57534E" };
+const SPECIES_ORDER = ["Dog", "Cat", "Other"];
+
 function renderTopServices(topServices) {
   const top = topServices.slice(0, 6);
   const max = top.length ? top[0].revenue : 1;
 
-  q("topServicesList").innerHTML = top.map(item => `
+  q("topServicesList").innerHTML = top.map(item => {
+    const segments = SPECIES_ORDER
+      .map(species => ({ species, revenue: item.bySpecies?.[species] || 0 }))
+      .filter(s => s.revenue > 0)
+      .map(s => `<div class="top-service-bar-segment" style="width:${(s.revenue / item.revenue) * 100}%;background-color:${SPECIES_COLORS[s.species]};" title="${s.species}: RM ${s.revenue.toLocaleString("en-MY")}"></div>`)
+      .join("");
+    return `
     <div class="top-service-row" onclick="openTopServiceDetail('${item.bookingType}', '${item.serviceLabel}')">
       <div class="top-service-row-head">
         <span>${item.serviceLabel || "Unknown Service"}</span>
         <span>RM ${item.revenue.toLocaleString("en-MY")}</span>
       </div>
       <div class="top-service-bar-track">
-        <div class="top-service-bar" style="width:${Math.max((item.revenue / max) * 100, 4)}%;"></div>
+        <div class="top-service-bar" style="width:${Math.max((item.revenue / max) * 100, 4)}%;">${segments}</div>
+      </div>
+    </div>
+  `;
+  }).join("");
+
+  q("topServicesLegend").innerHTML = SPECIES_ORDER.map(species => `
+    <span><span class="legend-swatch" style="background-color:${SPECIES_COLORS[species]};"></span>${species}</span>
+  `).join("");
+}
+
+let dashboardTopCustomers = [];
+
+function renderTopCustomers(topCustomers) {
+  dashboardTopCustomers = topCustomers.slice(0, 6);
+  const max = dashboardTopCustomers.length ? dashboardTopCustomers[0].revenue : 1;
+
+  q("topCustomersList").innerHTML = dashboardTopCustomers.map((c, i) => `
+    <div class="top-service-row" onclick="openTopCustomerDetail(${i})">
+      <div class="top-service-row-head">
+        <span>${escapeUiText(c.name)}</span>
+        <span>RM ${c.revenue.toLocaleString("en-MY")}</span>
+      </div>
+      <div class="top-service-bar-track">
+        <div class="top-service-bar" style="width:${Math.max((c.revenue / max) * 100, 4)}%;background-color:var(--btn-brown);"></div>
       </div>
     </div>
   `).join("");
+}
+
+function openTopCustomerDetail(index) {
+  const customer = dashboardTopCustomers[index];
+  if (!customer) return;
+  const items = bookings
+    .filter(b => bookingCustomerKey(b) === customer.key && b.date >= dashboardRange.start && b.date <= dashboardRange.end)
+    .sort((a, b) => b.date.localeCompare(a.date));
+  const label = periodRangeLabel(currentDashboardPeriod, dashboardRange);
+  openDetailModal(`${escapeUiText(customer.name)} — Bookings`, `RM ${customer.revenue.toLocaleString("en-MY")} total spend · ${items.length} booking(s) · ${label}`, items.map(bookingDetailRow).join(""), { label: "Open CRM", href: "profile.html" });
+}
+
+// All-time (not period-scoped, unlike the rest of the Operation panel) —
+// a recurring weekly demand pattern needs many weeks of history to be
+// meaningful, so narrowing to the daily/weekly/monthly toggle would leave
+// this mostly empty.
+const PEAK_HOURS_DAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+
+function computePeakHoursHeatmap() {
+  const grid = PEAK_HOURS_DAYS.map(() => CALENDAR_HOURS.map(() => 0));
+  bookings.forEach(b => {
+    if (b.status === "cancelled" || b.status === "no_show") return;
+    const hourIdx = CALENDAR_HOURS.indexOf(slotForTime(b.time, CALENDAR_HOURS));
+    if (hourIdx === -1) return;
+    const dayIdx = (new Date(b.date + "T00:00:00").getDay() + 6) % 7; // Sun=0 -> Mon=0..Sun=6
+    grid[dayIdx][hourIdx]++;
+  });
+  return grid;
+}
+
+function renderPeakHoursHeatmap() {
+  const grid = computePeakHoursHeatmap();
+  const max = Math.max(1, ...grid.flat());
+
+  const cornerCell = `<div class="heatmap-cell heatmap-corner"></div>`;
+  const hourHeaderCells = CALENDAR_HOURS.map(h => `<div class="heatmap-cell heatmap-hour-label">${h}</div>`).join("");
+  const bodyRows = PEAK_HOURS_DAYS.map((day, di) => {
+    const dayLabelCell = `<div class="heatmap-cell heatmap-day-label">${day}</div>`;
+    const valueCells = grid[di].map((count, hi) => {
+      const intensity = count / max;
+      const bg = count === 0 ? "transparent" : `rgba(30, 64, 175, ${(0.12 + intensity * 0.78).toFixed(2)})`;
+      const textColor = intensity > 0.55 ? "#fff" : "var(--text-charcoal)";
+      return `<div class="heatmap-cell heatmap-value" style="background-color:${bg};color:${textColor};" title="${day} ${CALENDAR_HOURS[hi]} — ${count} booking(s), all-time" onclick="openPeakHourDetail(${di}, ${hi})">${count || ""}</div>`;
+    }).join("");
+    return dayLabelCell + valueCells;
+  }).join("");
+
+  q("peakHoursHeatmap").innerHTML = cornerCell + hourHeaderCells + bodyRows;
+}
+
+function openPeakHourDetail(dayIndex, hourIndex) {
+  const hour = CALENDAR_HOURS[hourIndex];
+  const items = bookings.filter(b => {
+    if (b.status === "cancelled" || b.status === "no_show") return false;
+    if (slotForTime(b.time, CALENDAR_HOURS) !== hour) return false;
+    return (new Date(b.date + "T00:00:00").getDay() + 6) % 7 === dayIndex;
+  }).sort((a, b) => b.date.localeCompare(a.date));
+  openDetailModal(`${PEAK_HOURS_DAYS[dayIndex]} · ${hour}`, `${items.length} booking(s) at this recurring time slot, all-time.`, items.map(bookingDetailRow).join(""), { label: "Open Booking Dashboard", href: "booking.html" });
 }
 
 function openPendingTasksDetail() {
@@ -6715,10 +6828,22 @@ function renderAnalyticsDashboard() {
   if (customerGrowthSub) customerGrowthSub.textContent = trendSub;
   const topServicesSub = q("topServicesSub");
   if (topServicesSub) topServicesSub.textContent = periodLabel;
+  const topCustomersSub = q("topCustomersSub");
+  if (topCustomersSub) topCustomersSub.textContent = periodLabel;
   const serviceMixSub = q("serviceMixSub");
   if (serviceMixSub) serviceMixSub.textContent = periodLabel;
   const loyaltyStatusSub = q("loyaltyStatusSub");
   if (loyaltyStatusSub) loyaltyStatusSub.textContent = "All-time";
+
+  const revenueTrendDelta = q("revenueTrendDelta");
+  if (revenueTrendDelta) {
+    const pct = metrics.revenueDeltaPct;
+    const rounded = Math.round(Math.abs(pct) * 10) / 10;
+    const cls = pct > 0.5 ? "up" : pct < -0.5 ? "down" : "flat";
+    const arrow = cls === "up" ? "▲" : cls === "down" ? "▼" : "—";
+    revenueTrendDelta.className = `trend-delta-badge ${cls}`;
+    revenueTrendDelta.textContent = cls === "flat" ? "No change vs previous period" : `${arrow} ${rounded}% vs previous period`;
+  }
 
   renderKpiHeroGrid(metrics);
   const trendSeries = computeTrendSeries(metrics.period, metrics.range);
@@ -6737,6 +6862,9 @@ function renderAnalyticsDashboard() {
     trendSeries.map(s => s.returningCustomers),
     { colorA: "#3B82F6", colorB: "#10B981", labelA: "New Customers", labelB: "Returning Customers", labels: trendLabels, format: v => `${v}`, onPointClick: openTrendBucketDetail }
   );
+
+  renderPeakHoursHeatmap();
+  renderTopCustomers(metrics.topCustomers);
 
   renderOpsHighlights(metrics);
   renderSnapshot();
@@ -6783,21 +6911,19 @@ function renderStaffKpiHero(metrics, todayDate) {
   const onLeave = staff.filter(s => isStaffOnLeave(s.staff_id, todayDate)).length;
 
   const cards = [
-    { icon: "team.png", label: "Total Staff", value: staff.length, sub: "Registered team members" },
-    { icon: "confirm-circle.png", label: "On Duty Today", value: onDuty, sub: `of ${staff.length} staff` },
-    { icon: "logout.png", label: "On Leave Today", value: onLeave, sub: onLeave ? "Approved leave" : "None today" },
+    { icon: "team.png", label: "Total Staff", value: staff.length, sub: "Registered team members", color: "#059669" },
+    { icon: "confirm-circle.png", label: "On Duty Today", value: onDuty, sub: `of ${staff.length} staff`, color: "#059669" },
+    { icon: "logout.png", label: "On Leave Today", value: onLeave, sub: onLeave ? "Approved leave" : "None today", color: "#DC2626" },
     { icon: "calendar-simple.png", label: "Bookings Handled", value: metrics.periodBookings.length.toLocaleString("en-MY"), sub: "this period" }
   ];
 
   q("staffKpiHeroGrid").innerHTML = cards.map(c => `
-    <div class="kpi-hero-card">
-      <div class="kpi-hero-top">
+    <div class="kpi-hero-card" ${c.color ? `style="border-color:${c.color};"` : ""}>
+      <div class="action-card-head">
         <div class="kpi-hero-icon"><img src="icon/${c.icon}" alt="" class="kpi-icon-img"></div>
-        <div>
-          <div class="kpi-hero-label">${c.label}</div>
-          <div class="kpi-hero-value">${c.value}</div>
-        </div>
+        <span class="kpi-hero-label">${c.label}</span>
       </div>
+      <div class="action-card-value">${c.value}</div>
       <div class="kpi-hero-delta">${c.sub}</div>
     </div>
   `).join("");
@@ -7055,13 +7181,11 @@ function renderSystemKpiHero() {
 
   q("systemKpiHeroGrid").innerHTML = cards.map(c => `
     <div class="kpi-hero-card" ${c.clickable ? `onclick="openSystemKpiDetail('${c.key}')"` : `style="cursor:default;"`}>
-      <div class="kpi-hero-top">
+      <div class="action-card-head">
         <div class="kpi-hero-icon"><img src="icon/${c.icon}" alt="" class="kpi-icon-img"></div>
-        <div>
-          <div class="kpi-hero-label">${c.label}</div>
-          <div class="kpi-hero-value">${c.value}</div>
-        </div>
+        <span class="kpi-hero-label">${c.label}</span>
       </div>
+      <div class="action-card-value">${c.value}</div>
       <div class="kpi-hero-delta">${c.sub}</div>
     </div>
   `).join("");
@@ -7295,7 +7419,7 @@ async function initAnalyticsDashboard() {
     renderAnalyticsDashboard();
   } catch (error) {
     console.error(error);
-    alert(error.message || "Failed to load analytical dashboard data.");
+    showToast(error.message || "Failed to load analytical dashboard data.");
   }
 }
 
@@ -7359,12 +7483,12 @@ function handleBusinessLogoSelection(input) {
   const file = input.files?.[0];
   if (!file) return;
   if (!["image/png", "image/jpeg"].includes(file.type)) {
-    alert("Business logo must be a PNG or JPG file.");
+    showToast("Business logo must be a PNG or JPG file.");
     input.value = "";
     return;
   }
   if (file.size > 2 * 1024 * 1024) {
-    alert("Business logo must be 2 MB or smaller.");
+    showToast("Business logo must be 2 MB or smaller.");
     input.value = "";
     return;
   }
@@ -7474,7 +7598,7 @@ async function downloadPolicyDocument(documentId, encodedFileName) {
   try {
     await api.downloadCompanyDocument(documentId, decodeURIComponent(encodedFileName));
   } catch (error) {
-    alert(error.message || "Failed to download document.");
+    showToast(error.message || "Failed to download document.");
   }
 }
 
@@ -7489,18 +7613,18 @@ async function replacePolicyDocument(documentId, input) {
   } catch (error) {
     input.value = "";
     input.disabled = false;
-    alert(error.message || "Failed to replace policy document.");
+    showToast(error.message || "Failed to replace policy document.");
   }
 }
 
 async function deletePolicyDocument(documentId) {
-  if (!confirm("Delete this source file and all of its indexed chunks?")) return;
+  if (!await showConfirm("Delete this source file and all of its indexed chunks?")) return;
   try {
     await api.deleteCompanyDocument(documentId);
     currentCompanyDocuments = await api.listCompanyDocuments();
     renderServicePolicyCards(currentCompanyRecord);
   } catch (error) {
-    alert(error.message || "Failed to delete policy document.");
+    showToast(error.message || "Failed to delete policy document.");
   }
 }
 
@@ -7558,7 +7682,7 @@ async function saveBusinessSettings() {
   };
 
   if (!profilePayload.company_name || !profilePayload.postcode) {
-    alert("Business name and postcode are required.");
+    showToast("Business name and postcode are required.");
     return;
   }
 
@@ -7633,7 +7757,7 @@ async function saveBusinessSettings() {
     } catch (refreshError) {
       console.warn("Could not refresh documents after a partial save:", refreshError);
     }
-    alert(error.message || "Failed to save settings.");
+    showToast(error.message || "Failed to save settings.");
   } finally {
     if (saveButton) {
       saveButton.disabled = false;
@@ -7668,7 +7792,7 @@ async function refreshSettingsPageData() {
     currentAccountId = me.account_id;
     teamAccountRecords = accounts;
   } catch (error) {
-    alert(error.message || "Failed to load settings.");
+    showToast(error.message || "Failed to load settings.");
     return;
   }
 
@@ -7786,7 +7910,7 @@ async function saveTeamAccount(accountId) {
     await api.patch(`/accounts/${accountId}`, { role, account_status: accountStatus });
     await refreshSettingsPageData();
   } catch (error) {
-    alert(error.message || "Failed to update account.");
+    showToast(error.message || "Failed to update account.");
   } finally {
     if (button?.isConnected) {
       button.disabled = false;
@@ -7838,12 +7962,12 @@ async function addTeamAccount() {
 }
 
 async function removeTeamAccount(accountId) {
-  if (!confirm(`Remove ACC-${accountId} from this business? This cannot be undone.`)) return;
+  if (!await showConfirm(`Remove ACC-${accountId} from this business? This cannot be undone.`)) return;
 
   try {
     await api.del(`/accounts/${accountId}`);
     await refreshSettingsPageData();
   } catch (error) {
-    alert(error.message || "Failed to remove account.");
+    showToast(error.message || "Failed to remove account.");
   }
 }

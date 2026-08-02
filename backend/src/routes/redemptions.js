@@ -3,10 +3,11 @@ import { supabase } from "../supabaseClient.js";
 import { asyncHandler } from "../middleware/auth.js";
 import { requireManager } from "../middleware/authUser.js";
 import { assertAllowedQueryKeys, parsePagination } from "../lib/queryValidation.js";
+import { callAiBackend } from "../lib/aiBackend.js";
 
-// Read-only on purpose: rows here are created exclusively by the
-// verify_payment() SQL function so the ledger always matches a real,
-// verified payment. If you need to inspect or export it, GET is all you need.
+// Direct generic creation is intentionally unavailable: rows are created by
+// request_redemption()/verify_payment() so every ledger entry is linked to a
+// real payment. This router exposes reads and guarded lifecycle decisions.
 export const redemptionsRouter = Router();
 
 redemptionsRouter.get(
@@ -42,6 +43,15 @@ redemptionsRouter.post(
       p_status: status,
     });
     if (error) return res.status(400).json({ error: error.message });
+
+    callAiBackend("/documents/redemption-notice", {
+      company_id: req.companyId,
+      redemption_id: Number(req.params.id),
+      status,
+    }).catch((err) => {
+      console.warn(`redemption-notice failed for redemption #${req.params.id}:`, err.message);
+    });
+
     res.json(data);
   })
 );

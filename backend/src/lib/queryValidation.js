@@ -23,3 +23,14 @@ export function assertAllowedQueryKeys(query, allowed) {
     throw error;
   }
 }
+
+export function safePostgrestSearch(value) {
+  const term = String(value ?? "").trim();
+  if (!term) return "";
+  if (term.length > 100 || /[\u0000-\u001f\u007f,()%*"]/u.test(term)) {
+    const error = new Error("search contains unsupported filter characters or is too long.");
+    error.status = 400;
+    throw error;
+  }
+  return term;
+}

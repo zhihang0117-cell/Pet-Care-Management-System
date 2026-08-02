@@ -1,0 +1,452 @@
+/* ==========================================================================
+   Admin/SaaS theme override.
+
+   index.css's brand variables (--btn-brown, --bg-taupe-beige, --font-serif,
+   etc.) are already referenced by nearly every rule in that file (accent-sand
+   alone is used 80 times) — so redefining just the VALUES here, scoped to
+   admin pages, repaints the existing dashboard styling without touching any
+   of index.css's ~3,900 lines. The marketing landing page (index.html has no
+   body class) is untouched and keeps the original boutique beige/brown/serif
+   look on purpose — this file only applies to body.dash-page/auth-page/
+   setup-page (every other page in web/).
+
+   --font-serif is set equal to --font-sans on purpose: every existing rule
+   that does `font-family: var(--font-serif)` for headings (13 of them,
+   scattered through index.css) becomes sans-serif here without editing each
+   one individually. Reuses Plus Jakarta Sans (already loaded via Google
+   Fonts on every page) instead of adding a second font family/network
+   request just for this.
+   ========================================================================== */
+body.dash-page,
+body.auth-page,
+body.setup-page {
+  --bg-taupe-beige: #F7F8FC;
+  --bg-warm-cream: #FFFFFF;
+  --card-white: #FFFFFF;
+  --text-charcoal: #18202A;
+  --text-muted: #667085;
+  --btn-brown: #5C4033;
+  --btn-brown-hover: #46302A;
+  --accent-sand: #EFE7DE;
+  /* Used for horizontal section dividers, .bk-search, .bk-select, and
+     .bk-date-input borders — kept as its own token (rather than every one
+     of those rules just saying var(--btn-brown) directly) so this is the
+     one place to adjust if these need to diverge from --btn-brown again.
+     Matches the "+ Add Customer"-style solid button color exactly, per
+     explicit request to make every border on the page read as one color. */
+  --divider-brown: #5C4033;
+  --shadow-soft: 0 12px 32px rgba(24, 32, 42, 0.08);
+  --shadow-card: 0 4px 16px rgba(24, 32, 42, 0.05);
+  --font-serif: var(--font-sans);
+
+  /* Semantic status tokens — not part of the original palette. Existing
+     status colors (badges, alerts) are still hardcoded hex scattered through
+     index.css; migrating those to reference these is follow-up work, not
+     part of this pass. */
+  --border: #E5E7EB;
+  --success: #168A5B;
+  --warning: #B76E00;
+  --danger: #C93636;
+}
+
+/* Sidebar vertical compaction — 10 nav links + brand header + account
+   footer (index.css's original padding/gaps: 24px sidebar padding, 20px
+   brand margin, 6px nav gap, 11px per-link padding, 28px icons) add up to
+   more height than most laptop viewports have, so .dash-sidebar's
+   overflow-y: auto kicks in and nav links below the fold need scrolling.
+   Tightening the rhythm throughout (without dropping any nav item) gets
+   the full list to fit without scrolling on typical viewport heights. */
+/* Scoped to .dash-sidebar specifically (not the bare class names) — several
+   of these (.dash-brand, .dash-nav-link, .nav-icon-wrap) are reused outside
+   the sidebar too, by showcase.html's top bar (.showcase-topbar-brand,
+   .showcase-topnav .dash-nav-link/.nav-icon-wrap), which has its own
+   deliberately different sizing for that horizontal layout. An unscoped
+   `body.dash-page .dash-brand` rule outranked showcase's own
+   `.showcase-topbar .showcase-topbar-brand` selector on specificity (extra
+   `body` type selector tips it) and leaked the sidebar's padding into the
+   showcase bar, making it visibly taller than intended. */
+body.dash-page .dash-sidebar { padding: 16px 16px; }
+body.dash-page .dash-sidebar .dash-brand { padding: 4px 8px 14px; margin-bottom: 12px; }
+body.dash-page .dash-sidebar .dash-nav { gap: 5px; }
+body.dash-page .dash-sidebar .dash-nav-link { padding: 9px 14px; font-size: 0.83rem; }
+body.dash-page .dash-sidebar .nav-icon-wrap { width: 24px; height: 24px; }
+
+/* Sidebar nav icons: index.css's base .nav-icon-wrap/.nav-icon (shared with
+   showcase.html's topbar pills, which must stay untouched — scoped to
+   .dash-sidebar for that reason) put each icon on a small tan circle
+   (background-color) with mix-blend-mode:multiply to hide the icon's own
+   white/transparent halo against that LIGHT backdrop. That trick inverts on
+   a dark backdrop (multiply darkens instead of hiding), so with the circle
+   removed here the icons need a different fix.
+   These PNGs aren't uniformly transparent-background line art — several
+   (calendar-simple, payment-card, loyalty-reward-gift) have a real opaque
+   near-white FILL area as part of the design, not just a stroke on
+   transparency. brightness(0) (tried first) zeroes every opaque pixel's RGB
+   regardless of shade, so on those it flattens outline AND fill into one
+   solid blob, destroying the icon.
+   Plain invert(1) (tried next) preserves the outline/fill distinction (dark
+   stroke -> light, light fill -> dark) but RGB inversion also rotates hue by
+   exactly 180° — this brown (~19° hue) inverts to ~199°, a pale blue, not
+   the brown the sidebar's warm palette calls for. Adding hue-rotate(180deg)
+   after invert() rotates it straight back to the original ~19° hue while
+   keeping the lightness flip invert() provides (dark stroke -> light tan,
+   light fill -> near-black) — an exact identity (RGB invert = hue+180°,
+   S unchanged, L -> 1-L in HSL space), not an approximation. Net result: a
+   light brown/tan icon that still reads as a genuine outline shape (not a
+   flattened blob), with the former-fill areas dark enough to blend into the
+   sidebar via mix-blend-mode:screen (same combo used for
+   .mobile-nav-toggle img on this exact dark background). */
+body.dash-page .dash-sidebar .nav-icon-wrap { background: none; opacity: 1; }
+body.dash-page .dash-sidebar .nav-icon { filter: invert(1) hue-rotate(180deg); mix-blend-mode: screen; }
+body.dash-page .dash-sidebar-footer { padding-top: 10px; margin-top: 10px; }
+body.dash-page .sidebar-account { padding: 8px; margin-bottom: 6px; }
+body.dash-page .sidebar-switch-wrap { margin-bottom: 6px; }
+
+/* Sidebar redesign: the top .dash-brand row now hosts the account info
+   block (avatar/role/business/email) instead of the logo+"Pawfect AI"+
+   "Staff portal" text — that moved down to .dash-brand-copyright at the
+   bottom of the footer, below Logout. .sidebar-account's own margin/width
+   were tuned for stacking full-width at the top of the footer; here it
+   needs to flex to fill the row instead, alongside the mobile-nav-toggle
+   button (own margin-left:auto pushes it to the right). */
+body.dash-page .dash-brand .sidebar-account { flex: 1; min-width: 0; margin-bottom: 0; }
+
+/* Room & Play Area Status (dailyoverview.html) reuses the generic
+   .detail-row component (shared with the bookings/enquiries lists — not
+   overridden globally on purpose, so those stay untouched), stacked one per
+   row via .room-status-list's flex-column. With 11 rooms that's 11
+   full-width rows of just a name + a capacity badge, needing a long scroll
+   for very little information per row. A responsive multi-column grid packs
+   the same cards side by side instead. */
+body.dash-page .room-status-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  gap: 8px;
+  max-height: 268px;
+  overflow-y: auto;
+  padding-right: 4px;
+}
+body.dash-page .room-status-list .detail-row {
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+  padding: 10px 12px;
+}
+body.dash-page .room-status-list .detail-row-side { align-items: flex-start; }
+
+/* Action Queue table (dailyoverview.html) — same idea as the room grid
+   above: cap it to about 5 visible rows and let the rest scroll inside the
+   table itself instead of pushing the whole page taller. The header row is
+   sticky so column labels stay visible while scrolling. #actionQueueTableWrap
+   is a specific id (not the shared .bk-table-wrap class used by other
+   tables like booking.html's listing) so this doesn't cap tables elsewhere. */
+#actionQueueTableWrap {
+  max-height: 270px;
+  overflow-y: auto;
+}
+#actionQueueTableWrap thead th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+}
+
+/* Summary KPI tiles (.metric-card — booking.html, payment.html, loyalty.html,
+   staff.html, enquiries.html, profile.html; dashboard.html uses a different
+   class, .kpi-hero-card, so it's untouched by this rule) — a specific tan
+   requested directly, not the same as --accent-sand (kept as its own
+   declaration rather than changing --accent-sand's value, since that
+   variable is also used for dozens of unrelated light tints elsewhere).
+   Specific "Pending X"/attention tiles keep their own inline border-color
+   (red) in each page's own HTML — those are status colors, untouched. */
+body.dash-page .metric-card { border-color: #DDD2C1; }
+
+/* Whole-page vertical compaction (dashboard.html, dailyoverview.html) —
+   tightens page padding, card padding, heading sizes, and section spacing
+   across the board so the same content needs less scrolling. Nothing here
+   removes a section or a card, just the breathing room around each one. */
+body.dash-page .dash-main { padding: 16px 20px 24px; gap: 12px; }
+
+body.dash-page .bk-section { padding: 16px 20px; }
+body.dash-page .bk-section-slim { padding: 12px 20px; }
+body.dash-page .bk-page-title { font-size: 1.35rem; margin-bottom: 8px; }
+body.dash-page .bk-view-header { margin-bottom: 10px; }
+
+body.dash-page .bk-kpi-grid { gap: 10px; }
+/* Label pinned top-left (icon, if any, vertically centered against the
+   label text within that row — .card-icon is 30px tall next to ~11px
+   text, so align-items:center on the h3 row keeps them level), number
+   pinned bottom-left. margin-top:auto on the <p> is the primary mechanism
+   (pushes it to the bottom of the flex column outright, regardless of how
+   much/little the label above it wraps) — justify-content:space-between
+   on the card is redundant with that but kept as a second guarantee.
+   text-align:left is explicit here rather than assumed, since these tiles
+   sit inside a CSS grid (.bk-kpi-grid) and grid/flex ancestors are exactly
+   the kind of place a stray centering rule tends to leak in from. */
+body.dash-page .metric-card {
+  padding: 12px 14px;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  justify-content: space-between;
+  text-align: left;
+  min-height: 76px;
+}
+body.dash-page .metric-card h3 {
+  min-height: 0;
+  margin: 0;
+  font-size: 0.7rem;
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  text-align: left;
+}
+body.dash-page .metric-card p {
+  font-size: 1.5rem;
+  margin: auto 0 0;
+  text-align: left;
+}
+
+/* Tab pills (Daily/Weekly/Monthly, Operation/Staff/System), the arrow/Today
+   buttons, and the date range chip — same #DDD2C1 as .metric-card/
+   .bk-search/.bk-select above, per explicit request to bring every border
+   on the page to this one tan. .page-date-filter .btn has a fixed 40px
+   height but the date label chip next to it (.overview-chip) only has
+   padding with no fixed height, so the two visibly don't match — pin the
+   chip to the same 40px. The dropdown caret on a clickable date label was
+   also too small at 0.7em. */
+body.dash-page .tab-btn,
+body.dash-page .overview-chip,
+body.dash-page .btn-secondary { border-color: #DDD2C1; }
+
+body.dash-page .page-date-filter .page-date-label { height: 40px; }
+
+body.dash-page .page-date-label-pickable::after { font-size: 1.1em; }
+
+body.dash-page .bk-search,
+body.dash-page .bk-select,
+body.dash-page .bk-date-input { border-color: #DDD2C1; }
+
+body.dash-page .bk-table-wrap { border-color: #DDD2C1; }
+body.dash-page .bk-table th,
+body.dash-page .bk-table td { border-bottom-color: #DDD2C1; }
+
+/* .bk-search's own padding (10px vertical) computes taller than .bk-select's
+   (6px vertical, smaller font) — the two sit side by side in the same
+   filter row on several pages but never lined up height-wise. Pin both to
+   the same explicit height instead of relying on padding/font-size to
+   happen to match. */
+body.dash-page .bk-search,
+body.dash-page .bk-select { height: 40px; }
+
+/* Default border for every .kpi-hero-card (matches .metric-card's default
+   tan) — dashboard.html's Staff-tab and System-tab cards (renderStaffKpiHero,
+   the system KPI grid) had no border-color rule anywhere, class-level or
+   inline, so they were falling back to index.css's plain --accent-sand.
+   Specific cards (the main #kpiHeroGrid tiles = green, "On Leave Today" =
+   red, etc.) override this with their own inline border-color, same
+   pattern as .metric-card. */
+body.dash-page .kpi-hero-card { border-color: #DDD2C1; }
+
+body.dash-page .kpi-hero-card { padding: 12px; gap: 6px; }
+body.dash-page .kpi-hero-icon { width: 36px; height: 36px; }
+body.dash-page .action-card-value { font-size: 1.15rem; }
+
+/* .action-card-head (icon + label row, shared by dailyoverview.html's
+   action cards AND dashboard.html's 4 KPI cards — see renderKpiHeroGrid,
+   which now reuses this same class instead of its own separate markup) was
+   centered (justify-content:center; text-align:center) — icon and label
+   should sit at the top-left of the card instead, only vertically centered
+   against each other (align-items:center, unchanged). .action-card-value
+   already had margin-top:auto + text-align:left in index.css, so the
+   number was already correctly bottom-left; only the row above it needed
+   fixing. */
+body.dash-page .action-card-head {
+  justify-content: flex-start;
+  text-align: left;
+}
+
+body.dash-page .overview-pair { gap: 12px; }
+body.dash-page .overview-header-row { margin-bottom: 4px; }
+
+body.dash-page .service-date-toolbar,
+body.dash-page .page-date-filter-row {
+  margin-top: 12px;
+  padding-top: 0;
+  border-top: none;
+}
+
+body.dash-page .dash-donut-card .donut-chart { width: 150px; height: 150px; }
+body.dash-page .dash-donut-card .donut-center { width: 100px; height: 100px; }
+body.dash-page .trend-chart-svg { height: 105px; }
+
+/* Analytical Dashboard's #kpiHeroGrid cards (Total Revenue/Outstanding
+   Payments/Total Bookings/Repeat Customer Rate/Occupancy) now each carry
+   their own inline border-color from KPI_DEFS (renderKpiHeroGrid in
+   common.js) — green for plain stats, red for Outstanding Payments — so no
+   class-level override is needed here; it would just be dead weight. */
+
+/* booking.html's Calendar tab (Daily/Weekly/Monthly) — each of the 5 time
+   rows was min-height:90-100px with 10px cell padding, and month view's day
+   cells were 160px, making all three views taller than they need to be for
+   what's usually 0-2 bookings per cell. Row height only needs to fit the
+   compact .calendar-booking chips (already shrunk earlier), not sit at a
+   fixed generous minimum. */
+body.dash-page .calendar-cell,
+body.dash-page .calendar-head,
+body.dash-page .time-cell { padding: 4px; }
+body.dash-page .calendar-cell { min-height: 40px; }
+body.dash-page .daily-booking-cell { min-height: 46px; }
+body.dash-page .month-day-cell { min-height: 72px; }
+
+/* .calendar-booking kept as a card (background + colored left border, per
+   bookingStatusBorderColor — same colors as the Kanban card borders), not
+   the dot+text row tried above — but at the same compact single-line size
+   that version was, rather than reverting to the original multi-line
+   strong/service/status-tag stack. Long labels truncate with an ellipsis
+   (title="" on the div carries the full text as a native tooltip) instead
+   of wrapping and growing the cell. */
+body.dash-page .calendar-booking {
+  background-color: var(--accent-sand);
+  border-left: 3px solid;
+  padding: 2px 6px;
+  margin-bottom: 1px;
+  border-radius: 4px;
+  font-size: 0.72rem;
+  transition: background-color 0.15s ease;
+}
+body.dash-page .calendar-booking:hover { background-color: #E5D9C8; }
+body.dash-page .calendar-booking-line {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Sidebar (.dash-sidebar, .dash-brand-avatar, .dash-nav-link, etc.) already
+   uses hardcoded gold/brown/cream hex values in index.css (#2C2420
+   background, a #BF8C24/#F5D05C gold gradient avatar, #F0E4D0 cream text) —
+   none of it goes through the --btn-brown/--accent-sand variables above, so
+   it was never touched by the override block. --btn-brown is a plain,
+   desaturated coffee-brown (no gold/amber undertone) — close enough in hue
+   to the sidebar's existing warm-dark palette that the two don't clash,
+   without matching it exactly — no sidebar-specific override needed here.
+   ========================================================================== */
+
+/* Stronger hover feedback across every admin page — index.css's hover
+   states were mostly just box-shadow: var(--shadow-soft) (12px blur at 8%
+   opacity — barely visible) with no lift or border change on cards, and
+   .detail-row (bookings/enquiries/payments/redemptions list rows in every
+   modal) had no hover state defined at all despite being clickable. */
+body.dash-page .metric-card,
+body.dash-page .kpi-hero-card {
+  transition: box-shadow 0.2s ease, transform 0.2s ease, border-color 0.2s ease;
+}
+body.dash-page .metric-card:hover,
+body.dash-page .kpi-hero-card:hover {
+  box-shadow: 0 8px 20px rgba(24, 32, 42, 0.16);
+  transform: translateY(-2px);
+  border-color: var(--btn-brown);
+}
+
+body.dash-page .booking-card:hover {
+  box-shadow: 0 8px 20px rgba(24, 32, 42, 0.16);
+}
+
+body.dash-page .detail-row {
+  transition: box-shadow 0.2s ease, transform 0.2s ease;
+}
+body.dash-page .detail-row:hover {
+  box-shadow: 0 6px 16px rgba(24, 32, 42, 0.14);
+  transform: translateY(-1px);
+}
+
+body.dash-page .bk-table tbody tr:hover { background-color: #EFE7DE; }
+
+body.dash-page .tab-btn:hover:not(.active) { background-color: #F7F3EE; }
+
+/* .booking-card (Kanban board cards on booking.html) — border removed.
+   renderBookingCard's inline style="border-color:..." (status color) is
+   still there in the markup, but border-style:none here means no border
+   renders regardless of what color is set on it, so this doesn't require
+   touching the JS. */
+body.dash-page .booking-card { border: none; }
+
+/* Toast + confirm/prompt modal — see showToast/showConfirm/showPrompt in
+   common.js, replacing native alert()/confirm()/prompt() everywhere.
+   z-index above .bk-modal-backdrop (200 in index.css) since a confirm can
+   fire from inside an already-open detail modal (e.g. "Delete this
+   booking?" from within the booking edit modal). */
+body.dash-page .toast-container {
+  position: fixed;
+  top: 20px;
+  right: 20px;
+  z-index: 400;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-width: 360px;
+}
+body.dash-page .toast {
+  padding: 12px 16px;
+  border-radius: var(--radius-small);
+  background-color: var(--card-white);
+  box-shadow: 0 8px 24px rgba(24, 32, 42, 0.18);
+  font-size: 0.85rem;
+  color: var(--text-charcoal);
+  border-left: 4px solid var(--btn-brown);
+  cursor: pointer;
+  opacity: 0;
+  transform: translateX(16px);
+  transition: opacity 0.2s ease, transform 0.2s ease;
+}
+body.dash-page .toast-visible { opacity: 1; transform: translateX(0); }
+body.dash-page .toast-error { border-left-color: #DC2626; }
+body.dash-page .toast-success { border-left-color: #059669; }
+body.dash-page .toast-info { border-left-color: #1E40AF; }
+
+body.dash-page .confirm-modal-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(24, 32, 42, 0.5);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 400;
+  padding: 20px;
+}
+body.dash-page .confirm-modal {
+  width: min(420px, 100%);
+  background-color: var(--card-white);
+  border-radius: var(--radius-large);
+  padding: 24px;
+  box-shadow: 0 24px 64px rgba(24, 32, 42, 0.22);
+}
+body.dash-page .confirm-modal-title {
+  font-size: 1.1rem;
+  font-weight: 700;
+  color: var(--text-charcoal);
+  margin-bottom: 8px;
+}
+body.dash-page .confirm-modal-message {
+  font-size: 0.88rem;
+  color: var(--text-muted);
+  line-height: 1.5;
+}
+body.dash-page .confirm-modal-input {
+  width: 100%;
+  margin-top: 12px;
+  padding: 10px 12px;
+  border-radius: var(--radius-small);
+  border: 1.5px solid #DDD2C1;
+  font-family: var(--font-sans);
+  font-size: 0.88rem;
+  color: var(--text-charcoal);
+  resize: vertical;
+}
+body.dash-page .confirm-modal-input:focus { outline: none; border-color: var(--btn-brown); }
+body.dash-page .confirm-modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  margin-top: 20px;
+}
