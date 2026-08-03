@@ -36,12 +36,23 @@ Open your Supabase project → SQL Editor and run these files in order:
 6. `sql/crud_hardening_migration.sql`
 7. `sql/register_company_function.sql`
 8. `sql/company_documents_migration.sql`
-9. `../ai-backend/supabase/migrations/002_add_document_id_to_chunks_bge_large.sql`
+9. `sql/002_add_document_id_to_chunks_bge_large.sql`
+10. `sql/booking_conflict_prevention_migration.sql`
+11. `sql/redemption_rejection_reason_migration.sql` — adds `rejection_reason`
+    to `redemption` and a matching `decide_redemption` parameter; without
+    this, rejecting a loyalty redemption from `loyalty.html` fails.
+12. `sql/chat_api_key_migration.sql` — adds the `company_chat_key` table the
+    Python `/chat` endpoint uses to resolve which company an X-Chat-Key
+    belongs to (see `app/db/customer_context.py`
+    `resolve_company_id_from_chat_key`). Optional for a single-company
+    deployment (the legacy single `CHAT_API_KEY` env var still works without
+    it), required before onboarding a second company.
 
 These migrations add company settings/logo storage, enquiry reply audit data,
 payment verification/refund audit data, atomic booking/payment functions,
-points-adjustment audit history, and guarded account functions. They
-do not delete any existing rows.
+points-adjustment audit history, guarded account functions, redemption
+rejection reasons, and per-company chat authentication. They do not delete
+any existing rows.
 
 ### Company policy documents and RAG
 
@@ -76,39 +87,46 @@ Visit `http://localhost:4000/health` — you should see `{"ok":true,"companyId":
 
 ## 3. Where to deploy it (recommendation)
 
-**Render.com** (or Railway — same idea), free/cheap tier, always-on Node process:
+**This backend + `web/` on Render.com, the Python AI service on Google Cloud
+Run** — the split reflected in the repository root's `render.yaml`:
 
-The repository root includes `render.yaml`, which defines both required
-services and connects them over Render's private network:
+- `pawfectai` (this backend) serves both the Express API and the static
+  `web/` frontend (`express.static`, see `src/server.js`) from ONE Render
+  web service — same origin, so `web/api-client.js` needs no cross-origin
+  configuration for this half of the split.
+- The Python AI service (`app/`, `main.py`, repository root) is **not** a
+  Render service at all — it runs on Google Cloud Run instead (see the
+  repository root `README.md`'s "Deployment (Google Cloud Run)" section for
+  the exact `gcloud` command). BGE-Large's memory footprint and Cloud Run's
+  per-request billing/scaling model fit that service better than Render.
 
-- `pawfectai` — the Express API and static frontend.
-- `pawfectai-ai` — the FastAPI document-indexing service.
+After deploying the Python service to Cloud Run, set on `pawfectai` (Render
+dashboard → Environment, or `render.yaml` if you prefer committing the
+reference — these two are `sync: false` since Cloud Run isn't a
+Render-managed service render.yaml can cross-reference automatically):
 
-Create or sync a Render Blueprint from that file. During the first sync,
-provide `SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY` when prompted. Render
-copies those values to the AI service, generates the shared internal API key,
-and supplies the AI service's private hostname to Express automatically.
+- `CLOUD_RUN_AI_BACKEND_URL` — the Cloud Run service's HTTPS URL.
+- `CLOUD_RUN_AI_BACKEND_INTERNAL_KEY` — must match `INTERNAL_API_KEY` set on
+  that Cloud Run service.
 
-The AI service uses a Standard instance because the local BGE-Large embedding
-model does not fit reliably in a free instance. This creates a paid Render
-service; review Render's displayed monthly price before applying the Blueprint.
+Create or sync a Render Blueprint from `render.yaml` for the `pawfectai`
+service, or deploy it manually: push `backend/` to its own GitHub repo →
+Render → New Web Service → point at the repo → build command `npm install`,
+start command `npm start` → add the env vars from `.env` in Render's
+dashboard (plus the two `CLOUD_RUN_*` ones above once the Cloud Run service
+exists).
 
-- Simplest mental model for a small team: it's just `npm start`, same as local.
-- Environment variables are set once in the dashboard (your Supabase service
-  key never touches your frontend's hosting, e.g. Vercel/Netlify/GitHub Pages,
-  where your static HTML can live separately).
-- Comfortably handles the atomic verify-payment transaction and generic CRUD
-  without any serverless cold-start/timeout concerns.
-- Free tier is fine for a single pet-care business's traffic; upgrade only if
-  you outgrow it.
+After the first deploy, open the service in the Render dashboard and
+**confirm its actual assigned URL matches `CORS_ORIGINS` in render.yaml
+exactly** — Render only grants the exact `<name>.onrender.com` hostname if
+that name isn't already taken by another Render account; otherwise it
+silently appends a random suffix, and a stale `CORS_ORIGINS` value breaks
+every browser request from `web/` with no obvious error message pointing at
+the cause.
 
-Steps: push this `backend/` folder to its own GitHub repo → Render → New Web
-Service → point at the repo → build command `npm install`, start command
-`npm start` → add the same env vars from `.env` in Render's dashboard.
-
-(Serverless functions or Supabase Edge Functions would also work, but you'd
-need to split this into many small functions and be careful about connection
-pooling; not worth it at this scale.)
+(Serverless functions or Supabase Edge Functions would also work for this
+Node backend, but you'd need to split it into many small functions and be
+careful about connection pooling; not worth it at this scale.)
 
 ## 4. How each of your 4 asks maps to this code
 

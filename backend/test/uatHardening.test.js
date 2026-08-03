@@ -23,11 +23,20 @@ test("AI backend calls fail closed and have an abort timeout", async () => {
   assert.match(source, /AI_BACKEND_TIMEOUT_MS/);
 });
 
-test("Render passes the Python backend's actual Supabase and tenant env names", async () => {
+test("Render passes this backend's actual Supabase env name, and Cloud Run gets the Python tenant env", async () => {
+  // The Python AI service (app/, main.py) is deployed on Google Cloud Run,
+  // not Render (see render.yaml's own comments and README.md's "Deployment
+  // (Google Cloud Run)" section) — RELATIONAL_COMPANY_ID belongs in that
+  // gcloud command's --set-env-vars, not in render.yaml.
   const renderConfig = await readFile(new URL("../../render.yaml", import.meta.url), "utf8");
   assert.match(renderConfig, /- key: SUPABASE_SERVICE_ROLE_KEY/);
   assert.doesNotMatch(renderConfig, /- key: SUPABASE_SERVICE_KEY\s*$/m);
-  assert.match(renderConfig, /- key: RELATIONAL_COMPANY_ID\s*\n\s*value: "1"/);
+  assert.match(renderConfig, /CLOUD_RUN_AI_BACKEND_URL/);
+  assert.match(renderConfig, /CLOUD_RUN_AI_BACKEND_INTERNAL_KEY/);
+
+  const rootReadme = await readFile(new URL("../../README.md", import.meta.url), "utf8");
+  assert.match(rootReadme, /RELATIONAL_COMPANY_ID=1/);
+  assert.match(rootReadme, /gcloud run deploy/);
 });
 
 test("mark-paid validates payment_method and deprecated auth shims are gone", async () => {

@@ -40,14 +40,22 @@ test("policy documents have a private authenticated preview flow", async () => {
   assert.match(routes, /mammoth\.extractRawText\(\{ buffer \}\)/);
 });
 
-test("Render private hostnames are normalized before AI backend fetches", async () => {
+test("bare AI backend hostnames default to https, not http, except localhost", async () => {
   // This normalization logic used to live inline in companies.js; it was
   // extracted into the shared callAiBackend() helper (lib/aiBackend.js) so
   // routes/payments.js could call it too, without duplicating the fetch/
-  // error-handling logic a second time.
+  // error-handling logic a second time. A bare hostname with no scheme
+  // (Render's own `fromService: property: host` output, or a Cloud Run
+  // hostname pasted without its scheme) means a real cloud service, which
+  // is HTTPS-only — defaulting to http:// would have silently sent a
+  // plaintext POST to an HTTPS-only host the first time this was ever
+  // configured with a bare hostname (e.g. deploying the AI backend to
+  // Cloud Run). Only a literal localhost/127.0.0.1 address may still
+  // default to http.
   const aiBackend = await source("backend/src/lib/aiBackend.js");
   assert.match(aiBackend, /\^https\?:\\\/\\\//i);
-  assert.match(aiBackend, /`http:\/\/\$\{configuredUrl\}`/);
+  assert.match(aiBackend, /looksLocal/);
+  assert.match(aiBackend, /\$\{looksLocal \? "http" : "https"\}:\/\/\$\{configuredUrl\}/);
 });
 
 test("document deletion is atomic inside Postgres", async () => {

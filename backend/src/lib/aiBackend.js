@@ -9,7 +9,19 @@ export async function callAiBackend(path, body) {
       || process.env.AI_BACKEND_URL
       || "http://127.0.0.1:8000"
   ).trim().replace(/\/$/, "");
-  const baseUrl = /^https?:\/\//i.test(configuredUrl) ? configuredUrl : `http://${configuredUrl}`;
+  // A bare hostname with no scheme (e.g. Render's own `fromService:
+  // property: host` output, or a Cloud Run hostname pasted without its
+  // scheme) means a real cloud service, which is HTTPS-only — defaulting
+  // to http:// here used to silently send a plaintext POST to a host that
+  // only accepts HTTPS. Cloud Run/Render both redirect http -> https for a
+  // GET, but a POST's body does not survive a redirect the same way, so
+  // this would have looked like a working connection that mysteriously
+  // failed or silently lost data. Only bare "localhost"/"127.0.0.1" (the
+  // only legitimate reason to ever omit a scheme) still defaults to http.
+  const looksLocal = /^(localhost|127\.0\.0\.1|0\.0\.0\.0)(:\d+)?$/i.test(configuredUrl);
+  const baseUrl = /^https?:\/\//i.test(configuredUrl)
+    ? configuredUrl
+    : `${looksLocal ? "http" : "https"}://${configuredUrl}`;
   const internalKey = process.env.CLOUD_RUN_AI_BACKEND_INTERNAL_KEY
     || process.env.AI_BACKEND_INTERNAL_KEY;
   if (!internalKey) {

@@ -16,76 +16,31 @@ services:
         sync: false
       - key: SUPABASE_SERVICE_ROLE_KEY
         sync: false
+      # Render assigns <name>.onrender.com ONLY if that name is not already
+      # taken by another Render account — if "pawfectai" turns out to be
+      # taken, Render silently appends a random suffix instead and this
+      # value stops matching the real deployed URL, which fails CORS with
+      # no obvious error in this file. After the first deploy, open the
+      # service in the Render dashboard and confirm its actual URL matches
+      # this value exactly (scheme + host, no trailing slash) — update it
+      # here (and redeploy) if it doesn't.
       - key: CORS_ORIGINS
         value: https://pawfectai.onrender.com
-      - key: AI_BACKEND_URL
-        fromService:
-          type: web
-          name: pawfectai-ai
-          property: host
-
-      - key: AI_BACKEND_INTERNAL_KEY
-        fromService:
-          type: web
-          name: pawfectai-ai
-          envVarKey: INTERNAL_API_KEY
+      # The Python AI service (app/, main.py) is NOT deployed on Render —
+      # it runs on Google Cloud Run (see the "Google Cloud Run" deployment
+      # notes in DEVELOPER_GUIDE.md / README.md for the exact gcloud
+      # command). Fill these in manually with that service's real URL and
+      # its INTERNAL_API_KEY after the Cloud Run deploy — there is no
+      # `fromService` cross-reference possible here since Cloud Run isn't a
+      # Render-managed service. callAiBackend() (src/lib/aiBackend.js)
+      # requires the URL to include an explicit https:// scheme (a bare
+      # hostname now safely defaults to https, not http, but an explicit
+      # scheme is still clearer here).
+      - key: CLOUD_RUN_AI_BACKEND_URL
+        sync: false
+      - key: CLOUD_RUN_AI_BACKEND_INTERNAL_KEY
+        sync: false
       - key: AI_BACKEND_TIMEOUT_MS
         value: "15000"
       - key: API_RATE_LIMIT_PER_MINUTE
         value: "120"
-
-  - type: web
-    name: pawfectai-ai
-    runtime: python
-    # BGE-Large (see EMBEDDING_MODEL below) is a local embedding model and
-    # needs substantially more memory than Render's free instance. Change
-    # this only if the model is externalized.
-    plan: standard
-    region: singapore
-    buildCommand: pip install -r requirements.txt
-    startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
-    healthCheckPath: /health
-    autoDeployTrigger: commit
-    envVars:
-      - key: PYTHON_VERSION
-        value: 3.11.11
-      - key: SUPABASE_URL
-        fromService:
-          type: web
-          name: pawfectai
-          envVarKey: SUPABASE_URL
-      - key: SUPABASE_SERVICE_ROLE_KEY
-        fromService:
-          type: web
-          name: pawfectai
-          envVarKey: SUPABASE_SERVICE_ROLE_KEY
-      # This deployment is currently single-company. Set it explicitly so
-      # production never relies on customer_context.py's local-dev fallback.
-      - key: RELATIONAL_COMPANY_ID
-        value: "1"
-      - key: INTERNAL_API_KEY
-        generateValue: true
-      - key: CHAT_API_KEY
-        generateValue: true
-      - key: PAWFECT_DEBUG_MODE
-        value: "false"
-      - key: TOOL_EXECUTOR_MAX_WORKERS
-        value: "4"
-      - key: TOOL_CALL_TIMEOUT_SECONDS
-        value: "20"
-      - key: EMBEDDING_PROVIDER
-        value: sentence_transformers
-      - key: EMBEDDING_MODEL
-        value: BAAI/bge-large-en-v1.5
-      - key: WHATSAPP_PROVIDER
-        value: meta_cloud_api
-      - key: WHATSAPP_ACCESS_TOKEN
-        sync: false
-      - key: WHATSAPP_PHONE_NUMBER_ID
-        sync: false
-      - key: WHATSAPP_GRAPH_API_VERSION
-        sync: false
-      - key: HF_HOME
-        value: /opt/render/project/.cache/huggingface
-      - key: SUPABASE_STORAGE_BUCKET
-        value: business-documents
