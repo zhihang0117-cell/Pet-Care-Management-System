@@ -2,12 +2,14 @@ from __future__ import annotations
 
 from langchain_core.tools import tool
 from typing import Literal
+import re
 
 ServiceType = Literal["GROOMING", "DAYCARE", "BOARDING"]
 
 from app.db.customer_context import CustomerContext
 from app.db.relational_provider import get_relational_repository
 from app.tools.booking_window import today_business
+from app.db.time_normalization import extract_duration_minutes
 
 
 def _repo():
@@ -24,6 +26,81 @@ _CAT_SIZE_BREAKPOINTS = [(20, "S"), (40, "M"), (60, "L")]  # cm, exclusive upper
 _CAT_MAX_SIZE = "XL"
 _DOG_SIZE_BREAKPOINTS = [(25, "XS"), (40, "S"), (55, "M"), (70, "L"), (85, "XL")]
 _DOG_MAX_SIZE = "XXL"
+
+
+_DAYCARE_COMPARATIVE_DURATION_RE = re.compile(
+    r"\b(?:above|over|more\s+than|below|under|less\s+than|up\s+to|at\s+least|maximum|minimum)\b"
+    r"|以上|以下|超过|超過|少于|少於|至少|最多",
+    re.IGNORECASE,
+)
+_DAYCARE_ADD_ON_RE = re.compile(r"\badd[\s-]?on\b|附加|加购|加購", re.IGNORECASE)
+_RINGGIT_RE = re.compile(r"\bRM\s*(\d+(?:\.\d{1,2})?)\b", re.IGNORECASE)
+
+
+def _clean_catalogue_label(value: str) -> str:
+    label = re.sub(r"[*_`#]", "", str(value or ""))
+    label = re.sub(r"^\s*(?:[-•]|\d+[.)])\s*", "", label)
+    label = re.sub(r"\s*(?:[-–—:]|\bis|\bcosts?)\s*$", "", label, flags=re.IGNORECASE)
+    # A chunk often prefixes the first option with a section heading, e.g.
+    # "Daycare Packages: 3 Hours - RM55". The part after the final colon is
+    # the actual option label; preserve other natural punctuation.
+    if ":" in label:
+        tail = label.rsplit(":", 1)[-1].strip()
+        if tail:
+            label = tail
+    return " ".join(label.split()).strip(" -–—:,.()")
+
+
+def _extract_daycare_catalogue_options(rag_rows: list[dict]) -> tuple[list[dict], list[dict]]:
+    """Conservatively expose priced DAYCARE lines as structured choices.
+
+    RAG remains the source of truth. This only structures a line when it has
+    exactly one explicit ``RM`` amount, so ordinal replies can be mapped to
+    the real list without asking the model to reconstruct it from prose. Lines
+    with multiple prices are left as raw RAG evidence rather than guessed.
+    """
+    services: list[dict] = []
+    add_ons: list[dict] = []
+    seen: set[tuple[str, float, str]] = set()
+
+    for row in rag_rows or []:
+        if not isinstance(row, dict) or row.get("error"):
+            continue
+        content = str(row.get("content") or "")
+        # Document ingestion preserves newlines; semicolons, table pipes, and
+        # sentence boundaries cover the common exported DOCX table formats.
+        segments = re.split(r"[\n;|]+|(?<=[.!?])\s+", content)
+        for segment in segments:
+            prices = list(_RINGGIT_RE.finditer(segment))
+            if len(prices) != 1:
+                continue
+            price_match = prices[0]
+            label = _clean_catalogue_label(segment[: price_match.start()])
+            if len(label) < 2 or len(label) > 100:
+                continue
+            price = float(price_match.group(1))
+            is_add_on = bool(_DAYCARE_ADD_ON_RE.search(label))
+            kind = "add_on" if is_add_on else "service"
+            key = (label.casefold(), price, kind)
+            if key in seen:
+                continue
+            seen.add(key)
+
+            duration = extract_duration_minutes(label)
+            if duration and _DAYCARE_COMPARATIVE_DURATION_RE.search(label):
+                duration = None
+            option = {
+                "service_name": label,
+                "price": price,
+                "price_display": f"RM{price:g}",
+                "selection_kind": kind,
+                "source": "company_rag",
+            }
+            if duration:
+                option["duration_minutes"] = duration
+            (add_ons if is_add_on else services).append(option)
+
+    return services, add_ons
 
 
 def compute_verified_pet_size(pet_type: str, height_cm: int | float | None) -> str | None:
@@ -328,6 +405,14 @@ def get_booking_service_options(
             )
         except Exception as exc:
             rag_rows = [{"error": str(exc)}]
+        if category == "DAYCARE":
+            service_options, add_on_options = _extract_daycare_catalogue_options(rag_rows)
+            data = dict(result.get("data") or {})
+            if service_options:
+                data["service_options"] = service_options
+            if add_on_options:
+                data["add_on_options"] = add_on_options
+            result = {**result, "data": data}
         result = {**result, "detailed_pricing_by_size": rag_rows}
 
     return result

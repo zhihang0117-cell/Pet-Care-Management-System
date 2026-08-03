@@ -2392,7 +2392,10 @@ function renderRealWeeklySchedule(filter) {
 
   q('scheduleWeekLabel').textContent = `${formatShortDate(weekAnchor)} – ${formatShortDate(addDays(weekAnchor, 6))}`;
 
-  q('scheduleHead').innerHTML = dates.map(date => {
+  // The schedule grid has an initial 44px time column before its seven day
+  // columns. Keep the header on the same eight-column structure so Monday
+  // starts above the first booking cell instead of above the time labels.
+  q('scheduleHead').innerHTML = '<div class="schedule-head-spacer" aria-hidden="true"></div>' + dates.map(date => {
     const d = new Date(date + 'T00:00:00');
     const isToday = date === todayStr;
     return `<div class="schedule-head ${isToday ? 'is-today' : ''}">${d.toLocaleDateString('en-MY', { weekday: 'short' })} ${d.getDate()}</div>`;

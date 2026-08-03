@@ -6,6 +6,7 @@ from app.context.state import ConversationState
 from app.orchestrator import PawfectOrchestrator, TOOLS_BY_NAME, ToolLoopError
 from app.prompts.system_prompt import SYSTEM_PROMPT
 from app.tools.document_tools import send_booking_confirmation
+from app.tools.customer_tools import _extract_daycare_catalogue_options
 
 
 def _call(name, call_id, **args):
@@ -163,6 +164,79 @@ def test_loyalty_decline_is_explicit_but_generic_yes_is_not():
     ambiguous.turn_counter = 1
     PawfectOrchestrator._capture_explicit_loyalty_decision(ambiguous, "yes")
     assert ambiguous.loyalty_decision is None
+
+
+def test_short_no_need_declines_a_real_prior_loyalty_offer():
+    state = ConversationState(phone_number="+60123456705", company_id="1")
+    state.turn_counter = 3
+    state.loyalty_offer_shown_turn = 2
+
+    PawfectOrchestrator._capture_explicit_loyalty_decision(state, "no need")
+
+    assert state.loyalty_decision == "declined"
+
+
+def test_daycare_duration_survives_side_flow_and_is_injected_into_checks_and_write():
+    state = ConversationState(
+        phone_number="+60123456705",
+        company_id="1",
+        active_scenario="MAKE_BOOKING",
+        service_type="DAYCARE",
+    )
+    state.turn_counter = 2
+    PawfectOrchestrator._capture_explicit_daycare_duration(state, "daycare 三个小时")
+
+    availability = PawfectOrchestrator._inject_cached_daycare_duration(
+        state,
+        "check_availability",
+        {"service_type": "DAYCARE", "date": "2026-08-07", "time": "11:30"},
+    )
+    booking = PawfectOrchestrator._inject_cached_daycare_duration(
+        state,
+        "create_booking",
+        {"service_type": "DAYCARE", "date": "2026-08-07", "time": "11:30"},
+    )
+
+    assert state.daycare_duration_minutes == 180
+    assert availability["duration_minutes"] == 180
+    assert booking["duration_minutes"] == 180
+
+
+def test_exact_pickup_wins_over_cached_daycare_duration():
+    state = ConversationState(
+        phone_number="+60123456705",
+        company_id="1",
+        service_type="DAYCARE",
+        daycare_duration_minutes=180,
+    )
+    args = PawfectOrchestrator._inject_cached_daycare_duration(
+        state,
+        "create_booking",
+        {"service_type": "DAYCARE", "check_out_time": "17:00"},
+    )
+
+    assert "duration_minutes" not in args
+
+
+def test_daycare_catalogue_separates_add_ons_and_only_exposes_exact_duration():
+    services, add_ons = _extract_daycare_catalogue_options([
+        {
+            "content": (
+                "Daycare Packages:\n"
+                "1. Daycare 3 Hours - RM45\n"
+                "2. Daycare Above 3 Hours - RM55\n"
+                "3. Splash Pool Session Add-on - RM15"
+            )
+        }
+    ])
+
+    assert [option["service_name"] for option in services] == [
+        "Daycare 3 Hours",
+        "Daycare Above 3 Hours",
+    ]
+    assert services[0]["duration_minutes"] == 180
+    assert "duration_minutes" not in services[1]
+    assert [option["service_name"] for option in add_ons] == ["Splash Pool Session Add-on"]
 
 
 def test_evidence_is_bounded_and_internal_delivery_fields_are_removed():

@@ -89,6 +89,13 @@ class ConversationState:
     missing_slots: list[str] = field(default_factory=list)
     offered_options: list[dict[str, Any]] = field(default_factory=list)
 
+    # Exact DAYCARE duration explicitly supplied by the customer (or carried
+    # by a structured catalogue option they selected). Keep it separate from
+    # free-form history so a loyalty/policy side trip cannot make the model
+    # drop it before check_availability/create_booking. This is never inferred
+    # from an open-ended tier such as "Above 3 Hours".
+    daycare_duration_minutes: int | None = None
+
     # Explicit preference is different from "a loyalty tool happened". This
     # allows a customer who already said "no voucher / just book it" to move on
     # without a forced extra turn, while still preventing the model from

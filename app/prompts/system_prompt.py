@@ -88,6 +88,9 @@ policy question unanswered.
 Tool results can have different data shapes. Read status/data/error fields and
 the actual content rather than assuming every result has identical fields.
 Treat suggested_next_actions as recovery options, not mandatory commands.
+When RUNTIME_CONTEXT.resolved_ordinal_selection is present, use that exact
+structured option for replies such as "the third one" instead of re-counting
+free-form conversation text. Keep main service choices separate from add-ons.
 
 When a tool returns missing_information, ask only for fields that cannot be
 obtained from verified context or another safe read tool. For ambiguous results,

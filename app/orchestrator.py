@@ -40,6 +40,7 @@ from app.tools.history_tools import get_payment_history, get_redemption_history
 from app.tools.document_tools import send_booking_confirmation
 from app.tools.state_tools import update_conversation_state
 from app.tools.text_formatting import first_name, format_pet_names
+from app.db.time_normalization import extract_duration_minutes
 
 # get_customer_by_phone is intentionally NOT in the bindable tool list: identity
 # resolution happens deterministically in PawfectOrchestrator.invoke_with_trace
@@ -791,7 +792,7 @@ class PawfectOrchestrator:
         # infer consent from a generic "yes" otherwise because it may be the
         # booking confirmation instead.
         if state.loyalty_offer_shown_turn is not None and state.loyalty_offer_shown_turn < state.turn_counter:
-            if text in {"no", "no thanks", "skip", "不用", "不要", "跳过"}:
+            if text in {"no", "no thanks", "no need", "skip", "不用", "不要", "不需要", "跳过"}:
                 declined = True
             elif text in {"yes", "yes please", "要", "可以", "use it", "使用"}:
                 accepted = True
@@ -807,6 +808,63 @@ class PawfectOrchestrator:
             "source": "customer_message",
             "turn": state.turn_counter,
         }
+
+    @staticmethod
+    def _capture_explicit_daycare_duration(state, user_message: str) -> None:
+        """Cache an exact customer-stated DAYCARE duration across side flows."""
+        text = str(user_message or "").strip()
+        if not text:
+            return
+        is_daycare_context = str(state.service_type or "").upper() == "DAYCARE" or bool(
+            re.search(r"\bday\s*-?care\b|日托|日间托管|日間托管", text, re.IGNORECASE)
+        )
+        if not is_daycare_context:
+            return
+        duration = extract_duration_minutes(text)
+        if not duration:
+            return
+        state.daycare_duration_minutes = duration
+        state.verified_facts["daycare_duration_minutes"] = {
+            "value": duration,
+            "source": "customer_message",
+            "turn": state.turn_counter,
+        }
+
+    @staticmethod
+    def _cache_daycare_duration_from_selection(state, selection: dict | None) -> None:
+        """Use duration only when the real structured option is exact."""
+        if not isinstance(selection, dict):
+            return
+        duration = selection.get("duration_minutes")
+        if not duration:
+            return
+        try:
+            parsed = int(duration)
+        except (TypeError, ValueError):
+            return
+        if not 0 < parsed <= 24 * 60:
+            return
+        state.daycare_duration_minutes = parsed
+        state.verified_facts["daycare_duration_minutes"] = {
+            "value": parsed,
+            "source": "selected_catalogue_option",
+            "label": selection.get("label") or selection.get("service_name"),
+            "turn": state.turn_counter,
+        }
+
+    @staticmethod
+    def _inject_cached_daycare_duration(state, tool_name: str, args: dict) -> dict:
+        """Fill a dropped duration for availability/write calls, never an exact pickup."""
+        if tool_name not in {"check_availability", "check_availability_range", "create_booking"}:
+            return args
+        service_type = str(args.get("service_type") or state.service_type or "").strip().upper()
+        if service_type != "DAYCARE" or not state.daycare_duration_minutes:
+            return args
+        if args.get("duration_minutes") not in (None, ""):
+            return args
+        if tool_name != "check_availability_range" and str(args.get("check_out_time") or "").strip():
+            return args
+        return {**args, "duration_minutes": state.daycare_duration_minutes}
 
     # Mutating tools that INSERT a new row rather than idempotently update
     # one — a duplicate call with identical args is never a legitimate
@@ -927,6 +985,7 @@ class PawfectOrchestrator:
                         state.preferred_staff = str(args["preferred_staff"])
                     elif state.preferred_staff:
                         args = {**args, "preferred_staff": state.preferred_staff}
+                args = self._inject_cached_daycare_duration(state, tool_call["name"], args)
                 if tool_call["name"] == "send_booking_confirmation" and args.get("booking_id") and not args.get("service_type"):
                     try:
                         requested_booking_id = int(args["booking_id"])
@@ -2129,6 +2188,9 @@ class PawfectOrchestrator:
                 state.service_type = result.get("service_type")
             elif state.active_scenario != "MAKE_BOOKING":
                 state.service_type = None
+            if str(state.service_type or "").upper() != "DAYCARE":
+                state.daycare_duration_minutes = None
+                state.verified_facts.pop("daycare_duration_minutes", None)
             if previous_scenario != state.active_scenario:
                 state.offered_options = []
                 state.missing_information = []
@@ -2166,6 +2228,8 @@ class PawfectOrchestrator:
         elif tool_name == "create_booking" and isinstance(result, dict) and result.get("status") == "success":
             state.last_cancelled_booking = None
             state.preferred_staff = None
+            state.daycare_duration_minutes = None
+            state.verified_facts.pop("daycare_duration_minutes", None)
             self._cache_created_booking(state, result)
             payment_id = (result.get("data") or {}).get("payment_id")
             if payment_id is not None:
@@ -2180,6 +2244,7 @@ class PawfectOrchestrator:
         """Evidence-driven tool loop with flexible planning and full trace."""
         state.turn_counter += 1
         self._capture_explicit_loyalty_decision(state, user_message)
+        self._capture_explicit_daycare_duration(state, user_message)
         is_first_message = not state.history
         customer = self._resolve_identity(company_context["company_id"], state)
         self._match_named_pet(state, user_message)
@@ -2226,6 +2291,7 @@ class PawfectOrchestrator:
             self._set_objective_from_scenario(state, state.active_scenario)
 
         resolved_selection = self._resolve_ordinal_reference(state, user_message)
+        self._cache_daycare_duration_from_selection(state, resolved_selection)
         bound_scenario = state.active_scenario
         bound_tools = _tools_for_scenario(bound_scenario)
         model = self._base_model.bind_tools(bound_tools)

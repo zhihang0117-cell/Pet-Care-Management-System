@@ -50,8 +50,9 @@ def create_booking(
     is actually free at the requested date/time; otherwise this returns a
     clear error instead of silently assigning someone else, and you should
     tell the customer that staff member isn't available then and ask if
-    they'd like a different time or any available staff instead. Bookings
-    can only be made up to 14 days ahead.
+    they'd like a different time or any available staff instead. The normal
+    suggestion window is 14 days, but a customer-selected future date can be
+    booked up to the server's sanity limit.
 
     GROOMING or DAYCARE add-ons: pass
     the add-on's name as `add_on` and its own price as `add_on_price` —
