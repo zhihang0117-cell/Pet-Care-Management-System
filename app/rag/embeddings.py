@@ -36,7 +36,13 @@ def reset_embedding_model_cache() -> None:
 def get_embedding_model():
     """Load and cache the sentence-transformers embedding model."""
     global _embedding_model, _embedding_model_name
-    model_name = os.getenv("EMBEDDING_MODEL", "BAAI/bge-m3").strip() or "BAAI/bge-m3"
+    # Must match whatever model actually produced the vectors already stored
+    # in chunks_bge_large (BGE-Large — BAAI/bge-large-en-v1.5, per the real
+    # .env this project runs with) — silently falling back to a DIFFERENT
+    # model here if EMBEDDING_MODEL is ever unset would degrade RAG
+    # retrieval with no error at all (same vector dimension, wrong semantic
+    # space, so pgvector similarity search still "succeeds", just badly).
+    model_name = os.getenv("EMBEDDING_MODEL", "BAAI/bge-large-en-v1.5").strip() or "BAAI/bge-large-en-v1.5"
     if _embedding_model is None or _embedding_model_name != model_name:
         from sentence_transformers import SentenceTransformer
 

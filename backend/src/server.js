@@ -4,7 +4,6 @@ import cors from "cors";
 import path from "path";
 import { fileURLToPath } from "url";
 
-import { resolveCompany } from "./middleware/auth.js";
 import { requireAuthUser } from "./middleware/authUser.js";
 import { apiRateLimit } from "./middleware/rateLimit.js";
 
@@ -23,7 +22,6 @@ import { bookingsRouter } from "./routes/bookings.js";
 import { paymentsRouter } from "./routes/payments.js";
 import { roomsRouter } from "./routes/rooms.js";
 import { dashboardRouter } from "./routes/dashboard.js";
-import { llmRouter } from "./routes/llm.js";
 
 const app = express();
 const __filename = fileURLToPath(import.meta.url);
@@ -70,9 +68,6 @@ app.use("/api/bookings", requireAuthUser, bookingsRouter);
 app.use("/api/payments", requireAuthUser, paymentsRouter);
 app.use("/api/rooms", requireAuthUser, roomsRouter);
 app.use("/api/dashboard", requireAuthUser, dashboardRouter);
-
-// LLM service routes
-app.use("/api/llm", resolveCompany, llmRouter);
 
 // Serve the frontend from the repository-level web directory
 app.use(express.static(webPath));

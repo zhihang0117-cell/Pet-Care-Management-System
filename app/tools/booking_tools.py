@@ -1,3 +1,4 @@
+import re
 from datetime import date as date_cls
 from typing import Literal
 
@@ -14,6 +15,88 @@ def _repo():
 
 _GENERIC_PACKAGE_NAMES = {"", "grooming", "daycare", "boarding", "service", "general"}
 ServiceType = Literal["GROOMING", "DAYCARE", "BOARDING"]
+
+# A catalogue line naming a per-unit RATE ("RM15/hour") rather than a flat
+# total must never be trusted as ground truth for an hourly booking's actual
+# charged total (rate x hours) — only used to disqualify a matched
+# catalogue line in _verify_flat_price_against_catalogue below, never to
+# reject on its own.
+_RATE_MARKER_RE = re.compile(
+    r"/\s*hour\b|per\s+hour\b|/\s*hr\b|each\s+hour\b|/\s*day\b|per\s+day\b", re.IGNORECASE
+)
+
+
+def _verify_flat_price_against_catalogue(
+    company_id, service_type: str, package_name: str, price,
+    pet_type: str = "", pet_size: str = "",
+) -> dict | None:
+    """
+    Best-effort, FAIL-OPEN cross-check of a GROOMING/DAYCARE package price
+    against the same RAG catalogue get_booking_service_options already
+    parses for the model (app.tools.customer_tools._extract_daycare_catalogue_options
+    — genuinely service-agnostic despite its name: it structures any RAG
+    segment containing exactly one RM amount, which is exactly what a
+    pet-size-narrowed grooming chunk or a daycare package line looks like).
+
+    Unlike BOARDING (a real per-night rate in the structured `room` table),
+    GROOMING/DAYCARE prices only ever exist as unstructured document text,
+    so this can only ever be a soft check: returns None (never blocks the
+    write) whenever there is no confident EXACT label match, the RAG
+    service errors, or the matched catalogue line looks like a per-hour/
+    per-day RATE rather than a flat total (an hourly package's real total is
+    rate x hours, which legitimately differs from the bare rate). Only
+    returns a rejection when a package_name — which the model is already
+    required to copy verbatim from get_booking_service_options — has a
+    submitted price that does not match that exact catalogue entry's real
+    price.
+    """
+    normalized_service = str(service_type or "").strip().upper()
+    if normalized_service not in {"GROOMING", "DAYCARE"}:
+        return None
+    try:
+        from app.rag.retriever import CompanyRAGRetriever
+        from app.tools.customer_tools import _extract_daycare_catalogue_options
+
+        if normalized_service == "GROOMING":
+            query = f"{pet_type or ''} grooming packages price by size".strip()
+            rag_rows = CompanyRAGRetriever().search(
+                company_id, query, service_type="grooming",
+                pet_type=(pet_type or None), pet_size=(pet_size or None),
+            )
+        else:
+            rag_rows = CompanyRAGRetriever().search(
+                company_id, "daycare packages and prices", service_type="daycare",
+            )
+        services, _add_ons = _extract_daycare_catalogue_options(rag_rows)
+    except Exception:
+        return None  # RAG unavailable/erroring must never block a booking write
+
+    normalized_package = re.sub(r"\s+", " ", str(package_name or "")).strip().casefold()
+    match = next(
+        (
+            opt for opt in services
+            if re.sub(r"\s+", " ", str(opt.get("service_name") or "")).strip().casefold() == normalized_package
+        ),
+        None,
+    )
+    if match is None or _RATE_MARKER_RE.search(str(match.get("service_name") or "")):
+        return None
+    try:
+        catalogue_price = float(match["price"])
+        submitted_price = float(price)
+    except (TypeError, ValueError):
+        return None
+    if abs(submitted_price - catalogue_price) <= 0.01:
+        return None
+
+    return {
+        "error": "INVALID_PRICE",
+        "message": (
+            f"price ({price}) does not match {match['service_name']!r}'s real "
+            f"catalogue price (RM{catalogue_price:g}) from get_booking_service_options. "
+            "Use its exact price, not a recalled, rounded, or guessed number."
+        ),
+    }
 
 
 @tool
@@ -231,6 +314,22 @@ def create_booking(
                     "server can derive it without relying on LLM time arithmetic."
                 ),
             }
+    if normalized_service in {"GROOMING", "DAYCARE"}:
+        catalogue_pet_type = ""
+        catalogue_pet_size = ""
+        if normalized_service == "GROOMING" and pet_id:
+            try:
+                from app.tools.customer_tools import _pet_details_for
+
+                catalogue_pet_type, catalogue_pet_size = _pet_details_for(int(company_id), int(pet_id))
+            except Exception:
+                pass  # A lookup hiccup here must never block the write — falls through to no verification.
+        price_mismatch = _verify_flat_price_against_catalogue(
+            company_id, normalized_service, package_name, price,
+            pet_type=catalogue_pet_type, pet_size=catalogue_pet_size,
+        )
+        if price_mismatch:
+            return price_mismatch
     command = BookingCommand(
         company_id=int(company_id),
         customer_id=int(customer_id),

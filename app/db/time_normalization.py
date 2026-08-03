@@ -15,18 +15,30 @@ BUSINESS_TIMEZONE = "Asia/Kuala_Lumpur"
 
 _PERIOD_TOKENS = frozenset({"morning", "afternoon", "evening", "night", "noon"})
 
-# Chinese period-of-day words, mapped to the SAME canonical English tokens
-# used everywhere else in this module (slot_matches_preference's hour-range
-# logic below is keyed to these exact strings) — this module previously had
-# zero non-English support at all, so a customer saying "明天早上"/"晚上"
-# never resolved to a time or period; resolve_datetime/check_availability
-# just silently got nothing from it (ambiguous=True), leaving the whole
-# thing to the LLM to guess/translate inconsistently turn to turn.
+# Chinese and Malay (Bahasa Malaysia) period-of-day words, mapped to the SAME
+# canonical English tokens used everywhere else in this module
+# (slot_matches_preference's hour-range logic below is keyed to these exact
+# strings) — this module previously had zero non-English support at all, so
+# a customer saying "明天早上"/"晚上" never resolved to a time or period;
+# resolve_datetime/check_availability just silently got nothing from it
+# (ambiguous=True), leaving the whole thing to the LLM to guess/translate
+# inconsistently turn to turn. Malay entries added the same way: this is a
+# Malaysia-based business (BUSINESS_TIMEZONE=Asia/Kuala_Lumpur) where a
+# customer messaging in Malay is a normal, expected case, not an edge case —
+# every OTHER deterministic guardrail in this codebase (breed/height
+# confirmation, ordinal "the second one" detection, loyalty consent capture)
+# only ever had English+Chinese coverage, silently falling back to trusting
+# the LLM alone for Malay wording instead of the same deterministic check
+# English/Chinese speakers get.
 _PERIOD_TOKEN_ALIASES = {
     "早上": "morning", "上午": "morning", "清晨": "morning", "早": "morning",
     "中午": "noon", "正午": "noon",
     "下午": "afternoon", "午后": "afternoon",
     "晚上": "evening", "傍晚": "evening", "夜晚": "evening", "晚": "evening",
+    "pagi": "morning",
+    "tengah hari": "noon", "tengahari": "noon",
+    "petang": "afternoon",
+    "malam": "evening",
 }
 
 
@@ -34,7 +46,11 @@ def _canonicalize_period(value: str) -> str | None:
     text = str(value or "").strip().lower()
     if text in _PERIOD_TOKENS:
         return text
-    return _PERIOD_TOKEN_ALIASES.get(str(value or "").strip())
+    # .lower() here too: Chinese entries are case-insensitive by nature so
+    # this never mattered for them, but the Malay/Latin-script entries above
+    # need it — a bare .strip() previously missed "Pagi"/"PAGI" against the
+    # lowercase dict keys.
+    return _PERIOD_TOKEN_ALIASES.get(text)
 
 
 _CLOCK_PATTERN = re.compile(
@@ -74,7 +90,7 @@ def _parse_chinese_number(value: str) -> int | None:
 
 
 def extract_duration_minutes(message: str) -> int | None:
-    """Extract a stated visit duration such as ``3 hours`` or ``三个小时``."""
+    """Extract a stated visit duration such as ``3 hours``, ``三个小时``, or ``3 jam``."""
     text = str(message or "").strip().lower()
     match = re.search(r"\b(\d+(?:\.\d+)?)\s*(?:hours?|hrs?)\b", text)
     if match:
@@ -84,6 +100,14 @@ def extract_duration_minutes(message: str) -> int | None:
     if match:
         hours = _parse_chinese_number(match.group(1))
         return hours * 60 if hours and hours <= 24 else None
+    # Malay (Bahasa Malaysia) — "jam" (hours). Digit-only, same as the
+    # English branch above; Malay number WORDS (satu, dua, tiga...) aren't
+    # parsed here since a duration is overwhelmingly typed as a digit even
+    # in an otherwise-Malay message (e.g. "3 jam", not "tiga jam").
+    match = re.search(r"\b(\d+(?:\.\d+)?)\s*jam\b", text)
+    if match:
+        minutes = round(float(match.group(1)) * 60)
+        return minutes if 0 < minutes <= 24 * 60 else None
     match = re.search(r"\b(\d+)\s*(?:minutes?|mins?)\b", text)
     if match:
         minutes = int(match.group(1))
@@ -92,6 +116,10 @@ def extract_duration_minutes(message: str) -> int | None:
     if match:
         minutes = _parse_chinese_number(match.group(1))
         return minutes if minutes and minutes <= 24 * 60 else None
+    match = re.search(r"\b(\d+)\s*minit\b", text)
+    if match:
+        minutes = int(match.group(1))
+        return minutes if 0 < minutes <= 24 * 60 else None
     return None
 
 

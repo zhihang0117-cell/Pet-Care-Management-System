@@ -355,7 +355,7 @@ def test_prompt_keeps_recommendations_evidence_based_and_optional():
     assert "Helpful recommendations are a core capability" in SYSTEM_PROMPT
     assert "suggest only options supported by current-company evidence" in SYSTEM_PROMPT
     assert "do not repeat a declined" in SYSTEM_PROMPT
-    assert "wording is free; there is no fixed greeting sentence" in SYSTEM_PROMPT
+    assert "Wording is free; there is no fixed greeting sentence" in SYSTEM_PROMPT
 
 
 def test_tool_loop_error_preserves_completed_trace():

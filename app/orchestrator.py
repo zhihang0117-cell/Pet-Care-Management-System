@@ -774,17 +774,26 @@ class PawfectOrchestrator:
         text = (user_message or "").strip().lower()
         if not text:
             return
-        loyalty_topic = bool(re.search(r"\b(?:loyalty|voucher|coupon|points?)\b|积分|点数|优惠券|礼券", text))
+        loyalty_topic = bool(re.search(
+            r"\b(?:loyalty|voucher|coupon|points?)\b|积分|点数|优惠券|礼券|"
+            r"\b(?:baucar|kupon|ganjaran|keahlian)\b",
+            text,
+        ))
         declined = bool(
             re.search(
                 r"(?:\b(?:no|skip|without|don't|do not|not now)\b.*\b(?:loyalty|voucher|coupon|points?)\b)"
                 r"|(?:(?:不用|不要|不需要|跳过).*(?:积分|点数|优惠券|礼券))"
-                r"|(?:(?:积分|点数|优惠券|礼券).*(?:不用|不要|不需要|跳过))",
+                r"|(?:(?:积分|点数|优惠券|礼券).*(?:不用|不要|不需要|跳过))"
+                r"|(?:\b(?:tak|tidak)\b.*\b(?:baucar|kupon|ganjaran|points?)\b)"
+                r"|(?:\b(?:baucar|kupon|ganjaran|points?)\b.*\b(?:tak|tidak)\b)",
                 text,
             )
         )
         accepted = loyalty_topic and bool(
-            re.search(r"\b(?:use|apply|redeem|yes|join)\b|使用|要用|兑换|加入", text)
+            re.search(
+                r"\b(?:use|apply|redeem|yes|join)\b|使用|要用|兑换|加入|\b(?:guna|boleh|nak|mahu)\b",
+                text,
+            )
         )
 
         # A short yes/no is only attributable to loyalty when a real loyalty
@@ -792,9 +801,9 @@ class PawfectOrchestrator:
         # infer consent from a generic "yes" otherwise because it may be the
         # booking confirmation instead.
         if state.loyalty_offer_shown_turn is not None and state.loyalty_offer_shown_turn < state.turn_counter:
-            if text in {"no", "no thanks", "no need", "skip", "不用", "不要", "不需要", "跳过"}:
+            if text in {"no", "no thanks", "no need", "skip", "不用", "不要", "不需要", "跳过", "tak", "tidak", "tak nak", "tidak mahu"}:
                 declined = True
-            elif text in {"yes", "yes please", "要", "可以", "use it", "使用"}:
+            elif text in {"yes", "yes please", "要", "可以", "use it", "使用", "ya", "boleh", "nak"}:
                 accepted = True
 
         if declined:
@@ -808,6 +817,32 @@ class PawfectOrchestrator:
             "source": "customer_message",
             "turn": state.turn_counter,
         }
+
+    # PDPA/GDPR-style "delete my data" requests have no self-service tool —
+    # there is no create_pet-style write path that could safely automate
+    # cross-table personal-data erasure, and building one is a much bigger,
+    # riskier feature than this needs. Escalate to a human (HITL) instead:
+    # detect the request deterministically (never rely on the LLM alone to
+    # recognize and correctly route something this consequential) and save
+    # a staff enquiry with a distinct reason, same mechanism as every other
+    # handoff_required path in this file.
+    _DATA_DELETION_RE = re.compile(
+        r"\bdelete\s+(?:all\s+)?(?:my\s+)?(?:account|data|profile|information|records?|personal\s+data)\b"
+        r"|\bremove\s+(?:all\s+)?(?:my\s+)?(?:account|data|profile|information)\b"
+        r"|\b(?:close|deactivate)\s+my\s+account\b"
+        r"|\bforget\s+(?:about\s+)?me\b"
+        r"|删除.{0,6}(?:我的)?(?:资料|帐号|账号|帳號|数据|資料|个人信息|個人資料)"
+        r"|注销.{0,4}(?:账号|帳號)"
+        r"|清除.{0,6}我的.{0,6}(?:资料|数据|信息)"
+        r"|padam\s+(?:semua\s+)?(?:data|akaun|maklumat)\s+saya"
+        r"|hapus\s+(?:semua\s+)?(?:data|akaun|maklumat)\s+saya"
+        r"|batalkan\s+akaun\s+saya",
+        re.IGNORECASE,
+    )
+
+    @classmethod
+    def _is_data_deletion_request(cls, user_message: str) -> bool:
+        return bool(cls._DATA_DELETION_RE.search(user_message or ""))
 
     @staticmethod
     def _capture_explicit_daycare_duration(state, user_message: str) -> None:
@@ -1064,10 +1099,7 @@ class PawfectOrchestrator:
                         )
                         if match is not None:
                             args = {**args, "service_type": match["service_type"]}
-                if (
-                    tool_call["name"] == "retrieve_policy"
-                    and str(args.get("service_type") or "").strip().lower() == "grooming"
-                ):
+                if tool_call["name"] == "retrieve_policy":
                     # Same problem, one layer up: the model can call retrieve_policy
                     # directly (bypassing the pet_id-aware bundling inside
                     # get_booking_service_options) and skip pet_type/pet_size
@@ -1076,6 +1108,18 @@ class PawfectOrchestrator:
                     # recently resolved from the real roster is authoritative;
                     # otherwise preserve the dog/cat species inferred by the LLM
                     # from the customer's breed wording.
+                    #
+                    # Previously gated on service_type=="grooming" specifically,
+                    # so a grooming question where the model omitted
+                    # service_type entirely (a valid call — the tool's own
+                    # signature allows it unset for a general/ambiguous
+                    # enquiry) skipped this backfill outright. Not narrowed to
+                    # any one service_type now: CompanyRAGRetriever.search only
+                    # ever DROPS chunks explicitly tagged for the other
+                    # species (app/rag/retriever.py) — species-neutral chunks
+                    # tagged "all"/untagged are never affected — so passing a
+                    # known pet_type here is safe regardless of which policy
+                    # topic is being asked about, never just grooming.
                     authoritative_species = str(state.pet_type or "").strip().lower()
                     if authoritative_species not in ("dog", "cat"):
                         model_species = str(args.get("pet_type") or "").strip().lower()
@@ -1614,6 +1658,14 @@ class PawfectOrchestrator:
         "第三": 3, "第三个": 3,
         "第四": 4, "第四个": 4,
         "第五": 5, "第五个": 5,
+        # Malay (Bahasa Malaysia) — see time_normalization.py's Malay period
+        # words for why this business's own market can't be left English/
+        # Chinese-only in every deterministic guardrail.
+        "pertama": 1,
+        "kedua": 2,
+        "ketiga": 3,
+        "keempat": 4,
+        "kelima": 5,
     }
 
     @classmethod
@@ -1994,6 +2046,12 @@ class PawfectOrchestrator:
     _GREETING_LEAD_WORDS = (
         "hi", "hello", "hey", "welcome", "good morning", "good afternoon",
         "good evening", "早", "你好", "嗨", "早上好", "下午好", "晚上好",
+        # Malay (Bahasa Malaysia) — without these, a model reply that greets
+        # a Malay-speaking customer in Malay isn't recognized as already
+        # greeted, and _ensure_first_message_greeting/_strip_redundant_greeting
+        # would layer an English/Chinese greeting on top of it.
+        "hai", "selamat pagi", "selamat tengah hari", "selamat petang",
+        "selamat malam", "selamat datang",
     )
 
     @classmethod
@@ -2310,18 +2368,45 @@ class PawfectOrchestrator:
         force_tool_once = False
 
         if customer.get("found") is None:
+            # state.customer_id is guaranteed None here — this branch is only
+            # reached when the phone lookup itself failed, so no real
+            # customer_id was ever resolved this turn (see _resolve_identity).
+            # save_staff_enquiry requires a real customer_id (the `messages`
+            # table's escalation row is keyed to one) and always raises
+            # without it — traced statically, not observed live: every
+            # identity-lookup failure is guaranteed to hit this codepath,
+            # throw, and leave NO staff-visible record at all, with only the
+            # generic exception text (not even the phone number) reaching
+            # the server log. Skip the guaranteed-failing
+            # insert attempt and log the one piece of identifying information
+            # that does exist (the phone number) directly instead, so this is
+            # at least discoverable in server/Cloud Logging even though no
+            # dashboard row can be created for an unconfirmed identity.
+            escalation_failed = True
+            logging.getLogger(__name__).error(
+                "Staff follow-up needed but could not be logged to the dashboard "
+                "(no resolved customer_id — identity lookup failed): "
+                "company_id=%s phone_number=%s message=%r",
+                company_context.get("company_id"),
+                state.phone_number,
+                user_message,
+            )
+
+        if customer.get("found") and self._is_data_deletion_request(user_message):
             try:
                 self._save_escalation_message(
                     company_context.get("company_id"),
                     state.customer_id,
                     user_message,
-                    "CUSTOMER_IDENTITY_LOOKUP_ERROR",
+                    "DATA_DELETION_REQUEST",
                 )
                 escalation_saved = True
             except Exception as exc:
                 escalation_failed = True
                 logging.getLogger(__name__).exception(
-                    "Could not persist identity-lookup escalation: %s", exc
+                    "Could not persist data-deletion escalation for customer_id=%s: %s",
+                    state.customer_id,
+                    exc,
                 )
 
         def apply_and_escalate(tool_call: dict, result) -> None:

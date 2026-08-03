@@ -37,10 +37,15 @@ redemptionsRouter.post(
     if (!["Approved", "Rejected"].includes(status)) {
       return res.status(400).json({ error: "status must be Approved or Rejected." });
     }
+    const reason = String(req.body.reason || "").trim();
+    if (status === "Rejected" && !reason) {
+      return res.status(400).json({ error: "A rejection reason is required." });
+    }
     const { data, error } = await supabase.rpc("decide_redemption", {
       p_company_id: req.companyId,
       p_redemption_id: Number(req.params.id),
       p_status: status,
+      p_reason: status === "Rejected" ? reason : null,
     });
     if (error) return res.status(400).json({ error: error.message });
 

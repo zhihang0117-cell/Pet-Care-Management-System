@@ -148,7 +148,7 @@ def build_redemption_decision_notice(company_id: int, redemption_id: int, new_st
     client = get_supabase_client()
     redemption_rows = (
         client.table("redemption")
-        .select("loyalty_id, coupon_id, loyalty_spend")
+        .select("loyalty_id, coupon_id, loyalty_spend, rejection_reason")
         .eq("company_id", company_id)
         .eq("redemption_id", int(redemption_id))
         .limit(1)
@@ -212,9 +212,11 @@ def build_redemption_decision_notice(company_id: int, redemption_id: int, new_st
             f"Your updated points balance is {balance}."
         )
     else:
+        reason = str(redemption.get("rejection_reason") or "").strip()
         message = (
-            f"Hi {name}, your {reward_label} redemption request couldn't be approved this time. "
-            "No points were deducted for this request. Please reach out if you have any questions!"
+            f"Hi {name}, your {reward_label} redemption request couldn't be approved this time"
+            + (f": {reason}. " if reason else ". ")
+            + "No points were deducted for this request. Please reach out if you have any questions!"
         )
 
     return {"phone_number": phone_number, "message": message}

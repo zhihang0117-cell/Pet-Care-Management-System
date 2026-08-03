@@ -68,6 +68,38 @@ function validateBookingInput(type, booking, { creating = false } = {}) {
   }
 }
 
+/**
+ * BOARDING pricing is the one service type with a real, structured price
+ * source (the `room` table) — unlike grooming/daycare, whose prices only
+ * exist as unstructured RAG text on the AI side and aren't independently
+ * verifiable here either. The Python AI booking path (app/tools/
+ * booking_tools.py create_booking) already cross-checks a BOARDING
+ * price_per_night against room.price and rejects a mismatch; this staff
+ * dashboard write path never did, so a manually-typed price_per_night that
+ * didn't match the real room rate (typo, stale cached value, or a
+ * mismatched room_type) was silently accepted with no verification at all.
+ */
+async function assertBoardingRoomPriceMatches(companyId, roomType, pricePerNight) {
+  const { data: rooms, error } = await supabase
+    .from("room")
+    .select("room_type, price")
+    .eq("company_id", companyId)
+    .ilike("room_type", String(roomType || "").trim());
+  if (error) {
+    error.status = 400;
+    throw error;
+  }
+  if (!rooms || !rooms.length) {
+    invalidBooking(`room_type "${roomType}" does not match any real room for this company.`);
+  }
+  const realPrice = Number(rooms[0].price);
+  if (!Number.isFinite(realPrice) || Math.abs(Number(pricePerNight) - realPrice) > 0.01) {
+    invalidBooking(
+      `price_per_night (${pricePerNight}) does not match ${rooms[0].room_type}'s real per-night price (RM${realPrice}).`
+    );
+  }
+}
+
 async function assertBookingRelationsBelongToCompany(companyId, petId, staffId) {
   const [{ data: pet, error: petError }, { data: staff, error: staffError }] = await Promise.all([
     supabase.from("pet").select("pet_id").eq("company_id", companyId).eq("pet_id", petId).maybeSingle(),
@@ -243,6 +275,9 @@ export async function createBooking(type, companyId, body) {
 
   validateBookingInput(type, bookingRow, { creating: true });
   await assertBookingRelationsBelongToCompany(companyId, bookingRow.pet_id, bookingRow.staff_id);
+  if (type === "boarding") {
+    await assertBoardingRoomPriceMatches(companyId, bookingRow.room_type, bookingRow.price_per_night);
+  }
 
   const { finalAmount } = computeFinalAmount(basePriceForPayment, addOnPrice, null);
 
@@ -329,6 +364,9 @@ export async function updateBooking(type, companyId, bookingId, body) {
   }
   validateBookingInput(type, next);
   await assertBookingRelationsBelongToCompany(companyId, next.pet_id, next.staff_id);
+  if (type === "boarding") {
+    await assertBoardingRoomPriceMatches(companyId, next.room_type, next.price_per_night);
+  }
 
   const currentPaymentDetails = paymentPayloadForBooking(type, existing);
   const nextPayment = paymentPayloadForBooking(type, next);

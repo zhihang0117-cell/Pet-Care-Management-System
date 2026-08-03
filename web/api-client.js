@@ -12,15 +12,24 @@
  * `Authorization: Bearer <supabase access token>` (see
  * backend/src/middleware/authUser.js) — the backend resolves company_id and
  * role from that token server-side, scoped automatically. There is no
- * x-company-id header for these routes; that header is only for the
- * separate LLM/agent trust model (see backend/src/middleware/auth.js).
+ * x-company-id header for these routes.
  */
 
+// Set this when web/ is deployed on a DIFFERENT origin than the Express
+// backend (e.g. web/ on Render static hosting, backend on Google Cloud
+// Run) — every fetch() below would otherwise hit the static host's own
+// origin (which has no /api route at all) instead of the real backend.
+// Leave blank for same-origin deployments (the Node backend serving web/
+// itself as static files, per backend/src/server.js — the default today).
+// Example: const PAWFECT_API_BASE_URL = "https://pawfect-backend.example.com/api";
+const PAWFECT_API_BASE_URL = "";
+
 const LOCAL_BACKEND_ORIGIN = "http://127.0.0.1:4000";
-const API_BASE_URL =
-  window.location.port === "5500"
-    ? `${LOCAL_BACKEND_ORIGIN}/api`
-    : "/api";
+const API_BASE_URL = PAWFECT_API_BASE_URL
+  ? PAWFECT_API_BASE_URL.replace(/\/$/, "")
+  : window.location.port === "5500"
+  ? `${LOCAL_BACKEND_ORIGIN}/api`
+  : "/api";
 
 function isShowcaseDemoRequest() {
   return new URLSearchParams(window.location.search).get("demo") === "1";
@@ -250,10 +259,12 @@ const api = {
   deleteCoupon: (id) => api.del(`/coupons/${id}`),
 
   listMembers: (filters = {}) => api.get(`/member-info?${new URLSearchParams(filters)}`),
+  adjustMemberPoints: (loyaltyId, pointsBalance, reason) =>
+    api.patch(`/member-info/${loyaltyId}/manual-adjustment`, { points_balance: pointsBalance, reason }),
   listRedemptions: (filters = {}) => api.get(`/redemptions?${new URLSearchParams(filters)}`),
   getRedemption: (redemptionId) => api.get(`/redemptions/${redemptionId}`),
-  decideRedemption: (redemptionId, status) =>
-    api.post(`/redemptions/${redemptionId}/decision`, { status }),
+  decideRedemption: (redemptionId, status, reason) =>
+    api.post(`/redemptions/${redemptionId}/decision`, { status, reason }),
   cancelRedemption: (redemptionId, reason) =>
     api.post(`/redemptions/${redemptionId}/cancel`, { reason }),
 

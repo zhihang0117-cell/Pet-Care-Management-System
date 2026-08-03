@@ -1,5 +1,42 @@
 // ── Utility ──────────────────────────────────────────────────────────────────
 function q(id) { return document.getElementById(id); }
+
+// Same non-blocking toast pattern as common.js's showToast (this onboarding
+// flow doesn't load common.js, so it's a small self-contained copy rather
+// than pulling in that whole dashboard-oriented file) — replaces this file's
+// previous raw alert() calls, which were the one page in the whole site that
+// never got moved off native browser dialogs. See admin-theme.css's
+// body.auth-page/.setup-page toast rules for the shared styling.
+function showToast(message, type = "error", duration = 4000) {
+    let container = document.getElementById("toastContainer");
+    if (!container) {
+        container = document.createElement("div");
+        container.id = "toastContainer";
+        container.className = "toast-container";
+        document.body.appendChild(container);
+    }
+    const toast = document.createElement("div");
+    toast.className = `toast toast-${type}`;
+    toast.textContent = message;
+    container.appendChild(toast);
+    requestAnimationFrame(() => toast.classList.add("toast-visible"));
+    const remove = () => {
+        toast.classList.remove("toast-visible");
+        setTimeout(() => toast.remove(), 200);
+    };
+    toast.addEventListener("click", remove);
+    setTimeout(remove, duration);
+}
+
+// alert() blocked until dismissed, which guaranteed the message was actually
+// seen before a redirect fired right after it — showToast() alone doesn't
+// (it just fades in and auto-dismisses), so a couple of call sites that used
+// to alert() then immediately navigate need this instead, or the warning
+// would be gone before anyone could read it.
+function showToastThenRedirect(message, url, type = "error", delay = 2200) {
+    showToast(message, type, delay + 800);
+    setTimeout(() => { location.href = url; }, delay);
+}
 function escapeHtml(value) {
     return String(value ?? '')
         .replaceAll('&', '&amp;')
@@ -185,9 +222,9 @@ function checkPasswordStrength() {
 function registerBusinessAccount() {
     const email    = q('reg_email')?.value.trim();
     const services = selectedServices();
-    if (!email)        { alert('Please enter manager login email.'); return; }
-    if (!q('reg_email').checkValidity()) { alert('Please enter a valid manager email.'); return; }
-    if (!services.length) { alert('Please select at least one service.'); return; }
+    if (!email)        { showToast('Please enter manager login email.'); return; }
+    if (!q('reg_email').checkValidity()) { showToast('Please enter a valid manager email.'); return; }
+    if (!services.length) { showToast('Please select at least one service.'); return; }
 
     sessionStorage.setItem('pawfect_pending_registration', JSON.stringify({ email, services }));
     location.href = 'reg-setup.html';
@@ -211,8 +248,7 @@ function showFilename(input, targetId) {
 async function saveServiceConfiguration() {
     const pending = JSON.parse(sessionStorage.getItem('pawfect_pending_registration') || 'null');
     if (!pending) {
-        alert('Your registration session expired. Please register again.');
-        location.href = 'register.html';
+        showToastThenRedirect('Your registration session expired. Please register again.', 'register.html');
         return;
     }
 
@@ -226,10 +262,10 @@ async function saveServiceConfiguration() {
     const password = q('reg_password')?.value || '';
     const confirmPassword = q('reg_confirm')?.value || '';
 
-    if (!businessName) { alert('Please enter your business/company name.'); return; }
-    if (!postcode)     { alert('Please enter your postcode.'); return; }
-    if (password.length < 8) { alert('Password must be at least 8 characters.'); return; }
-    if (password !== confirmPassword) { alert('Password and confirm password must match.'); return; }
+    if (!businessName) { showToast('Please enter your business/company name.'); return; }
+    if (!postcode)     { showToast('Please enter your postcode.'); return; }
+    if (password.length < 8) { showToast('Password must be at least 8 characters.'); return; }
+    if (password !== confirmPassword) { showToast('Password and confirm password must match.'); return; }
 
     const requiredSetupFields = [
         'hour_Mon', 'hour_Tue', 'hour_Wed', 'hour_Thu', 'hour_Fri', 'hour_Sat', 'hour_Sun',
@@ -237,7 +273,7 @@ async function saveServiceConfiguration() {
         'cfg_language', 'timezone', 'currency', 'height', 'weight', 'cfg_confirmRule'
     ];
     if (requiredSetupFields.some(id => !q(id)?.value.trim())) {
-        alert('Please complete all required service configuration fields.');
+        showToast('Please complete all required service configuration fields.');
         return;
     }
 
@@ -248,19 +284,19 @@ async function saveServiceConfiguration() {
     const invalidPolicy = Object.entries(policyFiles).find(([, file]) => file && !file.name.toLowerCase().endsWith('.docx'));
     const oversizedPolicy = Object.entries(policyFiles).find(([, file]) => file && file.size > 10 * 1024 * 1024);
     if (invalidPolicy) {
-        alert(`${invalidPolicy[0]} policy must be a valid DOCX file.`);
+        showToast(`${invalidPolicy[0]} policy must be a valid DOCX file.`);
         return;
     }
     if (oversizedPolicy) {
-        alert(`${oversizedPolicy[0]} policy must be 10 MB or smaller.`);
+        showToast(`${oversizedPolicy[0]} policy must be 10 MB or smaller.`);
         return;
     }
     if (logoFile && !['image/png', 'image/jpeg'].includes(logoFile.type)) {
-        alert('Business logo must be a PNG or JPG file.');
+        showToast('Business logo must be a PNG or JPG file.');
         return;
     }
     if (logoFile && logoFile.size > 2 * 1024 * 1024) {
-        alert('Business logo must be 2 MB or smaller.');
+        showToast('Business logo must be 2 MB or smaller.');
         return;
     }
 
@@ -322,8 +358,7 @@ async function saveServiceConfiguration() {
         if (signInError) {
             sessionStorage.removeItem('pawfect_pending_registration');
             setupTeamAccounts = [];
-            alert('Your company and accounts were created, but automatic sign-in failed. Please sign in from the login page.');
-            location.href = 'index.html';
+            showToastThenRedirect('Your company and accounts were created, but automatic sign-in failed. Please sign in from the login page.', 'index.html');
             return;
         }
 
@@ -371,12 +406,14 @@ async function saveServiceConfiguration() {
             logoUploadWarning ? `Logo: ${logoUploadWarning}` : '',
             ...documentWarnings,
         ].filter(Boolean);
-        if (setupWarnings.length) alert(`Company created, but some uploads need attention:\n${setupWarnings.join('\n')}`);
-
-        location.href = 'dashboard.html';
+        if (setupWarnings.length) {
+            showToastThenRedirect(`Company created, but some uploads need attention: ${setupWarnings.join(' · ')}`, 'dashboard.html', 'error', 3200);
+        } else {
+            location.href = 'dashboard.html';
+        }
     } catch (error) {
         console.error(error);
-        alert(companyCreated
+        showToast(companyCreated
             ? 'Your company was created, but setup could not finish in this browser. Please sign in from the login page.'
             : (error.message || 'Company creation failed.'));
     } finally {

@@ -2523,14 +2523,30 @@ def _ambiguous_active_bookings_result(action: str, context: CustomerContext) -> 
     )
 
 
-def _void_payment_for_booking(booking: dict) -> None:
+def _void_payment_for_booking(company_id: int, booking: dict) -> None:
     """
-    A cancelled booking owes nothing — remove its payment record outright
-    (unlike the booking row itself, which is always kept with status
-    "Cancelled" for history; the payment is a different object and the
-    business call here is that it should not linger at all, paid or not).
+    A cancelled booking that was never paid owes nothing — remove its
+    payment record outright (unlike the booking row itself, which is always
+    kept with status "Cancelled" for history; the payment is a different
+    object).
+
+    A payment already marked Paid is real, collected money — possibly with
+    loyalty points already spent on a redemption tied to it (see
+    redeem_reward). Deleting that row outright, unconditionally, used to
+    silently destroy the payment history, the Paid status, and any spent
+    loyalty points with zero refund record and no way for staff to recover
+    it — confirmed live: pay -> redeem a coupon against that payment ->
+    cancel the booking left the customer's money and spent points both gone
+    with no trace. Route a Paid payment through the same refund_payment RPC
+    the staff dashboard already uses for manual refunds
+    (backend/sql/enquiry_refund_logo_migration.sql) instead — it reverses
+    any linked redemption's loyalty points and marks the payment Refunded,
+    the same protection reschedule's price-resync path already gets via
+    update_booking_atomic's own "cannot change a completed/refunded
+    payment" guard.
+
     The booking's own payment_id is nulled first so nothing is left
-    pointing at a deleted row.
+    pointing at a deleted/refunded row.
     """
     payment_id = booking.get("payment_id")
     service_type = booking.get("service_type")
@@ -2539,10 +2555,44 @@ def _void_payment_for_booking(booking: dict) -> None:
         return
     try:
         client = get_supabase_client()
+        payment_rows = (
+            client.table("payment")
+            .select("payment_id, status")
+            .eq("company_id", int(company_id))
+            .eq("payment_id", int(payment_id))
+            .limit(1)
+            .execute()
+            .data
+            or []
+        )
+        payment_status = str((payment_rows[0] if payment_rows else {}).get("status") or "").strip().lower()
+
         if service_type and booking_id is not None:
             table, id_column = _booking_table_meta(service_type)
-            client.table(table).update({"payment_id": None}).eq(id_column, int(booking_id)).execute()
-        client.table("payment").delete().eq("payment_id", int(payment_id)).execute()
+            client.table(table).update({"payment_id": None}).eq(id_column, int(booking_id)).eq(
+                "company_id", int(company_id)
+            ).execute()
+
+        if payment_status == "paid":
+            client.rpc(
+                "refund_payment",
+                {
+                    "p_company_id": int(company_id),
+                    "p_payment_id": int(payment_id),
+                    "p_refunded_by": None,
+                    "p_refund_reason": "Booking cancelled",
+                },
+            ).execute()
+        elif payment_status in ("refunded", ""):
+            # Already refunded, or the row is gone/unreadable — nothing left
+            # to void or delete either way.
+            return
+        else:
+            # Pending/Unpaid: no money was ever collected, safe to remove
+            # the row outright as before.
+            client.table("payment").delete().eq("payment_id", int(payment_id)).eq(
+                "company_id", int(company_id)
+            ).execute()
     except Exception as exc:
         raise RuntimeError(f"Booking was cancelled but payment cleanup failed: {exc}") from exc
 
@@ -2610,7 +2660,7 @@ def cancel_booking(context: CustomerContext, intent_json: dict) -> dict:
     )
     if final.get("status") == "success":
         try:
-            _void_payment_for_booking(final.get("data") or {})
+            _void_payment_for_booking(context.company_id, final.get("data") or {})
         except Exception as exc:
             return _result(
                 "cancel_booking",
@@ -2898,12 +2948,32 @@ def reschedule_booking(context: CustomerContext, intent_json: dict) -> dict:
     table = _service_table(service_type)
     updates = {"booking_date": new_date, "booking_time": new_time}
     new_total_price = None
+    daycare_duration_price_review = False
     if table == "daycare_booking":
         updates = {
             "booking_date": new_date,
             "check_in_time": new_time,
             "check_out_time": new_check_out_time,
         }
+        # Unlike BOARDING (a real per-night rate from the `room` table, so a
+        # changed stay length can be safely recalculated below), DAYCARE
+        # pricing only ever exists as unstructured RAG text — there is no
+        # verified per-hour rate to recompute from here, and some DAYCARE
+        # packages are flat-per-day rather than hourly, so naively scaling
+        # the old price by the new/old duration ratio would be actively
+        # WRONG for those. Silently keeping the stale price was the
+        # previous behavior (a 3-hour visit rescheduled to 6 hours kept its
+        # original 3-hour total with no correction and no flag for staff).
+        # Flag it for a human to actually price instead of guessing either
+        # way — the date/time change itself is still valid and proceeds.
+        old_start = _time_to_minutes(booking.get("check_in_time") or booking.get("booking_time"))
+        old_end = _time_to_minutes(booking.get("check_out_time"))
+        if (
+            old_start is not None and old_end is not None
+            and start_minutes is not None and end_minutes is not None
+            and (end_minutes - start_minutes) != (old_end - old_start)
+        ):
+            daycare_duration_price_review = True
     elif table == "boarding_booking":
         updates = {
             "check_in_date": new_date,
@@ -3039,6 +3109,20 @@ def reschedule_booking(context: CustomerContext, intent_json: dict) -> dict:
         ):
             final["handoff_required"] = True
             final["handoff_reason"] = "DOCUMENT_DELIVERY_ERROR"
+    if final.get("status") == "success" and daycare_duration_price_review:
+        final["data"]["price_review_required"] = True
+        final["data"]["price_review_reason"] = (
+            "DAYCARE visit duration changed on this reschedule; the linked payment's "
+            "price was NOT recalculated (no verified hourly rate exists server-side "
+            "for DAYCARE, unlike BOARDING's real per-night room rate) and needs staff "
+            "review before the amount on file is treated as final."
+        )
+        final["handoff_required"] = True
+        # Don't clobber a real document-delivery reason if that ALSO failed on
+        # this same reschedule (final["handoff_reason"] may already be a real,
+        # non-empty value, not just an absent key) — the price_review_reason
+        # note above still explains the pricing issue either way.
+        final["handoff_reason"] = final.get("handoff_reason") or "DAYCARE_DURATION_PRICE_REVIEW"
     return final
 
 

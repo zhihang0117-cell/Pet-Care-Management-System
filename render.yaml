@@ -18,8 +18,6 @@ services:
         sync: false
       - key: CORS_ORIGINS
         value: https://pawfectai.onrender.com
-      - key: LLM_API_KEY
-        generateValue: true
       - key: AI_BACKEND_URL
         fromService:
           type: web
@@ -39,8 +37,9 @@ services:
   - type: web
     name: pawfectai-ai
     runtime: python
-    # BGE-M3 is a local embedding model and needs substantially more memory
-    # than Render's free instance. Change this only if the model is externalized.
+    # BGE-Large (see EMBEDDING_MODEL below) is a local embedding model and
+    # needs substantially more memory than Render's free instance. Change
+    # this only if the model is externalized.
     plan: standard
     region: singapore
     buildCommand: pip install -r requirements.txt
@@ -77,7 +76,7 @@ services:
       - key: EMBEDDING_PROVIDER
         value: sentence_transformers
       - key: EMBEDDING_MODEL
-        value: BAAI/bge-m3
+        value: BAAI/bge-large-en-v1.5
       - key: WHATSAPP_PROVIDER
         value: meta_cloud_api
       - key: WHATSAPP_ACCESS_TOKEN

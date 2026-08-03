@@ -1,18 +1,28 @@
 # Pawfect Backend (Express + Supabase)
 
-A Node/Express API that sits between your Supabase database and (a) your
-HTML frontend, and (b) an LLM/agent — so neither one talks to Supabase
-directly. This matters for two reasons: your `service_role` key (which
-bypasses Row Level Security) must never reach the browser or a public LLM
-prompt, and money-critical logic (pricing, voucher validation, point
-deduction) needs to live in one trusted place, not be re-implemented in
-JavaScript running on someone's laptop.
+A Node/Express API that sits between your Supabase database and your HTML
+frontend — so the frontend never talks to Supabase directly. This matters
+because your `service_role` key (which bypasses Row Level Security) must
+never reach the browser, and money-critical logic (pricing, voucher
+validation, point deduction) needs to live in one trusted place, not be
+re-implemented in JavaScript running on someone's laptop.
 
 ```
-Browser (HTML/common.js)  ──┐
-                             ├──►  Express API (this project)  ──►  Supabase (Postgres)
-LLM / agent  ────────────────┘
+Browser (HTML/common.js)  ──►  Express API (this project)  ──►  Supabase (Postgres)
 ```
+
+The conversational AI agent (WhatsApp/eval-console chat) is a separate
+Python service (see the repository root's `app/orchestrator.py`) with its
+own direct Supabase access for booking/customer/loyalty logic — it does not
+go through this Express API for that. This backend and the Python service
+only talk to each other for document generation (booking confirmations,
+invoices, status notices — see `src/lib/aiBackend.js` and the Python
+service's `/documents/*` endpoints), gated by a separate internal key. A
+previous generic LLM-CRUD surface on this Express API (`/api/llm/*`) was
+removed — nothing in the codebase ever called it, and it stayed reachable
+behind only a single shared secret with no real per-tenant authorization,
+which became a real cross-tenant risk the moment more than one company's
+data exists in the same Supabase project.
 
 ## 1. One-time Supabase setup
 
@@ -59,7 +69,6 @@ cp .env.example .env
 #   SUPABASE_URL                 - Project Settings > API
 #   SUPABASE_SERVICE_ROLE_KEY    - Project Settings > API > service_role (SECRET)
 #   CORS_ORIGINS                 - your frontend's URL(s)
-#   LLM_API_KEY                  - any long random string
 npm start
 ```
 
@@ -88,8 +97,8 @@ service; review Render's displayed monthly price before applying the Blueprint.
 - Environment variables are set once in the dashboard (your Supabase service
   key never touches your frontend's hosting, e.g. Vercel/Netlify/GitHub Pages,
   where your static HTML can live separately).
-- Comfortably handles the atomic verify-payment transaction, generic CRUD,
-  and the LLM tool endpoint without any serverless cold-start/timeout concerns.
+- Comfortably handles the atomic verify-payment transaction and generic CRUD
+  without any serverless cold-start/timeout concerns.
 - Free tier is fine for a single pet-care business's traffic; upgrade only if
   you outgrow it.
 
@@ -131,18 +140,14 @@ pooling; not worth it at this scale.)
   to the authenticated API.
 
 **④ CRUD for an LLM to update the database:**
-- `src/llm/tools.js` — tool schema (Anthropic/OpenAI function-calling shaped)
-  + dispatcher. `GET /api/llm/tools-schema` returns the schema; `POST
-  /api/llm/execute` with `{ "tool": "...", "input": {...} }` runs it.
-  Both require an `x-llm-api-key` header (see `.env`'s `LLM_API_KEY`).
-- `src/llm/tableAllowlist.js` — deliberately restricts which tables/actions
-  the LLM's generic `create_record`/`update_record`/`delete_record` tools
-  can touch. Bookings can only be *updated* (not created/deleted) through
-  the generic tool — real bookings must go through `create_booking` so
-  pricing stays correct. `member_info`, `redemption`, and `payment_history`
-  are **read-only** for the LLM — points and the ledger can only change via
-  the `verify_payment` tool, so the balance and the transaction log can
-  never drift apart, even if the LLM is instructed to do something unusual.
+- Removed. This used to be a generic `src/llm/tools.js` + `tableAllowlist.js`
+  CRUD surface on this Express API, but nothing in the codebase ever called
+  it — the real conversational agent (`app/orchestrator.py`, Python) has its
+  own typed, validated tool set with its own direct Supabase access (see
+  `app/tools/*.py`), which already enforces price verification, booking-write
+  guardrails, and two-step confirmation for destructive actions the way this
+  generic surface never did. Keeping an unused, weakly-authenticated
+  duplicate write path mounted was a real risk, not a convenience.
 
 ## Auth & registration flow
 
@@ -168,9 +173,6 @@ pooling; not worth it at this scale.)
   /api/accounts/:id` edit/remove accounts, with a guard against removing the
   last manager. Both manager and staff accounts can `GET /api/accounts` to
   see the roster.
-- **The LLM's `/api/llm/*` routes are a separate trust model** — they use
-  `x-llm-api-key` + `x-company-id` header, not a user session, since an
-  agent isn't a logged-in human. See `middleware/auth.js`.
 
 ## API quick reference
 
@@ -195,7 +197,6 @@ to that token's `company_id` — you don't need to pass a company id yourself.
 | Bookings | `GET/POST /api/bookings/:type`, `GET/PATCH/DELETE /api/bookings/:type/:id` (`:type` = grooming/daycare/boarding) |
 | Payments | `GET /api/payments`, `GET /api/payments/:id`, `POST /api/payments/:id/quote-voucher`, `POST /api/payments/:id/redemption-request`, `POST /api/payments/:id/verify` (the dashboard's "Verify Payment & Redemption" button), `POST /api/payments/:id/mark-paid` (manager — same underlying RPC, allows a manual `final_amount` override), `POST /api/payments/:id/refund` (manager) |
 | Dashboard | `GET /api/dashboard/summary`, `GET /api/dashboard/revenue?period=` |
-| LLM tools | `GET /api/llm/tools-schema`, `POST /api/llm/execute` (needs `x-llm-api-key`) |
 
 ## Known gaps to come back to
 

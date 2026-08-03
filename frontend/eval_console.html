@@ -124,6 +124,11 @@
     place-items: center; border-radius: 10px; background: #e7ecef; color: #45545c;
     font-size: 10px;
   }
+  .inspector-tab .count.error-count { background: #fde2e1; color: #a32622; }
+  .trace-turn-title .iter-cap-warning {
+    margin-left: 6px; padding: 1px 6px; border-radius: 8px; background: #fde2e1;
+    color: #a32622; font-size: 9.5px; font-weight: 700; white-space: nowrap;
+  }
   .inspector-panel { flex: 1; min-height: 0; overflow: hidden; }
   .inspector-panel[hidden] { display: none; }
   #flowPanel:not([hidden]) { display: flex; flex-direction: column; }
@@ -386,6 +391,8 @@
     .status-badge.success { background: #123c2c; color: #7ce4ac; }
     .status-badge.error { background: #4a2323; color: #ffaaa7; }
     .status-badge.handoff { background: #493718; color: #ffd28a; }
+    .inspector-tab .count.error-count { background: #4a2323; color: #ffaaa7; }
+    .trace-turn-title .iter-cap-warning { background: #4a2323; color: #ffaaa7; }
   }
 
   @media (max-width: 1100px) {
@@ -495,14 +502,14 @@
     </div>
     <div class="inspector-tabs" role="tablist" aria-label="LLM inspector views">
       <button class="inspector-tab active" id="toolCallsTab" data-panel="toolCallsPanel" role="tab" aria-selected="true">
-        Tool calls <span class="count" id="toolCallTotal">0</span>
+        Tool calls <span class="count" id="toolCallTotal">0</span><span class="count error-count" id="toolCallErrorCount" style="display:none;" title="Tool calls that errored or required staff handoff">0</span>
       </button>
       <button class="inspector-tab" id="flowTab" data-panel="flowPanel" role="tab" aria-selected="false">Flow</button>
     </div>
     <div id="toolCallsPanel" class="inspector-panel trace-panel" role="tabpanel">
       <div class="trace-toolbar" aria-label="Tool call filters">
         <button class="trace-filter active" data-filter="all" type="button">All</button>
-        <button class="trace-filter" data-filter="errors" type="button">Errors / handoff</button>
+        <button class="trace-filter" data-filter="errors" type="button">Errors / handoff <span id="filterErrorsCount"></span></button>
         <button class="trace-filter" data-filter="writes" type="button">Writes</button>
       </div>
       <div id="traceHistory" class="trace-history" aria-live="polite"></div>
@@ -728,6 +735,10 @@ const WRITE_TOOLS = new Set([
 let traceTurns = [];
 let traceTurnCounter = 0;
 let activeTraceFilter = 'all';
+// Mirrors app/orchestrator.py's MAX_TOOL_ITERATIONS constant. Not fetched from
+// the backend (no endpoint exposes it) — if that constant changes, update this
+// too, or the cap-warning below will fire a turn late/early.
+const MAX_TOOL_ITERATIONS = 9;
 
 function parseToolResult(toolCall) {
   if (toolCall && typeof toolCall.result === 'object') return toolCall.result;
@@ -808,6 +819,19 @@ function renderTraceHistory() {
   if (!historyEl) return;
   const totalCalls = traceTurns.reduce((sum, turn) => sum + turn.calls.length, 0);
   document.getElementById('toolCallTotal').textContent = String(totalCalls);
+  const issueCalls = traceTurns.reduce((sum, turn) => sum + turn.calls.filter(call => {
+    const kind = inspectToolOutcome(call).kind;
+    return kind === 'error' || kind === 'handoff';
+  }).length, 0);
+  const errorBadge = document.getElementById('toolCallErrorCount');
+  if (issueCalls > 0) {
+    errorBadge.textContent = String(issueCalls);
+    errorBadge.style.display = '';
+  } else {
+    errorBadge.style.display = 'none';
+  }
+  const filterErrorsCountEl = document.getElementById('filterErrorsCount');
+  if (filterErrorsCountEl) filterErrorsCountEl.textContent = issueCalls > 0 ? `(${issueCalls})` : '';
   if (!traceTurns.length) {
     historyEl.innerHTML = '<div class="trace-empty">No requests yet.<br>Each turn will show the actual tool name, executed args, result, iteration, parallel/sequential mode, gate reason, status, and duration.</div>';
     return;
@@ -823,6 +847,15 @@ function renderTraceHistory() {
       const kind = inspectToolOutcome(call).kind;
       return kind === 'error' || kind === 'handoff';
     });
+    // Cross-checks against the backend's real ceiling — a turn whose model+tool
+    // loop reached iteration 9 without producing a final reply raises
+    // ToolLoopError server-side (see app/orchestrator.py MAX_TOOL_ITERATIONS);
+    // this is the client-visible signal that happened, since the trace itself
+    // still comes back with everything completed up to that point.
+    const hitIterationCap = turn.calls.some(call => call.iteration === MAX_TOOL_ITERATIONS);
+    const iterCapWarning = hitIterationCap
+      ? `<span class="iter-cap-warning" title="Tool loop reached MAX_TOOL_ITERATIONS (${MAX_TOOL_ITERATIONS}) without a final reply">⚠ hit iteration cap</span>`
+      : '';
     const callsHtml = matchingCalls.length
       ? matchingCalls.map(call => renderToolCall(call, turn.calls.indexOf(call), turn.id)).join('')
       : (turn.requestError
@@ -833,7 +866,7 @@ function renderTraceHistory() {
       : '';
     rendered.push(`<article class="trace-turn ${hasIssue ? 'has-error' : ''}">
       <header class="trace-turn-head">
-        <div class="trace-turn-title"><strong>Turn ${turn.id}</strong><span>${turn.calls.length} call${turn.calls.length === 1 ? '' : 's'}</span><span class="turn-latency">${Math.round(turn.latency || 0)} ms total</span></div>
+        <div class="trace-turn-title"><strong>Turn ${turn.id}</strong><span>${turn.calls.length} call${turn.calls.length === 1 ? '' : 's'}</span>${iterCapWarning}<span class="turn-latency">${Math.round(turn.latency || 0)} ms total</span></div>
         <div class="trace-message" title="${escapeHtml(turn.message)}">Customer: ${escapeHtml(turn.message)}</div>
       </header>
       ${stateHtml}
@@ -919,8 +952,10 @@ function toolStepHtml(t, i) {
     argsResult = JSON.stringify({ args: t.args, result: t.result }, null, 2);
   }
   const order = t.execution_order == null ? '' : ` · executed #${t.execution_order}`;
+  const iter = t.iteration == null ? '' : ` · iter ${t.iteration}/${MAX_TOOL_ITERATIONS}`;
+  const duration = t.duration_ms == null ? '' : ` · ${t.duration_ms} ms`;
   return `<div class="flow-tool">
-    <div class="flow-tool-name"><span class="n">${i + 1}</span> ${escapeHtml(t.tool)}${escapeHtml(order)}</div>
+    <div class="flow-tool-name"><span class="n">${i + 1}</span> ${escapeHtml(t.tool)}${escapeHtml(order)}${escapeHtml(iter)}${escapeHtml(duration)}</div>
     <details><summary></summary><pre>${escapeHtml(argsResult)}</pre></details>
   </div>`;
 }

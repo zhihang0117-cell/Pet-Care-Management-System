@@ -376,7 +376,15 @@ body.dash-page .booking-card { border: none; }
    z-index above .bk-modal-backdrop (200 in index.css) since a confirm can
    fire from inside an already-open detail modal (e.g. "Delete this
    booking?" from within the booking edit modal). */
-body.dash-page .toast-container {
+/* Also used by web/index.js's own showToast() copy on the onboarding pages
+   (register.html/reg-setup.html/login.html use body.auth-page/.setup-page,
+   not .dash-page, and don't load common.js) so those raw browser alert()
+   calls could be replaced with the same non-blocking, styled toast the rest
+   of the dashboard already uses instead of a jarring native dialog on a
+   demo audience's very first page. */
+body.dash-page .toast-container,
+body.auth-page .toast-container,
+body.setup-page .toast-container {
   position: fixed;
   top: 20px;
   right: 20px;
@@ -386,7 +394,9 @@ body.dash-page .toast-container {
   gap: 8px;
   max-width: 360px;
 }
-body.dash-page .toast {
+body.dash-page .toast,
+body.auth-page .toast,
+body.setup-page .toast {
   padding: 12px 16px;
   border-radius: var(--radius-small);
   background-color: var(--card-white);
@@ -399,10 +409,18 @@ body.dash-page .toast {
   transform: translateX(16px);
   transition: opacity 0.2s ease, transform 0.2s ease;
 }
-body.dash-page .toast-visible { opacity: 1; transform: translateX(0); }
-body.dash-page .toast-error { border-left-color: #DC2626; }
-body.dash-page .toast-success { border-left-color: #059669; }
-body.dash-page .toast-info { border-left-color: #1E40AF; }
+body.dash-page .toast-visible,
+body.auth-page .toast-visible,
+body.setup-page .toast-visible { opacity: 1; transform: translateX(0); }
+body.dash-page .toast-error,
+body.auth-page .toast-error,
+body.setup-page .toast-error { border-left-color: #DC2626; }
+body.dash-page .toast-success,
+body.auth-page .toast-success,
+body.setup-page .toast-success { border-left-color: #059669; }
+body.dash-page .toast-info,
+body.auth-page .toast-info,
+body.setup-page .toast-info { border-left-color: #1E40AF; }
 
 body.dash-page .confirm-modal-backdrop {
   position: fixed;

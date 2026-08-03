@@ -30,7 +30,6 @@ class BookingCommand:
     selected_slot: str = ""
     phone_number: str = ""
     price_quote: float | None = None
-    idempotency_key: str = ""
     # BOARDING only — check-in is preferred_date; without this the write path
     # (relational_actions.create_booking) silently defaults every stay to a
     # single night regardless of what the customer asked for.

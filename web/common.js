@@ -539,8 +539,16 @@ function setupModalEvents() {
   });
 
   document.getElementById("doneServiceBtn").addEventListener("click", async () => {
+    // Deep-link to this specific booking's own payment (payment.html's
+    // restoreRecordFromUrl already supports a ?payment_id= param and opens
+    // openPaymentDetail with it) instead of dumping staff on the generic
+    // pending-payments list — closeModal() clears record-url params first,
+    // so read the booking's payment_id before calling it, not after.
+    const bookingId = document.getElementById("bookingId").value;
+    const record = bookingId ? findBookingRecord(bookingId) : null;
+    const paymentId = record && record.raw ? record.raw.payment_id : null;
     closeModal();
-    location.href = "payment.html";
+    location.href = paymentId ? `payment.html?payment_id=${encodeURIComponent(paymentId)}` : "payment.html";
   });
 
   document.getElementById("cancelBookingBtn").addEventListener("click", async () => {
@@ -602,8 +610,31 @@ function setupCalendarSlotEvents() {
 
       const newDate = cell.dataset.date;
       const newTime = cell.dataset.time || booking.time;
-      if (!canAddBookingToSlot(newDate, newTime, booking.staffId, booking.id)) {
-        showToast("This slot is not available. Maximum 3 bookings are allowed per timeslot, and staff cannot be duplicated.");
+      if (getSlotBookings(newDate, newTime, booking.id).length >= 3) {
+        showToast("This slot is not available. Maximum 3 bookings are allowed per timeslot.");
+        return;
+      }
+      // bookingDateTimePayload only overrides date/start-time (check_out_time
+      // is left as-is server-side, and check_out_date shifts to preserve the
+      // stay length) — mirror that here too, so the drag-drop pre-check
+      // models the SAME real interval the server will actually validate,
+      // not just the new start time.
+      const movedPayload = bookingDateTimePayload(booking, newDate, newTime);
+      const existingCheckOutTime = booking.raw && booking.raw.check_out_time
+        ? String(booking.raw.check_out_time).slice(0, 5)
+        : undefined;
+      const conflictFields = booking.type === "grooming"
+        ? { date: newDate, time: newTime }
+        : booking.type === "daycare"
+        ? { date: newDate, checkInTime: newTime, checkOutTime: existingCheckOutTime }
+        : {
+            checkInDate: movedPayload.check_in_date,
+            checkInTime: movedPayload.check_in_time,
+            checkOutDate: movedPayload.check_out_date,
+            checkOutTime: existingCheckOutTime,
+          };
+      if (staffHasConflictingBooking(booking.type, conflictFields, booking.staffId, booking.id)) {
+        showToast("This staff member already has a booking that overlaps this time.");
         return;
       }
       rescheduleBooking(booking, newDate, newTime);
@@ -1427,6 +1458,10 @@ async function saveBooking() {
     payload.check_out_time = checkOutTime;
     payload.special_instruction = document.getElementById("specialInstruction").value.trim() || null;
 
+    const daycareAddOnName = document.getElementById("addOnName").value.trim();
+    payload.add_on = daycareAddOnName || null;
+    payload.add_on_price = daycareAddOnName ? Number(document.getElementById("addOnPrice").value || 0) : null;
+
     slotDate = date;
     slotTime = checkInTime;
   } else if (type === "boarding") {
@@ -1461,10 +1496,28 @@ async function saveBooking() {
   }
 
   const leavingActiveSchedule = statusInternal === "cancelled" || statusInternal === "no_show";
-  if (!leavingActiveSchedule && slotDate && slotTime &&
-      !canAddBookingToSlot(slotDate, slotTime, staffId, bookingId)) {
-    showToast("This booking cannot be saved. The selected timeslot already has 3 bookings or the selected staff is already assigned at this time.");
-    return false;
+  if (!leavingActiveSchedule && slotDate && slotTime) {
+    if (getSlotBookings(slotDate, slotTime, bookingId).length >= 3) {
+      showToast("This booking cannot be saved. The selected timeslot already has 3 bookings.");
+      return false;
+    }
+    const conflictFields = type === "grooming"
+      ? { date: payload.booking_date, time: payload.booking_time }
+      : type === "daycare"
+      ? { date: payload.booking_date, checkInTime: payload.check_in_time, checkOutTime: payload.check_out_time }
+      : {
+          checkInDate: payload.check_in_date,
+          checkInTime: payload.check_in_time,
+          checkOutDate: payload.check_out_date,
+          checkOutTime: payload.check_out_time,
+        };
+    if (staffHasConflictingBooking(type, conflictFields, staffId, bookingId)) {
+      // Same wording the server itself raises (staff_has_conflicting_booking
+      // in booking_conflict_prevention_migration.sql) so a caught-here
+      // warning and a caught-at-Save error never read as two different bugs.
+      showToast("This staff member already has a booking that overlaps this time.");
+      return false;
+    }
   }
 
   const submitBtn = document.querySelector("#bookingForm button[type=submit]");
@@ -1679,24 +1732,84 @@ function isStaffAlreadyBooked(date, time, staffId, excludeBookingId = "") {
   });
 }
 
+// Real conflict window per service type, mirroring
+// backend/sql/booking_conflict_prevention_migration.sql's
+// staff_has_conflicting_booking exactly (grooming: 90 continuous minutes
+// from booking_time; daycare: the full check-in-to-check-out visit;
+// boarding: two brief 10-minute check-in/check-out windows, not the whole
+// stay) — isStaffAlreadyBooked above only catches an EXACT time-string
+// match, so two nearby-but-different slots that the server would actually
+// reject as overlapping (e.g. 09:00 and 09:30 for a 90-minute grooming
+// appointment) sailed through this client-side check with no warning and
+// only failed after Save, via a raw database error. Used specifically by
+// saveBooking()'s pre-submit check below, where the full service-specific
+// time/duration fields are already known; the calendar-grid helpers above
+// stay on the simpler exact-hour-bucket model since they only render an
+// advisory "available staff for this hour" list before a service type has
+// even been chosen.
+const GROOMING_DURATION_MINUTES = 90;
+const BOARDING_CHECKPOINT_MINUTES = 10;
+
+function bookingIntervalStartMs(dateStr, timeStr) {
+  if (!dateStr || !timeStr) return null;
+  const [hours, minutes] = timeStr.split(":").map(Number);
+  if (Number.isNaN(hours) || Number.isNaN(minutes)) return null;
+  const start = new Date(`${dateStr}T00:00:00`);
+  if (Number.isNaN(start.getTime())) return null;
+  return start.getTime() + (hours * 60 + minutes) * 60000;
+}
+
+function bookingConflictIntervals(type, fields) {
+  const { date, time, checkInDate, checkInTime, checkOutDate, checkOutTime } = fields || {};
+  if (type === "grooming") {
+    const start = bookingIntervalStartMs(date, time);
+    return start == null ? [] : [[start, start + GROOMING_DURATION_MINUTES * 60000]];
+  }
+  if (type === "daycare") {
+    const start = bookingIntervalStartMs(date, checkInTime || time);
+    const end = bookingIntervalStartMs(date, checkOutTime);
+    return start == null || end == null ? [] : [[start, end]];
+  }
+  if (type === "boarding") {
+    const intervals = [];
+    const inStart = bookingIntervalStartMs(checkInDate || date, checkInTime || time);
+    if (inStart != null) intervals.push([inStart, inStart + BOARDING_CHECKPOINT_MINUTES * 60000]);
+    const outStart = bookingIntervalStartMs(checkOutDate, checkOutTime);
+    if (outStart != null) intervals.push([outStart, outStart + BOARDING_CHECKPOINT_MINUTES * 60000]);
+    return intervals;
+  }
+  return [];
+}
+
+function intervalsOverlap(a, b) {
+  return a[0] < b[1] && b[0] < a[1];
+}
+
+function staffHasConflictingBooking(type, fields, staffId, excludeBookingId = "") {
+  const newIntervals = bookingConflictIntervals(type, fields);
+  if (!newIntervals.length) return false;
+  return bookingRecords.some(booking => {
+    if (String(booking.staffId) !== String(staffId)) return false;
+    if (booking.id === excludeBookingId) return false;
+    if (booking.status === "cancelled" || booking.status === "no_show") return false;
+    const existingIntervals = bookingConflictIntervals(booking.type, {
+      date: booking.date,
+      time: booking.time,
+      checkInDate: booking.checkInDate || booking.date,
+      checkInTime: booking.time,
+      checkOutDate: booking.checkOutDate,
+      checkOutTime: booking.raw && booking.raw.check_out_time
+        ? String(booking.raw.check_out_time).slice(0, 5)
+        : undefined,
+    });
+    return newIntervals.some(a => existingIntervals.some(b => intervalsOverlap(a, b)));
+  });
+}
+
 function getAvailableStaffForSlot(date, time, excludeBookingId = "") {
   return bookingStaffOptions.filter(member => {
     return !isStaffAlreadyBooked(date, time, member.staff_id, excludeBookingId);
   });
-}
-
-function canAddBookingToSlot(date, time, staffId, excludeBookingId = "") {
-  const slotBookings = getSlotBookings(date, time, excludeBookingId);
-
-  if (slotBookings.length >= 3) {
-    return false;
-  }
-
-  if (isStaffAlreadyBooked(date, time, staffId, excludeBookingId)) {
-    return false;
-  }
-
-  return true;
 }
 
 function renderAddSlotArea(date, time) {
@@ -2594,7 +2707,7 @@ function buildRealActionQueue(filter) {
       detail: `PAY-${String(p.payment_id).padStart(4, '0')}${p.service ? ' — ' + p.service : ''} · RM ${Number(p.final_amount || 0).toFixed(2)}`,
       statusKey: 'pending', statusLabel: 'Needs Verification',
       sla: slaBadgeFromTimestamp('payment', p.created_at),
-      actionLabel: 'Open Payment', actionOnclick: `location.href='payment.html'`,
+      actionLabel: 'Open Payment', actionOnclick: `location.href='payment.html?payment_id=${p.payment_id}'`,
       rowOnclick: `openRealQueueItemDetail('payment',${p.payment_id})`
     });
   });
@@ -2895,13 +3008,20 @@ async function confirmRealBooking(id) {
 async function resolveRealEnquiry(id) {
   const enquiry = enquiryRecords.find(e => e.id === id);
   if (!enquiry) return;
-  const replyText = await showPrompt("Enter the reply sent to this customer:");
+  // This only writes reply_text/reply_date to the messages row — there is no
+  // outbound WhatsApp send anywhere in this path (backend/src/routes/
+  // chatMessages.js's PATCH handler). The prompt used to read "Enter the
+  // reply sent to this customer", which flatly implied delivery; matched to
+  // enquiries.html's own honest wording for the same action instead ("This
+  // records the staff reply. Use Open WhatsApp to send it to the customer.").
+  const replyText = await showPrompt("Write the staff reply to record for this enquiry (this saves the reply here — it does not send WhatsApp automatically; use Open WhatsApp to actually send it to the customer):");
   if (!replyText?.trim()) return;
   const stamp = todayStampLocal(); // reused from STAFF MANAGEMENT section (generic {date,time} helper)
   try {
     await api.patch(`/chat-messages/${id}`, { reply_text: replyText.trim(), reply_date: stamp.date, reply_time: stamp.time });
     closeDetailModal();
     await refreshDailyOverviewData();
+    showToast("Reply saved. Remember to actually send it to the customer via Open WhatsApp — this did not send it automatically.");
   } catch (error) {
     showToast(error.message || 'Failed to update enquiry.');
   }
@@ -4099,11 +4219,22 @@ async function cancelPointRedemption(redemptionId) {
 
 async function decidePointRedemption(redemptionId, status) {
   const action = status === "Approved" ? "approve" : "reject";
-  if (!await showConfirm(`${action.charAt(0).toUpperCase() + action.slice(1)} REDM-${redemptionId}?`)) return;
+  let reason = "";
+  if (status === "Rejected") {
+    // decide_redemption now requires a reason when rejecting (backend/sql/
+    // redemption_rejection_reason_migration.sql) — a rejected customer used
+    // to get a bare "Rejected" with no explanation anywhere, and staff had
+    // no field to record why, unlike cancel_approved_redemption which
+    // already required one.
+    reason = await showPrompt(`Why is REDM-${redemptionId} being rejected? (shown to staff, and to the customer if a rejection notice is sent)`);
+    if (!reason?.trim()) return;
+  } else if (!await showConfirm(`${action.charAt(0).toUpperCase() + action.slice(1)} REDM-${redemptionId}?`)) {
+    return;
+  }
   const buttons = detailForm.querySelectorAll(".form-actions button");
   buttons.forEach(button => { button.disabled = true; });
   try {
-    await api.decideRedemption(redemptionId, status);
+    await api.decideRedemption(redemptionId, status, reason.trim() || undefined);
     closeDetailPage();
     await refreshLoyaltyPageData();
   } catch (error) {
@@ -4216,8 +4347,48 @@ function openLoyaltyMemberDetail(loyaltyId) {
     <div class="form-actions">
       <button type="button" class="cancel-btn" onclick="closeDetailPage()"><img src="icon/close-circle.png" alt="" class="btn-icon">Close</button>
       <a class="btn btn-secondary" href="payment.html"><img src="icon/payment-card.png" alt="" class="btn-icon">Open Payment</a>
+      ${isManager(getCurrentAccount()) ? `
+      <button type="button" class="btn btn-secondary" id="adjustPointsBtn" onclick="adjustMemberPointsPrompt(${member.loyalty_id}, ${Number(member.points_balance)})">Adjust Points</button>
+      ` : ""}
     </div>
   `;
+}
+
+/**
+ * The backend's PATCH /member-info/:id/manual-adjustment (manager-only,
+ * requires a non-empty reason — backend/src/routes/memberInfo.js) already
+ * existed with no frontend caller at all, so staff had no way to correct a
+ * data-entry mistake on a member's balance short of editing Supabase
+ * directly. This is explicitly NOT the normal earn/spend path (that stays
+ * verify_payment/decide_redemption, which keeps the redemption ledger
+ * consistent) — for data-entry corrections only, hence requiring a reason
+ * every time.
+ */
+async function adjustMemberPointsPrompt(loyaltyId, currentBalance) {
+  const rawBalance = await showPrompt(
+    `New points balance for LOY-${loyaltyId} (currently ${currentBalance} pts):`,
+    { defaultValue: String(currentBalance) }
+  );
+  if (rawBalance === null) return;
+  const newBalance = Number(String(rawBalance).trim());
+  if (!Number.isInteger(newBalance) || newBalance < 0) {
+    showToast("Points balance must be a non-negative whole number.");
+    return;
+  }
+  const reason = await showPrompt("Reason for this manual adjustment (required, shown in the audit history):");
+  if (!reason?.trim()) return;
+
+  const button = document.getElementById("adjustPointsBtn");
+  if (button) button.disabled = true;
+  try {
+    await api.adjustMemberPoints(loyaltyId, newBalance, reason.trim());
+    closeDetailPage();
+    await refreshLoyaltyPageData();
+  } catch (error) {
+    showToast(error.message || "Failed to adjust points balance.");
+  } finally {
+    if (button) button.disabled = false;
+  }
 }
 
 /* ==========================================================================
@@ -4612,10 +4783,19 @@ async function confirmVerifyPayment(paymentId) {
     return;
   }
 
+  const button = document.getElementById("verifyConfirmBtn");
+  if (button) button.disabled = true;
   try {
     await api.verifyPayment(paymentId, { couponId, paymentMethod });
     closeDetailPage();
     await refreshPaymentPageData();
+    // The invoice PDF is generated + sent server-side as fire-and-forget
+    // (backend/src/routes/payments.js POST /:id/verify calls the AI backend's
+    // /documents/invoice and only logs a warning on failure, backend/src/lib/
+    // aiBackend.js) — there is no follow-up notification either way, so staff
+    // otherwise have no signal that generation/delivery could still fail
+    // silently after this point.
+    showToast(`PAY-${String(paymentId).padStart(4, "0")} verified. Generating and sending the invoice in the background — check the customer's WhatsApp/payment history if it doesn't arrive shortly.`);
   } catch (error) {
     if (note) {
       note.style.color = "#DC2626";
@@ -4623,6 +4803,8 @@ async function confirmVerifyPayment(paymentId) {
     } else {
       showToast(error.message || "Failed to verify payment.");
     }
+  } finally {
+    if (button) button.disabled = false;
   }
 }
 
@@ -4666,6 +4848,8 @@ async function confirmRefundPayment(paymentId) {
   }
   if (!await showConfirm(`Refund PAY-${String(paymentId).padStart(4, "0")}? Revenue and linked loyalty points will be reversed.`)) return;
 
+  const button = document.getElementById("refundConfirmBtn");
+  if (button) button.disabled = true;
   try {
     await api.refundPayment(paymentId, reason);
     closeDetailPage();
@@ -4677,6 +4861,8 @@ async function confirmRefundPayment(paymentId) {
     } else {
       showToast(error.message || "Failed to refund payment.");
     }
+  } finally {
+    if (button) button.disabled = false;
   }
 }
 
@@ -4820,7 +5006,7 @@ async function openPaymentDetail(paymentId) {
       <button type="button" class="cancel-btn" onclick="closeDetailPage()"><img src="icon/close-circle.png" alt="" class="btn-icon">Close</button>
       ${awaitingVerification && !hasApprovedRedemption && !hasPendingRedemption ? `<button type="button" class="btn btn-secondary" id="requestRedemptionBtn">Request Point Redemption</button>` : ""}
       ${awaitingVerification ? `<button type="button" class="save-btn" id="verifyConfirmBtn" ${hasUnapprovedRedemption ? "disabled" : ""}><img src="icon/confirm-circle.png" alt="" class="btn-icon solid-btn-icon">Verify Payment</button>` : ""}
-      ${canRefund ? `<button type="button" class="btn btn-secondary bk-danger-btn" onclick="confirmRefundPayment(${p.payment_id})">Refund Payment</button>` : ""}
+      ${canRefund ? `<button type="button" class="btn btn-secondary bk-danger-btn" id="refundConfirmBtn" onclick="confirmRefundPayment(${p.payment_id})">Refund Payment</button>` : ""}
     </div>
   `;
 
@@ -5223,23 +5409,6 @@ async function deleteEnquiry(id) {
   }
 }
 
-async function resolveEnquiryAndRefresh(id) {
-  // NOTE: deliberately not reusing resolveRealEnquiry() (built for
-  // dailyoverview.html) — it calls closeDetailModal()/renderRealDailyOverview(),
-  // which target #detailModal/#actionCards etc., elements that don't exist
-  // on this page (enquiries.html uses #detailPage/closeDetailPage()).
-  const stamp = todayStampLocal();
-  const replyText = await showPrompt("Enter the reply sent to this customer:");
-  if (!replyText?.trim()) return;
-  try {
-    await api.patch(`/chat-messages/${id}`, { reply_text: replyText.trim(), reply_date: stamp.date, reply_time: stamp.time });
-    closeDetailPage();
-    await refreshEnquiryPageData();
-  } catch (error) {
-    showToast(error.message || "Failed to update enquiry.");
-  }
-}
-
 /* ==========================================================================
    STAFF MANAGEMENT (staff.html)
    Duty status per staff/day = approved leave first, else the staff's weekly
@@ -5597,7 +5766,36 @@ function openStaffForm(staffId = null) {
 }
 
 async function removeStaffMember(staffId) {
-  if (!await showConfirm("Remove this staff member? This cannot be undone.")) return;
+  // The delete route (crudFactory's generic DELETE, backend/src/routes/staff.js)
+  // does a plain row delete with no check for bookings still assigned to this
+  // staff member — deleting someone with live Pending/Scheduled bookings
+  // either orphans staff_id on those rows or fails on a raw FK-constraint
+  // error with no explanation. Check first so staff gets a real warning
+  // (and a chance to reassign) instead of either outcome happening blind.
+  let activeBookingCount = 0;
+  try {
+    const results = await Promise.all(
+      ["grooming", "daycare", "boarding"].map(type =>
+        api.listBookings(type, { staff_id: staffId }).catch(() => [])
+      )
+    );
+    activeBookingCount = results
+      .flat()
+      .filter(b => ["Pending", "Scheduled"].includes(b.booking_status)).length;
+  } catch (error) {
+    // A failed pre-check must not silently let a blind delete through —
+    // treat "couldn't verify" the same as "assume there might be bookings"
+    // and ask staff to confirm they've already checked manually.
+    if (!await showConfirm("Could not check this staff member's upcoming bookings. Remove anyway? This cannot be undone.")) return;
+    activeBookingCount = -1;
+  }
+
+  if (activeBookingCount > 0) {
+    showToast(`Cannot remove: this staff member still has ${activeBookingCount} active (Pending/Scheduled) booking${activeBookingCount === 1 ? "" : "s"} assigned. Reassign or resolve ${activeBookingCount === 1 ? "it" : "them"} first.`);
+    return;
+  }
+
+  if (activeBookingCount === 0 && !await showConfirm("Remove this staff member? This cannot be undone.")) return;
 
   try {
     await api.del(`/staff/${staffId}`);

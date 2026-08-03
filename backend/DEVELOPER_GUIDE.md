@@ -12,7 +12,7 @@ recipes for extending it.
 HTTP request
    │
    ▼
-resolveCompany  (middleware/auth.js) ── attaches req.companyId
+requireAuthUser (middleware/authUser.js) ── verifies the Supabase token, attaches req.companyId/req.role
    │
    ▼
 route handler   (routes/*.js) ── thin: parses input, calls a service, shapes the response
@@ -27,10 +27,9 @@ Supabase client (supabaseClient.js) ── talks to Postgres with the service_ro
 **Rule of thumb: routes are thin, services hold logic.** A route file should
 mostly be "read the request, call a function, send the response". If you
 find yourself writing `if` statements about prices, points, or multi-table
-writes inside a `routes/*.js` file, that logic belongs in `lib/*.js` instead
-— so both the REST API *and* the LLM tools (`llm/tools.js`) can call it
-without duplicating it. `bookingService.js` and `paymentService.js` are the
-reference examples of this pattern.
+writes inside a `routes/*.js` file, that logic belongs in `lib/*.js` instead.
+`bookingService.js` and `paymentService.js` are the reference examples of
+this pattern.
 
 ## 2. Folder structure
 
@@ -39,7 +38,8 @@ src/
   server.js              — Express app setup, middleware, route mounting, error handler
   supabaseClient.js       — the one Supabase client (service_role key), imported everywhere
   middleware/
-    auth.js               — resolveCompany (tenant scoping), requireLlmKey, asyncHandler
+    auth.js               — asyncHandler
+    authUser.js            — requireAuthUser (verified-session tenant scoping), requireManager
   lib/
     pricing.js            — computeFinalAmount, assertCanRedeem, getLoyaltyTier — pure functions, no I/O
     crudFactory.js         — makeCrudRouter(): generates list/get/create/update/delete for a simple table
@@ -62,12 +62,8 @@ src/
     bookings.js            — thin wrapper around bookingService
     payments.js            — thin wrapper around paymentService
     dashboard.js           — aggregation queries, no writes
-    llm.js                 — exposes llm/tools.js over HTTP, gated by requireLlmKey
-  llm/
-    tools.js               — TOOL_SCHEMA (function-calling definitions) + executeTool() dispatcher
-    tableAllowlist.js       — which tables/actions the LLM's generic CRUD tools may touch
 sql/
-  verify_payment_function.sql — atomic payment/loyalty/booking completion (see §5)
+  verify_payment_function.sql — atomic payment/loyalty/booking completion (see §4)
   crud_consistency_functions.sql — transactional customer deletion and booking/payment CRUD
   crud_hardening_migration.sql — points-adjustment audit and serialized account guards
 frontend integration/
@@ -80,17 +76,15 @@ Every table (except `companies_rows` itself) has a `company_id` column.
 Every query in this codebase filters on it — that's what keeps two
 different pet-care businesses' data from leaking into each other.
 
-- Two different middlewares resolve `req.companyId`, for two different callers:
-  - `requireAuthUser` (`middleware/authUser.js`) — for real logged-in humans.
-    Verifies the `Authorization: Bearer <token>` against Supabase, then looks
-    up `company_id`/`role` from **`accounts_rows`** (never from `staff` —
-    `staff` rows have no `auth_user_id` and aren't login identities at all,
-    they're just scheduling/display data). This is what every business route
-    (`/api/customers`, `/api/bookings/...`, etc.) uses.
-  - `resolveCompany` (`middleware/auth.js`) — header-based (`x-company-id`),
-    used only by `/api/llm/*`. An LLM/agent isn't a logged-in human with a
-    Supabase session, so it authenticates with its own `LLM_API_KEY` instead
-    and is simply told which company it's operating for.
+- `requireAuthUser` (`middleware/authUser.js`) resolves `req.companyId` for
+  every route. Verifies the `Authorization: Bearer <token>` against Supabase,
+  then looks up `company_id`/`role` from **`accounts_rows`** (never from
+  `staff` — `staff` rows have no `auth_user_id` and aren't login identities
+  at all, they're just scheduling/display data). This is what every business
+  route (`/api/customers`, `/api/bookings/...`, etc.) uses — there's no
+  header-trust fallback anywhere in this codebase; a request that can't be
+  verified against a real Supabase session is rejected, never quietly
+  defaulted to some company.
 - **Every** service function takes `companyId` as an explicit parameter and
   passes it to every `.eq("company_id", companyId)` call. When you add a new
   query, copy this pattern — don't rely on RLS to do it for you, because
@@ -103,19 +97,7 @@ different pet-care businesses' data from leaking into each other.
   so it can't go through `requireAuthUser` or ordinary RLS-governed writes;
   it's a dedicated, atomic, server-side bootstrap step instead.
 
-## 4. The LLM allowlist
-
-`llm/tableAllowlist.js` is a safety boundary, not a technicality — read it
-before adding a new LLM tool. The rule: anything that touches loyalty points
-or the payment ledger must go through a dedicated service function
-(`verifyPayment`, or the `request_redemption`/`decide_redemption`/
-`refund_payment` SQL RPCs for the points-redemption-approval flow), never
-through the generic `create_record`/`update_record` tools. If you add a new
-table with money/points implications, default it to
-`{ create: false, update: false, delete: false }` and write a dedicated tool
-instead, following `verify_payment`'s pattern.
-
-## 5. Why one thing lives in SQL instead of Node
+## 4. Why one thing lives in SQL instead of Node
 
 `verify_payment()` is a Postgres function, not a JS function, for one
 reason: **row locking**. Two staff members could click "Verify" on the same
@@ -129,7 +111,7 @@ write. If you ever need another "read-check-write, must not race" operation,
 follow this same pattern (a `plpgsql` function called via `supabase.rpc()`)
 rather than trying to do it with plain client calls.
 
-## 6. Recipes
+## 5. Recipes
 
 ### Add a new simple CRUD table (no special logic)
 
@@ -145,7 +127,6 @@ rather than trying to do it with plain client calls.
    });
    ```
 3. Mount it in `server.js`: `app.use("/api/your-table", yourTableRouter);`
-4. (Optional) Add it to `llm/tableAllowlist.js` if the LLM should be able to touch it.
 
 You now have list (with filters/search/limit), get, create, update, delete —
 all company-scoped — for free.
@@ -165,18 +146,6 @@ Follow `bookingService.js`/`paymentService.js`:
      res.json(result);
    }));
    ```
-3. If the LLM should be able to trigger it too, add a case to
-   `executeTool()` in `llm/tools.js` that calls the *same* service function,
-   and add a matching entry to `TOOL_SCHEMA`.
-
-### Add a new LLM tool
-
-1. Add an entry to `TOOL_SCHEMA` in `llm/tools.js` — `name`, `description`,
-   `input_schema` (JSON Schema). Be specific in the description; that's what
-   the LLM uses to decide when to call it.
-2. Add a `case` to `executeTool()` that calls your service function.
-3. Test it directly against `/api/llm/execute` before wiring it to an actual
-   LLM (see §7) — much faster feedback loop.
 
 ### Wire up another frontend page
 
@@ -193,11 +162,13 @@ Follow the `payment-page.js` example:
    loyalty.html, staff.html, dashboard.html, and profile.html all follow the
    same recipe.
 
-## 7. Testing endpoints locally
+## 6. Testing endpoints locally
 
 With the server running (`npm start`), use curl or a REST client. Every
-request needs `Content-Type: application/json` for bodies, and can pass
-`x-company-id: 1` (or rely on the `.env` default).
+request needs `Content-Type: application/json` for bodies, and a real
+`Authorization: Bearer <supabase access token>` from a logged-in test
+account (get one via `supabase.auth.signInWithPassword` or the login page) —
+there is no header-based company override for local testing.
 
 ```bash
 # List today's pending grooming bookings
@@ -218,12 +189,6 @@ curl -X POST http://localhost:4000/api/payments/1/verify \
 
 # Dashboard summary
 curl http://localhost:4000/api/dashboard/summary
-
-# LLM tool call (note the extra header)
-curl -X POST http://localhost:4000/api/llm/execute \
-  -H "Content-Type: application/json" \
-  -H "x-llm-api-key: <your LLM_API_KEY>" \
-  -d '{"tool":"list_records","input":{"table":"pet_profiles","filters":{"pet_type":"Dog"}}}'
 ```
 
 If you get `{"error":"..."}` with a 4xx status, that's an *expected*
@@ -232,7 +197,7 @@ it's written for a human. A 500 means something unexpected broke; check the
 server's console log (the error handler in `server.js` logs the full error
 before responding).
 
-## 8. Common gotchas
+## 7. Common gotchas
 
 - **"relation does not exist" / "column does not exist"** — your Supabase
   table/column name doesn't match what's hardcoded in the route/service.
@@ -240,10 +205,9 @@ before responding).
   payment-link column turned out to be `ment_id` (now renamed to
   `payment_id` in Supabase) and its primary key is `daycare_booking_id`
   (not `daycare_booking`, despite that being the literal CSV header) — both
-  are now correctly set in `BOOKING_TYPES` (`lib/bookingService.js`) and
-  `TABLE_ALLOWLIST` (`llm/tableAllowlist.js`). If you add new tables, always
-  double-check the *actual* Supabase schema, not just the CSV header, before
-  hardcoding a column name.
+  are now correctly set in `BOOKING_TYPES` (`lib/bookingService.js`). If you
+  add new tables, always double-check the *actual* Supabase schema, not just
+  the CSV header, before hardcoding a column name.
 - **CORS errors in the browser console** — add your frontend's origin to
   `CORS_ORIGINS` in `.env` and restart the server.
 - **Points look wrong after testing `/verify` repeatedly** — the SQL
@@ -251,20 +215,16 @@ before responding).
   verified"), specifically so you can't double-click your way into extra
   points during testing. If you need to re-test, reset that payment's
   `status` back to `Pending` in Supabase first.
-- **LLM tool call returns 403** — you tried to `create_record`/`update_record`/
-  `delete_record` on a table that's locked down in `tableAllowlist.js`. That's
-  intentional; use the dedicated tool instead (see §4).
 
-## 9. Before going to production
+## 8. Before going to production
 
 - [ ] Run all three SQL files, in order (see README).
-- [x] `DEFAULT_COMPANY_ID`/`resolveCompany` — resolved: the silent fallback
-      was removed, `x-company-id` is now required for `/api/llm/*` (400 if
-      missing) so a misconfigured agent fails loudly instead of touching the
-      wrong tenant's data.
-- [ ] Rotate `LLM_API_KEY` to a long random value and keep it out of any
-      client-side/public code — it should only ever live in your LLM
-      agent's server-side config.
+- [x] `DEFAULT_COMPANY_ID`/`resolveCompany` — resolved: the generic
+      header-trust `/api/llm/*` surface (and `resolveCompany`, which only
+      ever backed it) was removed entirely rather than hardened, since
+      nothing in the codebase called it anyway. Every remaining route
+      resolves `company_id` from a verified Supabase session
+      (`requireAuthUser`), never from client-supplied input.
 - [ ] Set `CORS_ORIGINS` to your real deployed frontend URL(s) only.
 - [ ] Consider Supabase RLS policies as defense-in-depth even though this
       backend uses `service_role` — it protects you if that key ever leaks

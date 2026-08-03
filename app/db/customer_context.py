@@ -73,6 +73,45 @@ def get_relational_company_id() -> int:
         return 1
 
 
+def resolve_company_id_from_chat_key(chat_api_key: str) -> int | None:
+    """
+    Look up which company a presented X-Chat-Key belongs to, via the
+    company_chat_key table (see backend/sql/chat_api_key_migration.sql).
+    Returns None if the key is blank, the table doesn't exist yet (fresh
+    deployment that hasn't run the migration), or no row matches — callers
+    must fall back to the legacy single-company CHAT_API_KEY env var in that
+    case, never invent/guess a company_id from an unmatched key.
+    """
+    key = str(chat_api_key or "").strip()
+    if not key:
+        return None
+    try:
+        from app.db.supabase_client import get_supabase_client
+
+        rows = (
+            get_supabase_client()
+            .table("company_chat_key")
+            .select("company_id")
+            .eq("chat_api_key", key)
+            .limit(1)
+            .execute()
+            .data
+            or []
+        )
+    except Exception:
+        # Table not migrated yet, or a transient DB error — treat exactly
+        # like "no match" so the legacy env-var path still works instead of
+        # 500ing every /chat request on a deployment that hasn't run the
+        # migration.
+        return None
+    if not rows:
+        return None
+    try:
+        return int(rows[0]["company_id"])
+    except (KeyError, TypeError, ValueError):
+        return None
+
+
 @dataclass
 class CustomerContext:
     """

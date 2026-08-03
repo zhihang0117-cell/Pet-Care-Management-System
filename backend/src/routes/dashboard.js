@@ -150,88 +150,13 @@ dashboardRouter.get(
   })
 );
 
-/**
- * GET /api/dashboard/trend?period=weekly|monthly&anchor=YYYY-MM-DD
- * Buckets real bookings (all 3 tables) + paid payments within the anchor's
- * week (daily buckets) or month (weekly buckets) — powers dashboard.html's
- * trend charts and prev/next period navigation. Fetches each resource once
- * for the whole range and buckets in Node, rather than one query per bucket.
- */
-dashboardRouter.get(
-  "/trend",
-  asyncHandler(async (req, res) => {
-    const companyId = req.companyId;
-    const period = req.query.period === "monthly" ? "monthly" : "weekly";
-    const anchor = req.query.anchor || todayStr();
-    const pad = (n) => String(n).padStart(2, "0");
-    const toIso = (d) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
-
-    const anchorDate = new Date(anchor + "T00:00:00");
-    let start, end, bucketBy;
-    if (period === "monthly") {
-      start = new Date(anchorDate.getFullYear(), anchorDate.getMonth(), 1);
-      end = new Date(anchorDate.getFullYear(), anchorDate.getMonth() + 1, 0);
-      bucketBy = "week";
-    } else {
-      const dow = anchorDate.getDay(); // 0=Sun..6=Sat
-      const diffToMonday = (dow + 6) % 7;
-      start = new Date(anchorDate);
-      start.setDate(anchorDate.getDate() - diffToMonday);
-      end = new Date(start);
-      end.setDate(start.getDate() + 6);
-      bucketBy = "day";
-    }
-    const startIso = toIso(start);
-    const endIso = toIso(end);
-
-    const companyBookingTables = await enabledBookingTables(companyId);
-    const [paymentsResult, ...bookingResults] = await Promise.all([
-      supabase.from("payment").select("date, final_amount, status").eq("company_id", companyId).eq("status", "Paid").gte("date", startIso).lte("date", endIso),
-      ...companyBookingTables.map(({ type, table }) => {
-        const dateColumn = type === "boarding" ? "check_in_date" : "booking_date";
-        return supabase.from(table).select(`${dateColumn}, booking_status`).eq("company_id", companyId).gte(dateColumn, startIso).lte(dateColumn, endIso);
-      }),
-    ]);
-    for (const r of [paymentsResult, ...bookingResults]) {
-      if (r.error) return res.status(400).json({ error: r.error.message });
-    }
-
-    const allBookings = bookingResults.flatMap((result, index) => {
-      const type = companyBookingTables[index].type;
-      const dateColumn = type === "boarding" ? "check_in_date" : "booking_date";
-      return result.data.map((booking) => ({ date: booking[dateColumn], status: booking.booking_status }));
-    });
-
-    const bucketRanges = [];
-    if (bucketBy === "day") {
-      for (let d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) {
-        const iso = toIso(d);
-        bucketRanges.push({ label: iso, start: iso, end: iso });
-      }
-    } else {
-      for (let cursor = new Date(start); cursor <= end; cursor.setDate(cursor.getDate() + 7)) {
-        const weekStart = new Date(cursor);
-        const weekEnd = new Date(cursor);
-        weekEnd.setDate(weekEnd.getDate() + 6);
-        const clampedEnd = weekEnd > end ? end : weekEnd;
-        bucketRanges.push({ label: toIso(weekStart), start: toIso(weekStart), end: toIso(clampedEnd) });
-      }
-    }
-
-    const buckets = bucketRanges.map(({ label, start: bStart, end: bEnd }) => {
-      const bucketPayments = paymentsResult.data.filter((p) => p.date >= bStart && p.date <= bEnd);
-      const bucketBookings = allBookings.filter(
-        (b) => b.date >= bStart && b.date <= bEnd && b.status !== "Cancelled" && b.status !== "No Show"
-      );
-      return {
-        label,
-        start: bStart,
-        end: bEnd,
-        revenue: bucketPayments.reduce((sum, p) => sum + Number(p.final_amount || 0), 0),
-        bookingCount: bucketBookings.length,
-      };
-    });
-
-    res.json({ period, start: startIso, end: endIso, buckets });
-  })
-);
+// GET /api/dashboard/trend was removed: it had no caller anywhere in web/
+// (dashboard.html's trend charts are actually powered by a separate,
+// strictly more capable client-side implementation — buildTrendBuckets/
+// computeTrendSeries in web/common.js, which also supports an hourly
+// "daily" period and per-bucket new-vs-returning customer breakdowns this
+// endpoint never did, plus click-to-drill-down into the underlying
+// bookings). Two independent implementations of the same aggregation with
+// only one ever exercised is exactly the kind of thing that quietly drifts
+// out of sync — removed the dead one rather than duplicate the effort of
+// reconciling them.

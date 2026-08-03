@@ -62,10 +62,8 @@ test("last active manager guard is serialized in Postgres", async () => {
 test("an explicit empty service selection enables no booking modules", async () => {
   const bookings = await read("../src/routes/bookings.js");
   const dashboard = await read("../src/routes/dashboard.js");
-  const llm = await read("../src/llm/tools.js");
   assert.match(bookings, /Array\.isArray\(configured\)\s*\? configured/);
   assert.match(dashboard, /!Array\.isArray\(configured\)/);
-  assert.match(llm, /Array\.isArray\(configured\) && !configured\.includes/);
 });
 
 test("staff status is saved and key stored HTML values are escaped", async () => {
@@ -74,15 +72,4 @@ test("staff status is saved and key stored HTML values are escaped", async () =>
   assert.match(frontend, /escapeUiText\(customer\.full_name\)/);
   assert.match(frontend, /escapeUiText\(pet\.health_notes\)/);
   assert.match(frontend, /escapeUiText\(s\.staff_name\)/);
-});
-
-test("LLM CRUD cannot bypass protected booking and approval workflows", async () => {
-  const allowlist = await read("../src/llm/tableAllowlist.js");
-  const tools = await read("../src/llm/tools.js");
-  for (const table of ["staff", "coupon", "leave", "messages"]) {
-    assert.match(allowlist, new RegExp(`${table}: \\{ idColumn: "[^"]+", create: false, update: false`));
-  }
-  assert.match(allowlist, /grooming_booking: \{ idColumn: "grooming_booking_id", create: false, update: false/);
-  assert.match(tools, /return updateBooking\(input\.type, companyId/);
-  assert.match(tools, /\.eq\("status", "Pending"\)/);
 });

@@ -41,15 +41,40 @@ _INTERNAL_API_KEY = os.getenv("INTERNAL_API_KEY", "").strip()
 _CHAT_API_KEY = os.getenv("CHAT_API_KEY", "").strip()
 
 
-def _require_chat_key(x_chat_key: str = Header(default="")) -> None:
-    # Local eval remains convenient only when debug mode is explicitly on.
-    # Production fails closed if a deploy forgot the credential entirely.
+def _resolve_chat_company(x_chat_key: str = Header(default="")) -> int:
+    """
+    Authenticate /chat AND derive which company it's for from the presented
+    key — never from a client-supplied company_id field, which would be the
+    same header-trust vulnerability that was removed from the old /api/llm
+    surface on the Node side. Two credential shapes are accepted:
+
+    1. A per-company key row in company_chat_key (see backend/sql/
+       chat_api_key_migration.sql) — resolves to that row's real
+       company_id. This is what actually enables one deployment to safely
+       serve more than one company.
+    2. The legacy single CHAT_API_KEY env var — resolves to
+       RELATIONAL_COMPANY_ID, exactly like every /chat call worked before
+       this existed. Kept so an existing single-company deployment (or one
+       that hasn't run the migration yet) needs no changes.
+
+    Fails closed in production if neither credential is configured at all;
+    local eval-console testing may opt into no-auth via PAWFECT_DEBUG_MODE.
+    """
+    from app.db.customer_context import get_relational_company_id, resolve_company_id_from_chat_key
+
+    presented = x_chat_key.strip()
+    if presented:
+        company_id = resolve_company_id_from_chat_key(presented)
+        if company_id is not None:
+            return company_id
+
     if not _CHAT_API_KEY:
         if DEBUG_MODE:
-            return
+            return get_relational_company_id()
         raise HTTPException(status_code=503, detail="CHAT_API_KEY is not configured on this service")
-    if not hmac.compare_digest(x_chat_key.strip(), _CHAT_API_KEY):
+    if not hmac.compare_digest(presented, _CHAT_API_KEY):
         raise HTTPException(status_code=401, detail="Invalid or missing X-Chat-Key")
+    return get_relational_company_id()
 
 
 class _SlidingWindowLimiter:
@@ -132,6 +157,35 @@ app.add_middleware(
 
 _orchestrator: PawfectOrchestrator | None = None
 _memory = ConversationMemory()
+
+
+@app.on_event("startup")
+def _warm_up_embedding_model() -> None:
+    """
+    Load (and JIT-warm) the local sentence-transformers embedding model
+    before this process accepts any real traffic, instead of paying that
+    cost on whichever customer's message happens to trigger the first
+    retrieve_policy/get_booking_service_options call. get_embedding_model()
+    already caches the loaded model at module scope (app/rag/embeddings.py),
+    so this just moves that one-time cost to server startup — where a slow
+    first request doesn't read as "the bot is broken" to a real customer.
+    Only relevant for EMBEDDING_PROVIDER=sentence_transformers (the
+    default); the OpenAI embeddings path has no local model to warm.
+    Never allowed to fail startup — if the model can't load here, the first
+    real RAG call will surface that same error immediately after, same as
+    before this existed.
+    """
+    if os.getenv("EMBEDDING_PROVIDER", "sentence_transformers").strip().lower() == "openai":
+        return
+    try:
+        from app.rag.embeddings import embed_query
+
+        embed_query("warmup")
+        logging.getLogger(__name__).info("Embedding model warmed up at startup.")
+    except Exception:
+        logging.getLogger(__name__).exception(
+            "Embedding model warmup failed — first real RAG call will pay this cost instead."
+        )
 
 
 def _agent_state_summary(state) -> dict:
@@ -218,8 +272,8 @@ def health_check():
     return {"status": "ok"}
 
 
-@app.post("/chat", dependencies=[Depends(_require_chat_key)])
-def chat(request: ChatRequest, http_request: Request):
+@app.post("/chat")
+def chat(request: ChatRequest, http_request: Request, resolved_company_id: int = Depends(_resolve_chat_company)):
     """
     System prompt + conversation context -> GPT-4o-mini -> approved tools
     (Supabase/RAG/availability) looped until the model returns a final reply.
@@ -238,7 +292,7 @@ def chat(request: ChatRequest, http_request: Request):
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     _enforce_chat_rate_limit(http_request, phone_number)
 
-    company_id = str(get_relational_company_id())
+    company_id = str(resolved_company_id)
     # Two near-simultaneous messages from one phone must see each other's
     # state in order. This protects the current single-process deployment;
     # Redis/DB locking is still required before multi-worker scaling.
@@ -272,16 +326,42 @@ def _chat_locked(request: ChatRequest, phone_number: str, company_id: str):
             "again in a moment, or a staff member will follow up with you."
         )
         escalation_saved = False
-        try:
-            from app.db.escalations import save_staff_enquiry
-
-            save_staff_enquiry(company_id, state.customer_id, request.message, "AI_BACKEND_ERROR")
-            escalation_saved = True
-        except Exception:
+        if state.customer_id is None:
+            # save_staff_enquiry requires a real customer_id (the `messages`
+            # escalation row is keyed to one) and always raises without it —
+            # this branch is reached whenever the failure above happened
+            # before identity was ever resolved this turn. Calling it anyway
+            # only produced a second, silently-swallowed exception with the
+            # phone number never logged anywhere. Log the one piece of
+            # identifying information that does exist instead of attempting
+            # a write that cannot succeed.
             fallback_reply = (
                 "Sorry, I'm having a technical hiccup and couldn't lodge a staff follow-up "
                 "in our system. Please contact the team directly if this is urgent."
             )
+            logging.getLogger(__name__).error(
+                "Staff follow-up needed but could not be logged to the dashboard "
+                "(no resolved customer_id): company_id=%s phone_number=%s message=%r",
+                company_id,
+                phone_number,
+                request.message,
+            )
+        else:
+            try:
+                from app.db.escalations import save_staff_enquiry
+
+                save_staff_enquiry(company_id, state.customer_id, request.message, "AI_BACKEND_ERROR")
+                escalation_saved = True
+            except Exception as escalation_exc:
+                fallback_reply = (
+                    "Sorry, I'm having a technical hiccup and couldn't lodge a staff follow-up "
+                    "in our system. Please contact the team directly if this is urgent."
+                )
+                logging.getLogger(__name__).exception(
+                    "Could not persist AI_BACKEND_ERROR escalation for customer_id=%s: %s",
+                    state.customer_id,
+                    escalation_exc,
+                )
         delivery = send_whatsapp_text(phone_number, fallback_reply)
         partial_trace = getattr(exc, "trace", trace)
         return {
