@@ -1041,22 +1041,52 @@ def _time_to_minutes(value: object) -> int | None:
     return parsed.hour * 60 + parsed.minute
 
 
-def _booking_interval(row: dict, service_type: str) -> tuple[int, int] | None:
-    """Return the occupied [start, end) interval for one booking row."""
+def _booking_interval(row: dict, service_type: str, date_str: str | None = None) -> list[tuple[int, int]]:
+    """
+    Return the occupied [start, end) interval(s) for one booking row.
+
+    BOARDING is the one service whose two staff-occupying events (check-in,
+    check-out) can land on different calendar dates — everything else here
+    is a single same-day event. date_str (the day currently being checked)
+    gates which of those events actually apply: a boarding booking that
+    checks in on Monday and checks out on Wednesday must occupy staff time
+    on BOTH days individually, never on Tuesday, and never both events at
+    once when only one of them falls on date_str. Every real caller must
+    pass date_str for BOARDING rows to be handled correctly; a caller that
+    doesn't (date_str=None) gets both events unconditionally, which is only
+    correct when the check-in/check-out rows it was given are already
+    known to belong to that one date (kept as a narrow default rather than
+    a required argument only because a couple of internal helpers below
+    build single-day interval lists where that's already guaranteed).
+    """
     service = str(service_type or "").strip().upper()
+    if service == "BOARDING":
+        from .availability_service import service_duration_minutes
+
+        width = service_duration_minutes("BOARDING")
+        intervals: list[tuple[int, int]] = []
+        if date_str is None or str(row.get("check_in_date") or "") == date_str:
+            start = _time_to_minutes(row.get("check_in_time"))
+            if start is not None:
+                intervals.append((start, start + width))
+        if date_str is None or str(row.get("check_out_date") or "") == date_str:
+            start = _time_to_minutes(row.get("check_out_time"))
+            if start is not None:
+                intervals.append((start, start + width))
+        return intervals
     start = _time_to_minutes(
         row.get("booking_time") if service == "GROOMING" else row.get("check_in_time")
     )
     if start is None:
-        return None
+        return []
     if service == "DAYCARE":
         end = _time_to_minutes(row.get("check_out_time"))
         if end is not None and end > start:
-            return start, end
-        return start, start + 180
+            return [(start, end)]
+        return [(start, start + 180)]
     if service == "GROOMING":
-        return start, start + 90
-    return start, start + 60
+        return [(start, start + 90)]
+    return [(start, start + 60)]
 
 
 def _booking_blocks_availability(row: dict) -> bool:
@@ -1088,8 +1118,7 @@ def _cross_service_staff_bookings(client, company_id: int, staff_ids: list[int],
     if not staff_ids:
         return []
 
-    def _fetch_one(spec: tuple[str, str, str]) -> list[dict]:
-        service_type, table, date_column = spec
+    def _fetch_one(service_type: str, table: str, date_column: str) -> list[dict]:
         rows = (
             client.table(table)
             .select("*")
@@ -1102,34 +1131,59 @@ def _cross_service_staff_bookings(client, company_id: int, staff_ids: list[int],
         )
         return [{**row, "_service_type": service_type} for row in rows]
 
-    specs = (
-        ("GROOMING", "grooming_booking", "booking_date"),
-        ("DAYCARE", "daycare_booking", "booking_date"),
-        ("BOARDING", "boarding_booking", "check_in_date"),
-    )
+    def _fetch_boarding() -> list[dict]:
+        # A boarding booking's check-in and check-out events can land on
+        # different calendar dates — fetching by check_in_date alone (the
+        # old behavior) made an existing stay's checkout commitment
+        # completely invisible to any availability check run for that
+        # later checkout date. Fetch both and dedup by real row id (a stay
+        # that both checks in AND out on date_str, or one whose window
+        # happens to satisfy both queries, must not be double-counted).
+        checkin_rows = _fetch_one("BOARDING", "boarding_booking", "check_in_date")
+        checkout_rows = (
+            client.table("boarding_booking")
+            .select("*")
+            .eq("company_id", company_id)
+            .eq("check_out_date", date_str)
+            .in_("staff_id", staff_ids)
+            .execute()
+            .data
+            or []
+        )
+        by_id = {row["boarding_booking_id"]: row for row in checkin_rows}
+        for row in checkout_rows:
+            by_id.setdefault(row["boarding_booking_id"], {**row, "_service_type": "BOARDING"})
+        return list(by_id.values())
+
     combined: list[dict] = []
     # Keep these small Supabase reads sequential. They all share the cached
     # synchronous client; running them in nested thread pools intermittently
     # exhausted resolver/socket resources (Errno 35 / EAGAIN) and turned a
     # healthy availability request into a false staff handoff.
-    for spec in specs:
-        combined.extend(_fetch_one(spec))
+    combined.extend(_fetch_one("GROOMING", "grooming_booking", "booking_date"))
+    combined.extend(_fetch_one("DAYCARE", "daycare_booking", "booking_date"))
+    combined.extend(_fetch_boarding())
     return combined
 
 
 def _staff_free_for_interval(
-    start: int, end: int, available_staff: list[dict], bookings: list[dict]
+    start: int, end: int, available_staff: list[dict], bookings: list[dict], date_str: str | None = None
 ) -> list[dict]:
-    """available_staff rows with no booking (of ANY service type) overlapping [start, end)."""
+    """available_staff rows with no booking (of ANY service type) overlapping [start, end)
+    on date_str (see _booking_interval for why date_str matters — it's what
+    correctly scopes a BOARDING row's check-in/check-out events to the
+    right individual day instead of always applying both)."""
     bookings_by_staff: dict[int, list[tuple[int, int]]] = {}
     for row in bookings:
         if not _booking_blocks_availability(row):
             continue
         raw_staff_id = row.get("staff_id")
-        interval = _booking_interval(row, row.get("_service_type") or row.get("service_type") or "")
-        if raw_staff_id is None or interval is None:
+        if raw_staff_id is None:
             continue
-        bookings_by_staff.setdefault(int(raw_staff_id), []).append(interval)
+        intervals = _booking_interval(row, row.get("_service_type") or row.get("service_type") or "", date_str)
+        if not intervals:
+            continue
+        bookings_by_staff.setdefault(int(raw_staff_id), []).extend(intervals)
     free: list[dict] = []
     for staff in available_staff:
         raw_staff_id = staff.get("staff_id")
@@ -1148,22 +1202,32 @@ def _slot_has_available_staff(
     available_staff: list[dict],
     bookings: list[dict],
     service_type: str,
+    date_str: str | None = None,
 ) -> bool:
     del service_type  # bookings now carry their own _service_type per row
     start = _time_to_minutes(slot)
     if start is None:
         return False
     end = start + duration_minutes
-    return bool(_staff_free_for_interval(start, end, available_staff, bookings))
+    return bool(_staff_free_for_interval(start, end, available_staff, bookings, date_str))
 
 
-def _staff_day_roster(client, company_id: int, target_date: date) -> list[dict]:
-    """Active staff not on leave/off-day for target_date — the same
-    day-level roster check_available_slots and create_booking's staff
-    assignment must agree on, factored out once instead of duplicated."""
+def _staff_day_roster(
+    client, company_id: int, target_date: date, service_type: str | None = None
+) -> list[dict]:
+    """Active staff not on leave/off-day for target_date, optionally narrowed
+    to staff actually qualified for service_type — the same day-level
+    roster check_available_slots and create_booking's staff assignment must
+    agree on, factored out once instead of duplicated.
+
+    provides_service/service_types_json (see backend/sql/
+    staff_service_capability_migration.sql) default true / all three
+    services for any row that predates that migration, so this stays a
+    no-op filter until a company actually narrows a staff member's real
+    capabilities."""
     staff_rows = (
         client.table("staff")
-        .select("staff_id, staff_name, status, off_days_json, role")
+        .select("staff_id, staff_name, status, off_days_json, role, provides_service, service_types_json")
         .eq("company_id", company_id)
         .execute()
         .data
@@ -1177,7 +1241,15 @@ def _staff_day_roster(client, company_id: int, target_date: date) -> list[dict]:
         .data
         or []
     )
-    return [row for row in staff_rows if _staff_available_on_date(row, target_date, leave_rows)]
+    roster = [row for row in staff_rows if _staff_available_on_date(row, target_date, leave_rows)]
+    if service_type:
+        svc = str(service_type).strip().upper()
+        roster = [
+            row
+            for row in roster
+            if row.get("provides_service", True) and svc in (row.get("service_types_json") or [])
+        ]
+    return roster
 
 
 def _match_preferred_staff(preferred: str, staff_list: list[dict]) -> dict | None:
@@ -1256,7 +1328,7 @@ def check_available_slots(context: CustomerContext, intent_json: dict) -> dict:
             )
 
         client = get_supabase_client()
-        available_staff = _staff_day_roster(client, context.company_id, preferred_date)
+        available_staff = _staff_day_roster(client, context.company_id, preferred_date, service_type=service_type)
         if not available_staff:
             return _result(
                 "check_available_slots",
@@ -1323,6 +1395,7 @@ def check_available_slots(context: CustomerContext, intent_json: dict) -> dict:
                 available_staff=available_staff,
                 bookings=bookings,
                 service_type=service_type,
+                date_str=date_str,
             )
         ]
 
@@ -2046,7 +2119,7 @@ def create_booking(context: CustomerContext, intent_json: dict) -> dict:
     start_minutes = _time_to_minutes(booking_time)
     preferred_staff_raw = str(entities.get("preferred_staff") or draft.get("preferred_staff") or "").strip()
     if parsed_booking_date is not None and start_minutes is not None:
-        roster = _staff_day_roster(client, context.company_id, parsed_booking_date)
+        roster = _staff_day_roster(client, context.company_id, parsed_booking_date, service_type=service_type)
         roster_ids = [row["staff_id"] for row in roster if row.get("staff_id") is not None]
         bookings_today = _cross_service_staff_bookings(client, context.company_id, roster_ids, booking_date)
         duration_minutes = service_duration_minutes(service_type)
@@ -2054,7 +2127,48 @@ def create_booking(context: CustomerContext, intent_json: dict) -> dict:
             checkout_minutes = _time_to_minutes(entities.get("check_out_time"))
             if checkout_minutes is not None and checkout_minutes > start_minutes:
                 duration_minutes = checkout_minutes - start_minutes
-        free_staff = _staff_free_for_interval(start_minutes, start_minutes + duration_minutes, roster, bookings_today)
+        free_staff = _staff_free_for_interval(
+            start_minutes, start_minutes + duration_minutes, roster, bookings_today, date_str=booking_date
+        )
+        if service_type == "BOARDING":
+            # The write path further below defaults check_out_date to
+            # check-in + 1 day and check_out_time to the same clock time as
+            # check-in when the customer didn't state either explicitly —
+            # resolve the SAME defaults here so a staff member who's
+            # actually busy at THIS booking's own checkout event is
+            # excluded from selection now, instead of only being discovered
+            # when create_booking_atomic's own database-level check rejects
+            # the whole write at the very last step.
+            resolved_checkout_date_str = _resolve_booking_date({"preferred_date": entities.get("check_out_date")})
+            if not resolved_checkout_date_str:
+                resolved_checkout_date_str = (parsed_booking_date + timedelta(days=1)).isoformat()
+            resolved_checkout_date = _parse_date(resolved_checkout_date_str)
+            checkout_time_raw = _normalize_time_value(str(entities.get("check_out_time") or booking_time))
+            checkout_minutes_boarding = _time_to_minutes(checkout_time_raw)
+            if resolved_checkout_date is not None and checkout_minutes_boarding is not None:
+                boarding_width = service_duration_minutes("BOARDING")
+                if resolved_checkout_date == parsed_booking_date:
+                    co_roster, co_bookings, co_date_str = roster, bookings_today, booking_date
+                else:
+                    co_date_str = resolved_checkout_date.isoformat()
+                    co_roster = _staff_day_roster(
+                        client, context.company_id, resolved_checkout_date, service_type=service_type
+                    )
+                    co_roster_ids = [r["staff_id"] for r in co_roster if r.get("staff_id") is not None]
+                    co_bookings = _cross_service_staff_bookings(
+                        client, context.company_id, co_roster_ids, co_date_str
+                    )
+                free_at_checkout_ids = {
+                    r.get("staff_id")
+                    for r in _staff_free_for_interval(
+                        checkout_minutes_boarding,
+                        checkout_minutes_boarding + boarding_width,
+                        co_roster,
+                        co_bookings,
+                        date_str=co_date_str,
+                    )
+                }
+                free_staff = [r for r in free_staff if r.get("staff_id") in free_at_checkout_ids]
         if preferred_staff_raw:
             chosen = _match_preferred_staff(preferred_staff_raw, free_staff)
             if chosen is None:

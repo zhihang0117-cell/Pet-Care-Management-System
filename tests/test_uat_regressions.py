@@ -168,6 +168,6 @@ def test_sql_blocks_full_daycare_interval_and_links_redemption_to_payment():
     conflict_sql = (root / "backend/sql/booking_conflict_prevention_migration.sql").read_text()
     redemption_sql = (root / "backend/sql/verify_payment_function.sql").read_text()
     assert "b.booking_date + b.check_in_time, b.booking_date + b.check_out_time" in conflict_sql
-    assert "v_checkout + interval '10 minutes'" in conflict_sql
+    assert "v_checkout + interval '30 minutes'" in conflict_sql
     assert "b.check_in_date <= p_date and p_date < b.check_out_date" in conflict_sql
     assert "set redemption_id = v_redemption_id" in redemption_sql

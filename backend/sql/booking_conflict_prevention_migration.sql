@@ -16,7 +16,7 @@
 -- so the two entry points agree on what "conflicting" means:
 --   - grooming: one continuous 90-minute appointment from booking_time
 --   - daycare: the complete check-in-to-check-out visit
---   - boarding: only the brief check-in and check-out windows (10 min each),
+--   - boarding: only the brief check-in and check-out windows (30 min each),
 --     not the full stay; full-stay occupancy belongs to room capacity below
 -- Boarding additionally has a SEPARATE room-capacity check (room.capacity vs
 -- overlapping boarding_booking rows for that room_type, by the full
@@ -76,9 +76,9 @@ begin
       and b.booking_status in ('Pending', 'Scheduled')
       and not (coalesce(p_exclude_type, '') = 'boarding' and b.boarding_booking_id = p_exclude_id)
       and (
-        (b.check_in_date + b.check_in_time, (b.check_in_date + b.check_in_time) + interval '10 minutes')
+        (b.check_in_date + b.check_in_time, (b.check_in_date + b.check_in_time) + interval '30 minutes')
           overlaps (p_start, p_end)
-        or (b.check_out_date + b.check_out_time, (b.check_out_date + b.check_out_time) + interval '10 minutes')
+        or (b.check_out_date + b.check_out_time, (b.check_out_date + b.check_out_time) + interval '30 minutes')
           overlaps (p_start, p_end)
       )
   ) into v_conflict;
@@ -217,7 +217,7 @@ begin
     v_end := (p_booking->>'booking_date')::date + (p_booking->>'check_out_time')::time;
   elsif p_booking_type = 'boarding' then
     v_start := (p_booking->>'check_in_date')::date + (p_booking->>'check_in_time')::time;
-    v_end := v_start + interval '10 minutes';
+    v_end := v_start + interval '30 minutes';
     v_checkout := (p_booking->>'check_out_date')::date + (p_booking->>'check_out_time')::time;
   else
     raise exception 'Unknown booking type %', p_booking_type using errcode = 'P0001';
@@ -225,7 +225,7 @@ begin
 
   if staff_has_conflicting_booking(p_company_id, v_staff_id, v_start, v_end)
     or (p_booking_type = 'boarding' and staff_has_conflicting_booking(
-      p_company_id, v_staff_id, v_checkout, v_checkout + interval '10 minutes'
+      p_company_id, v_staff_id, v_checkout, v_checkout + interval '30 minutes'
     )) then
     raise exception 'This staff member already has a booking that overlaps this time' using errcode = 'P0001';
   end if;
@@ -428,10 +428,10 @@ begin
              coalesce((p_booking_patch->>'check_out_date')::date, check_out_date) + coalesce((p_booking_patch->>'check_out_time')::time, check_out_time)
         into v_start, v_checkout
         from boarding_booking where company_id = p_company_id and boarding_booking_id = p_booking_id;
-      v_end := v_start + interval '10 minutes';
+      v_end := v_start + interval '30 minutes';
       if staff_has_conflicting_booking(p_company_id, v_staff_id, v_start, v_end, 'boarding', p_booking_id)
         or staff_has_conflicting_booking(
-          p_company_id, v_staff_id, v_checkout, v_checkout + interval '10 minutes', 'boarding', p_booking_id
+          p_company_id, v_staff_id, v_checkout, v_checkout + interval '30 minutes', 'boarding', p_booking_id
         ) then
         raise exception 'This staff member already has a booking that overlaps this time' using errcode = 'P0001';
       end if;

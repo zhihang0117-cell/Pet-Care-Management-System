@@ -12,7 +12,7 @@ from __future__ import annotations
 DEFAULT_SERVICE_DURATION_MINUTES = {
     "GROOMING": 90,  # full appointment: one continuous slot, start to finish
     "DAYCARE": 180,  # conservative fallback; use the customer's real pickup/duration when known
-    "BOARDING": 10,  # same — check-in/check-out is a short event, not an all-day block
+    "BOARDING": 30,  # same — check-in/check-out is a short event, not an all-day block
 }
 
 

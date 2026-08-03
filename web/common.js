@@ -354,13 +354,21 @@ async function refreshBookingPageData() {
 
 async function fetchBookingPageData() {
   const enabledServices = new Set(getEnabledServices());
-  const [grooming, daycare, boarding, pets, customers, staffList] = await Promise.all([
+  const [grooming, daycare, boarding, pets, customers, staffList, roomRows] = await Promise.all([
     enabledServices.has("grooming") ? api.get("/bookings/grooming") : [],
     enabledServices.has("daycare") ? api.get("/bookings/daycare") : [],
     enabledServices.has("boarding") ? api.get("/bookings/boarding") : [],
     api.get("/pets"),
     api.get("/customers"),
     api.get("/staff"),
+    // booking.html itself never fetched rooms before this — roomHasCapacity()'s
+    // pre-submit check (saveBooking()) silently no-ops without real room/
+    // capacity data to check against. fetchDailyOverviewData()/
+    // loadAnalyticsDashboardData() already separately fetch this same data
+    // for their own occupancy displays; a second harmless read here (they
+    // both call this function first) keeps this function usable on its own
+    // for booking.html rather than making it depend on caller order.
+    enabledServices.has("boarding") ? api.listRooms() : [],
   ]);
 
   bookingPetOptions = pets;
@@ -372,6 +380,12 @@ async function fetchBookingPageData() {
     ...daycare.map(normalizeDaycareBooking),
     ...boarding.map(normalizeBoardingBooking),
   ];
+
+  rooms.splice(0, rooms.length, ...roomRows.map(r => ({
+    id: r.room_type,
+    name: r.room_type,
+    capacity: Number(r.capacity) || 1,
+  })));
 }
 
 // Shared by profile.html/staff.html (and dashboard.html's dead-simple
@@ -529,6 +543,10 @@ function setupModalEvents() {
 
   document.getElementById("serviceType").addEventListener("change", () => {
     toggleServiceSpecificFields();
+    // The previously-selected staff member may not be qualified for the
+    // newly-chosen service type — re-filter so the dropdown never offers
+    // (or silently keeps) someone who can't actually do this service.
+    populateStaffDropdown();
   });
 
   document.getElementById("bookingPetId").addEventListener("change", updateOwnerNameDisplay);
@@ -782,7 +800,7 @@ function buildMetrics(filter, serviceBookings, selectedDate) {
   if (filter === "boarding") {
     const boarding = serviceBookings;
     const currentBoarders = boarding.filter(b =>
-      b.checkInDate <= selectedDate && b.checkOutDate >= selectedDate &&
+      isBoardingActiveOnDate(b.checkInDate, b.checkOutDate, selectedDate) &&
       b.status !== "no_show" && b.status !== "cancelled"
     );
 
@@ -1201,11 +1219,13 @@ function openNewBooking() {
 
   const date = getToday();
   const time = findFirstAvailableTime(date) || "09:00";
+  const type = getEnabledServices()[0];
+  const qualifiedStaff = bookingStaffOptions.filter(member => staffQualifiedFor(member, type));
 
   openBookingDetails(buildNewBookingDraft(
-    getEnabledServices()[0],
+    type,
     bookingPetOptions[0].pet_id,
-    bookingStaffOptions[0]?.staff_id || "",
+    qualifiedStaff[0]?.staff_id || "",
     date,
     time
   ));
@@ -1218,7 +1238,7 @@ function createBookingFromSlot(date, time) {
   }
 
   const type = currentServiceFilter === "all" ? getEnabledServices()[0] : currentServiceFilter;
-  const availableStaff = getAvailableStaffForSlot(date, time);
+  const availableStaff = getAvailableStaffForSlot(date, time, "", type);
 
   if (getSlotBookings(date, time).length >= 3 || availableStaff.length === 0) {
     showToast("This timeslot is fully booked. Maximum 3 bookings are allowed, and each booking must use a different staff.");
@@ -1343,12 +1363,15 @@ function openBookingDetails(bookingIdOrObj) {
   const raw = booking.raw || {};
 
   populatePetDropdown();
-  populateStaffDropdown();
 
   document.getElementById("bookingId").value = booking.id || "";
   document.getElementById("bookingPetId").value = booking.petId != null ? booking.petId : "";
   document.getElementById("serviceType").value = booking.type;
   document.getElementById("serviceType").disabled = !!booking.id;
+  // Must run AFTER serviceType is set above — the dropdown is filtered to
+  // staff qualified for THIS booking's service type, and staffId is only
+  // assignable once the matching <option> actually exists in the list.
+  populateStaffDropdown(booking.type);
   document.getElementById("staffName").value = booking.staffId != null ? booking.staffId : "";
   document.getElementById("bookingStatus").value = booking.status || "pending";
   updateOwnerNameDisplay();
@@ -1518,6 +1541,15 @@ async function saveBooking() {
       showToast("This staff member already has a booking that overlaps this time.");
       return false;
     }
+    if (
+      type === "boarding" &&
+      !roomHasCapacity(payload.room_type, payload.check_in_date, payload.check_out_date, bookingId)
+    ) {
+      // Same wording room_has_capacity's own rejection uses, same reasoning
+      // as the staff-conflict check above.
+      showToast("This room type is fully booked for the selected dates.");
+      return false;
+    }
   }
 
   const submitBtn = document.querySelector("#bookingForm button[type=submit]");
@@ -1557,8 +1589,17 @@ function populatePetDropdown() {
   }).join("");
 }
 
-function populateStaffDropdown() {
-  document.getElementById("staffName").innerHTML = bookingStaffOptions.map(member => `
+function staffQualifiedFor(member, serviceType) {
+  const svc = String(serviceType || "").trim().toUpperCase();
+  if (!svc) return true;
+  if (member.provides_service === false) return false;
+  return (member.service_types_json || []).includes(svc);
+}
+
+function populateStaffDropdown(serviceType) {
+  const svc = serviceType || document.getElementById("serviceType").value;
+  const qualified = bookingStaffOptions.filter(member => staffQualifiedFor(member, svc));
+  document.getElementById("staffName").innerHTML = qualified.map(member => `
     <option value="${member.staff_id}">${member.staff_name}</option>
   `).join("");
 }
@@ -1748,7 +1789,7 @@ function isStaffAlreadyBooked(date, time, staffId, excludeBookingId = "") {
 // advisory "available staff for this hour" list before a service type has
 // even been chosen.
 const GROOMING_DURATION_MINUTES = 90;
-const BOARDING_CHECKPOINT_MINUTES = 10;
+const BOARDING_CHECKPOINT_MINUTES = 30;
 
 function bookingIntervalStartMs(dateStr, timeStr) {
   if (!dateStr || !timeStr) return null;
@@ -1806,8 +1847,9 @@ function staffHasConflictingBooking(type, fields, staffId, excludeBookingId = ""
   });
 }
 
-function getAvailableStaffForSlot(date, time, excludeBookingId = "") {
+function getAvailableStaffForSlot(date, time, excludeBookingId = "", serviceType) {
   return bookingStaffOptions.filter(member => {
+    if (!staffQualifiedFor(member, serviceType)) return false;
     return !isStaffAlreadyBooked(date, time, member.staff_id, excludeBookingId);
   });
 }
@@ -5605,6 +5647,14 @@ async function updateStaffKPI() {
   document.getElementById("staffBookingVolume").textContent = onDutyVolume;
 }
 
+const SERVICE_TYPE_LABELS = { GROOMING: "Grooming", DAYCARE: "Daycare", BOARDING: "Boarding" };
+
+function formatStaffServices(member) {
+  if (member.provides_service === false) return "Admin only";
+  const labels = (member.service_types_json || []).map(t => SERVICE_TYPE_LABELS[t] || t);
+  return labels.join(", ") || "None";
+}
+
 function renderStaffListTable() {
   const searchValue = staffSearchInput.value.toLowerCase().trim();
   const manager = isManager(getCurrentAccount());
@@ -5619,7 +5669,7 @@ function renderStaffListTable() {
   staffListRecordCount.textContent = `${filtered.length} staff`;
 
   if (filtered.length === 0) {
-    staffListBody.innerHTML = `<tr><td colspan="7" class="empty-row">No staff record found.</td></tr>`;
+    staffListBody.innerHTML = `<tr><td colspan="8" class="empty-row">No staff record found.</td></tr>`;
     return;
   }
 
@@ -5639,6 +5689,7 @@ function renderStaffListTable() {
           <span class="profile-sub">${escapeUiText(s.email || "—")}</span>
           <span class="profile-sub">${escapeUiText(s.phone || "—")}</span>
         </td>
+        <td>${escapeUiText(formatStaffServices(s))}</td>
         <td>${escapeUiText((s.off_days_json || []).join(", ") || "—")}</td>
         <td>${staffBookingCountsCache[s.staff_id] || 0}</td>
         <td><span class="status-tag status-${statusClass}">${statusLabel}</span></td>
@@ -5655,13 +5706,21 @@ function openStaffForm(staffId = null) {
   const isEdit = staffId !== null && staffId !== undefined;
   const member = isEdit
     ? findStaffRecord(staffId)
-    : { staff_id: null, staff_name: "", role: "Groomer", email: "", phone: "", off_days_json: [] };
+    : {
+        staff_id: null, staff_name: "", role: "Groomer", email: "", phone: "", off_days_json: [],
+        provides_service: true, service_types_json: ["GROOMING", "DAYCARE", "BOARDING"],
+      };
   if (isEdit && !member) return;
   if (isEdit) setRecordUrl("staff_id", member.staff_id);
   else clearRecordUrl(false);
 
   const readonly = !manager;
   const dayOptions = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
+  const serviceTypeOptions = [
+    { value: "GROOMING", label: "Grooming" },
+    { value: "DAYCARE", label: "Daycare" },
+    { value: "BOARDING", label: "Boarding" },
+  ];
 
   detailPage.style.display = "flex";
   detailTitle.textContent = isEdit ? `Staff Info · STF-${String(member.staff_id).padStart(3, "0")}` : "Add Staff";
@@ -5725,6 +5784,32 @@ function openStaffForm(staffId = null) {
       }
     </div>
 
+    <div class="form-group full">
+      <label>Delivers Service</label>
+      ${readonly
+        ? `<input value="${member.provides_service === false ? "No" : "Yes"}" readonly />`
+        : `<label style="display:inline-flex;align-items:center;gap:6px;font-weight:500;font-size:0.85rem;color:var(--text-charcoal);padding:10px 0;">
+            <input type="checkbox" name="providesService" ${member.provides_service !== false ? "checked" : ""} />
+            This staff member performs bookable services (uncheck for reception/admin-only staff — they will never be auto-assigned or offered for any booking)
+          </label>`
+      }
+    </div>
+
+    <div class="form-group full">
+      <label>Qualified Service Type(s)</label>
+      ${readonly
+        ? `<input value="${(member.service_types_json || []).map(t => serviceTypeOptions.find(o => o.value === t)?.label || t).join(", ") || "None"}" readonly />`
+        : `<div style="display:flex;flex-wrap:wrap;gap:14px;padding:10px 0;">
+            ${serviceTypeOptions.map(o => `
+              <label style="display:inline-flex;align-items:center;gap:6px;font-weight:500;font-size:0.85rem;color:var(--text-charcoal);">
+                <input type="checkbox" name="serviceTypes" value="${o.value}" ${(member.service_types_json || []).includes(o.value) ? "checked" : ""} />
+                ${o.label}
+              </label>
+            `).join("")}
+          </div>`
+      }
+    </div>
+
     <div class="form-actions">
       <button type="button" class="cancel-btn" onclick="closeDetailPage()">${manager ? "Cancel" : "Close"}</button>
       ${manager && isEdit ? `<button type="button" class="btn btn-secondary bk-danger-btn" onclick="removeStaffMember(${member.staff_id})">Remove Staff</button>` : ""}
@@ -5744,6 +5829,8 @@ function openStaffForm(staffId = null) {
       phone: formData.get("phone") || null,
       status: formData.get("status") || "active",
       off_days_json: formData.getAll("offDays"),
+      provides_service: formData.get("providesService") === "on",
+      service_types_json: formData.getAll("serviceTypes"),
     };
 
     const submitBtn = detailForm.querySelector(".save-btn");
@@ -6250,6 +6337,44 @@ function formatPeriodChip(period, range) {
   return `<img src="icon/calendar-simple.png" alt="" class="row-icon">${periodRangeLabel(period, range)}`;
 }
 
+// Half-open [check_in_date, check_out_date) — MUST match the server's own
+// convention exactly (backend/sql/booking_conflict_prevention_migration.sql's
+// get_room_occupancy/room_has_capacity: "p_date < b.check_out_date"; see
+// that file's own comment — "only 10 Aug becomes available again" for a
+// stay checking out on 10 Aug). A closed [in, out] range here used to count
+// a room as still occupied ON its own checkout date, one day longer than
+// the server ever would — capacity/occupancy numbers shown on the
+// dashboard could disagree with what create_booking_atomic would actually
+// allow for that same date.
+function isBoardingActiveOnDate(checkInDate, checkOutDate, date) {
+  return Boolean(checkInDate) && Boolean(checkOutDate) && date >= checkInDate && date < checkOutDate;
+}
+
+// Mirrors room_has_capacity exactly (backend/sql/
+// booking_conflict_prevention_migration.sql): a half-open
+// [check_in_date, check_out_date) range overlap against the room's real
+// capacity. Used by saveBooking()'s pre-submit check so staff get an early
+// warning instead of only finding out a room is full when
+// create_booking_atomic rejects the write at the very last step — same
+// reasoning as staffHasConflictingBooking's own pre-submit check.
+function roomHasCapacity(roomType, checkInDate, checkOutDate, excludeBookingId = "") {
+  const room = rooms.find(r => r.id === roomType);
+  // No room record configured for this room_type: nothing real to enforce
+  // against — matches room_has_capacity's own "return true" for that case
+  // rather than blocking on an incomplete/unrecognized room_type here.
+  if (!room) return true;
+  const capacity = room.capacity || 1;
+  const overlapping = bookingRecords.filter(b =>
+    b.type === "boarding" &&
+    b.serviceLabel === roomType &&
+    b.id !== excludeBookingId &&
+    b.status !== "no_show" && b.status !== "cancelled" &&
+    b.checkInDate && b.checkOutDate &&
+    b.checkInDate < checkOutDate && checkInDate < b.checkOutDate
+  ).length;
+  return overlapping < capacity;
+}
+
 // How many boarding bookings for this room_type actually cover `date` —
 // not just whether at least one does, since a room's real `capacity` (see
 // rooms population in loadAnalyticsDashboardData()) can hold more than one
@@ -6261,7 +6386,7 @@ function bookingsOccupyingRoomOnDate(roomLabel, date) {
   return bookingRecords.filter(b =>
     b.type === "boarding" && b.serviceLabel === roomLabel &&
     b.status !== "no_show" && b.status !== "cancelled" &&
-    b.checkInDate && b.checkOutDate && date >= b.checkInDate && date <= b.checkOutDate
+    isBoardingActiveOnDate(b.checkInDate, b.checkOutDate, date)
   ).length;
 }
 
