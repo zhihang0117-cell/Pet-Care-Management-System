@@ -108,6 +108,11 @@ Render-managed service render.yaml can cross-reference automatically):
 - `CLOUD_RUN_AI_BACKEND_URL` — the Cloud Run service's HTTPS URL.
 - `CLOUD_RUN_AI_BACKEND_INTERNAL_KEY` — must match `INTERNAL_API_KEY` set on
   that Cloud Run service.
+- `CLOUD_RUN_AI_BACKEND_CHAT_KEY` — must match `CHAT_API_KEY` set on that
+  Cloud Run service. Powers `routes/demoChat.js`, the server-side proxy
+  behind the public "Demo" page (`web/console.html`) — it lets a visitor
+  chat with the AI using only a phone number, without the real X-Chat-Key
+  ever reaching their browser.
 
 Create or sync a Render Blueprint from `render.yaml` for the `pawfectai`
 service, or deploy it manually: push `backend/` to its own GitHub repo →

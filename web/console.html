@@ -8,10 +8,11 @@
   README.md) — re-copy this file after editing that one if the demo needs
   the same changes; they are not auto-synced.
 
-  Before sharing the "Demo" link publicly, set the "API base URL" field
-  below to your actual deployed Python AI service URL (Google Cloud Run) —
-  it defaults to http://127.0.0.1:8000 for local development, which a real
-  visitor's browser cannot reach.
+  This page never talks to the Google Cloud Run AI service directly — it
+  calls this same origin's /api/demo/* routes (backend/src/routes/demoChat.js),
+  which proxy through to Cloud Run server-side using CLOUD_RUN_AI_BACKEND_URL
+  / CLOUD_RUN_AI_BACKEND_CHAT_KEY. That keeps the real X-Chat-Key out of the
+  browser entirely — a visitor only ever supplies a phone number.
 -->
 <!doctype html>
 <html lang="en">
@@ -441,25 +442,11 @@
     </div>
     <div class="sidebar-body">
       <div class="field">
-        <label>API base URL</label>
-        <input id="apiBase" type="text" value="http://127.0.0.1:8000">
-      </div>
-      <div class="field">
-        <label>Chat API key <span style="font-weight:400;text-transform:none;">(optional in local debug)</span></label>
-        <input id="chatApiKey" type="password" autocomplete="off" placeholder="Sent as X-Chat-Key; never stored">
-      </div>
-      <div class="field">
         <label>Test phone number</label>
         <input id="testPhone" type="text" value="+60 12-345 6701">
       </div>
       <div class="field">
         <button id="resetSessionBtn" class="secondary block">↺ Reset session for this phone</button>
-      </div>
-
-      <div class="sidebar-note">
-        Points at the local FastAPI backend (project root <code>main.py</code>).
-        If opened as <code>file://</code> and requests fail, serve this folder
-        instead: <code>python -m http.server 8080</code>.
       </div>
 
       <div class="field">
@@ -553,10 +540,6 @@ const EXAMPLE_MESSAGES = [
   "What's the price for a full groom?",
 ];
 
-function apiBase() {
-  return document.getElementById('apiBase').value.trim().replace(/\/$/, '');
-}
-
 function currentPhone() {
   return document.getElementById('testPhone').value.trim();
 }
@@ -566,12 +549,9 @@ document.getElementById('testPhone').addEventListener('input', () => {
 });
 
 async function callChat(phone, message) {
-  const headers = { 'Content-Type': 'application/json' };
-  const chatKey = document.getElementById('chatApiKey').value.trim();
-  if (chatKey) headers['X-Chat-Key'] = chatKey;
-  const res = await fetch(apiBase() + '/chat', {
+  const res = await fetch('/api/demo/chat', {
     method: 'POST',
-    headers,
+    headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ message, phone_number: phone }),
   });
   if (!res.ok) {
@@ -582,7 +562,7 @@ async function callChat(phone, message) {
 }
 
 async function resetSession(phone) {
-  const res = await fetch(apiBase() + '/debug/clear-session', {
+  const res = await fetch('/api/demo/reset', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ phone_number: phone }),
@@ -610,7 +590,7 @@ document.getElementById('resetSessionBtn').addEventListener('click', async () =>
     document.getElementById('flowEmpty').style.display = '';
     clearTraceHistory();
   } catch (e) {
-    alert('Reset FAILED for ' + phone + ': ' + (e && e.message || e) + '\n\nCheck the API base URL and that the backend is running.');
+    alert('Reset FAILED for ' + phone + ': ' + (e && e.message || e));
   }
 });
 
@@ -1072,10 +1052,10 @@ renderTraceHistory();
 document.getElementById('phoneLabel').textContent = currentPhone();
 
 document.getElementById('previewConfirmationBtn').addEventListener('click', () => {
-  window.open(apiBase() + '/documents/preview/booking-confirmation', '_blank');
+  window.open('/api/demo/preview/booking-confirmation', '_blank');
 });
 document.getElementById('previewInvoiceBtn').addEventListener('click', () => {
-  window.open(apiBase() + '/documents/preview/invoice', '_blank');
+  window.open('/api/demo/preview/invoice', '_blank');
 });
 </script>
 </body>

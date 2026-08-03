@@ -40,7 +40,15 @@ services:
         sync: false
       - key: CLOUD_RUN_AI_BACKEND_INTERNAL_KEY
         sync: false
+      # Same value as Cloud Run's own CHAT_API_KEY env var — this is what
+      # lets the public Demo page (web/console.html -> routes/demoChat.js)
+      # reach /chat on the AI backend without ever exposing that key to a
+      # visitor's browser. Must match exactly or the demo gets a 401.
+      - key: CLOUD_RUN_AI_BACKEND_CHAT_KEY
+        sync: false
       - key: AI_BACKEND_TIMEOUT_MS
         value: "15000"
+      - key: AI_BACKEND_CHAT_TIMEOUT_MS
+        value: "45000"
       - key: API_RATE_LIMIT_PER_MINUTE
         value: "120"

@@ -22,6 +22,7 @@ import { bookingsRouter } from "./routes/bookings.js";
 import { paymentsRouter } from "./routes/payments.js";
 import { roomsRouter } from "./routes/rooms.js";
 import { dashboardRouter } from "./routes/dashboard.js";
+import { demoChatRouter } from "./routes/demoChat.js";
 
 const app = express();
 const __filename = fileURLToPath(import.meta.url);
@@ -52,6 +53,11 @@ app.get("/health", (_req, res) => {
 
 // Public authentication routes
 app.use("/api/auth", authRouter);
+
+// Public demo chat proxy (web/console.html) — see routes/demoChat.js for
+// why this stays unauthenticated while still keeping the real AI backend
+// credential server-side only.
+app.use("/api/demo", demoChatRouter);
 
 // Authenticated manager/staff routes
 app.use("/api/accounts", requireAuthUser, accountsRouter);
