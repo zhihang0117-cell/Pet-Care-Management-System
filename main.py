@@ -493,6 +493,7 @@ def api_documents_process(request: ProcessDocumentRequest):
 class InvoiceRequest(BaseModel):
     company_id: int
     payment_id: int
+    send: bool = True
 
 
 @app.post("/documents/invoice", dependencies=[Depends(_require_internal_key)])
@@ -505,6 +506,11 @@ def documents_invoice(request: InvoiceRequest):
     provider is wired in). This is a distinct HTTP call rather than an
     in-process function because the transition that triggers it happens in
     a separate Node server, not this one.
+
+    Also called (with send=False) by the dashboard's View/Print Invoice
+    buttons (backend/src/routes/payments.js GET /:id/invoice) to fetch a
+    fresh signed URL for an already-paid payment's invoice without
+    re-sending it over WhatsApp.
     """
     from app.db.supabase_client import get_supabase_client
 
@@ -543,7 +549,7 @@ def documents_invoice(request: InvoiceRequest):
             booking = {**rows[0], "booking_id": rows[0].get(id_col)}
             break
 
-    return generate_and_send_invoice(request.company_id, payment, booking)
+    return generate_and_send_invoice(request.company_id, payment, booking, send=request.send)
 
 
 def _seed_notice_into_history(phone_number: str, message: str) -> None:

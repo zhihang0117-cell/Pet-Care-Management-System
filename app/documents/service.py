@@ -239,12 +239,17 @@ def regenerate_booking_confirmation_for_payment(company_id: int, payment_id: int
     return {"status": "error", "error": "No booking is linked to this payment"}
 
 
-def generate_and_send_invoice(company_id: int, payment: dict, booking: dict) -> dict:
+def generate_and_send_invoice(company_id: int, payment: dict, booking: dict, *, send: bool = True) -> dict:
     """payment: a real row from the `payment` table (payment_id, service,
     base_price, add_ons, final_amount, payment_method, date, status,
     redemption_id). booking: the linked booking row (for pet_name/
     booking_id/staff_id context) — may be {} if it couldn't be resolved;
-    the invoice still generates without it."""
+    the invoice still generates without it.
+
+    send=False regenerates/re-uploads the PDF and returns its signed URL
+    without dispatching a WhatsApp message — used by the dashboard's own
+    View/Print Invoice buttons, which must not re-notify the customer every
+    time staff looks at their own copy of a document already sent once."""
     try:
         booking = _fill_pet_name(company_id, booking)
         profile = get_billing_profile(company_id)
@@ -255,6 +260,8 @@ def generate_and_send_invoice(company_id: int, payment: dict, booking: dict) -> 
         pdf_bytes = build_invoice_pdf(profile, payment, booking, customer["customer_name"], loyalty, redemption)
         filename = f"invoice-{payment.get('payment_id')}.pdf"
         document_url = upload_customer_document(company_id, "invoices", filename, pdf_bytes)
+        if not send:
+            return {"status": "success", "document_url": document_url}
         send_result = send_whatsapp_document(
             customer["phone_number"],
             document_url,

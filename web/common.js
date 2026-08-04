@@ -4805,10 +4805,53 @@ function renderPaymentHistoryTable(history) {
       <td>${p.payment_method || "—"}</td>
       <td><span class="status-tag status-${p.status === "Paid" ? "done" : "cancelled"}">${p.status}</span></td>
       <td>${p.refunded_at ? new Date(p.refunded_at).toLocaleDateString("en-MY") : p.paid_at ? new Date(p.paid_at).toLocaleDateString("en-MY") : formatDate(p.date)}</td>
-      <td><button class="action-btn" onclick="openPaymentDetail(${p.payment_id})"><img src="icon/view.png" alt="" class="btn-icon">View</button></td>
+      <td>
+        <button class="action-btn" onclick="openPaymentDetail(${p.payment_id})"><img src="icon/view.png" alt="" class="btn-icon">View</button>
+        ${p.status === "Paid" ? `
+          <button class="action-btn" onclick="viewInvoice(${p.payment_id})"><img src="icon/view.png" alt="" class="btn-icon">View Invoice</button>
+          <button class="action-btn" onclick="printInvoice(${p.payment_id})"><img src="icon/download.png" alt="" class="btn-icon">Print Invoice</button>
+        ` : ""}
+      </td>
     </tr>
   `;
   }).join("");
+}
+
+async function viewInvoice(paymentId) {
+  try {
+    const { document_url } = await api.getInvoiceUrl(paymentId);
+    window.open(document_url, "_blank", "noopener");
+  } catch (error) {
+    showToast(error.message || "Failed to load the invoice.");
+  }
+}
+
+async function printInvoice(paymentId) {
+  try {
+    const { document_url } = await api.getInvoiceUrl(paymentId);
+    const response = await fetch(document_url);
+    if (!response.ok) throw new Error("Failed to download the invoice.");
+    const blob = await response.blob();
+    const blobUrl = URL.createObjectURL(blob);
+    // A hidden same-origin iframe (blob: URLs inherit the page's own
+    // origin) so contentWindow.print() is actually callable — calling
+    // .print() on a popup pointed straight at the cross-origin signed
+    // storage URL would be blocked by the browser's cross-origin policy.
+    const iframe = document.createElement("iframe");
+    iframe.style.display = "none";
+    iframe.src = blobUrl;
+    document.body.appendChild(iframe);
+    iframe.onload = () => {
+      iframe.contentWindow.focus();
+      iframe.contentWindow.print();
+      setTimeout(() => {
+        document.body.removeChild(iframe);
+        URL.revokeObjectURL(blobUrl);
+      }, 60000);
+    };
+  } catch (error) {
+    showToast(error.message || "Failed to print the invoice.");
+  }
 }
 
 async function confirmVerifyPayment(paymentId) {
@@ -5046,6 +5089,7 @@ async function openPaymentDetail(paymentId) {
 
     <div class="form-actions">
       <button type="button" class="cancel-btn" onclick="closeDetailPage()"><img src="icon/close-circle.png" alt="" class="btn-icon">Close</button>
+      ${p.status === "Paid" ? `<button type="button" class="btn btn-secondary" onclick="viewInvoice(${p.payment_id})"><img src="icon/view.png" alt="" class="btn-icon">View Invoice</button>` : ""}
       ${awaitingVerification && !hasApprovedRedemption && !hasPendingRedemption ? `<button type="button" class="btn btn-secondary" id="requestRedemptionBtn">Request Point Redemption</button>` : ""}
       ${awaitingVerification ? `<button type="button" class="save-btn" id="verifyConfirmBtn" ${hasUnapprovedRedemption ? "disabled" : ""}><img src="icon/confirm-circle.png" alt="" class="btn-icon solid-btn-icon">Verify Payment</button>` : ""}
       ${canRefund ? `<button type="button" class="btn btn-secondary bk-danger-btn" id="refundConfirmBtn" onclick="confirmRefundPayment(${p.payment_id})">Refund Payment</button>` : ""}

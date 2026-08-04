@@ -92,6 +92,40 @@ paymentsRouter.get(
   })
 );
 
+// GET /api/payments/:id/invoice — a fresh signed URL for this payment's
+// invoice PDF, for the dashboard's View/Print Invoice buttons. Regenerates
+// the PDF (the storage bucket is private with short-lived signed URLs, so
+// nothing durable can be cached here) but passes send:false through to the
+// AI backend so this never re-sends the invoice over WhatsApp — that only
+// happens once, right after /verify or /mark-paid below.
+paymentsRouter.get(
+  "/:id/invoice",
+  asyncHandler(async (req, res) => {
+    const paymentId = Number(req.params.id);
+    const { data: payment, error } = await supabase
+      .from("payment")
+      .select("payment_id, status")
+      .eq("company_id", req.companyId)
+      .eq("payment_id", paymentId)
+      .maybeSingle();
+    if (error) return res.status(400).json({ error: error.message });
+    if (!payment) return res.status(404).json({ error: `Payment ${paymentId} not found.` });
+    if (payment.status !== "Paid") {
+      return res.status(400).json({ error: "An invoice is only available once this payment is Paid." });
+    }
+
+    const invoice = await callAiBackend("/documents/invoice", {
+      company_id: req.companyId,
+      payment_id: paymentId,
+      send: false,
+    });
+    if (invoice.status !== "success") {
+      return res.status(502).json({ error: invoice.error || "Failed to generate the invoice." });
+    }
+    res.json({ document_url: invoice.document_url });
+  })
+);
+
 // POST /api/payments/:id/quote-voucher   { coupon_id }
 // Read-only preview of what the customer would pay with a given voucher applied.
 paymentsRouter.post(

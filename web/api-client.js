@@ -239,6 +239,7 @@ const api = {
   // Convenience helpers matching the endpoints you'll use most:
   listPayments: (filters = {}) => api.get(`/payments?${new URLSearchParams(filters)}`),
   getPaymentDetail: (paymentId) => api.get(`/payments/${paymentId}`),
+  getInvoiceUrl: (paymentId) => api.get(`/payments/${paymentId}/invoice`),
   quoteVoucher: (paymentId, couponId) => api.post(`/payments/${paymentId}/quote-voucher`, { coupon_id: couponId }),
   requestRedemption: (paymentId, couponId) =>
     api.post(`/payments/${paymentId}/redemption-request`, { coupon_id: couponId }),
