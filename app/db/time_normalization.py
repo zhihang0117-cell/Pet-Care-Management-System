@@ -56,11 +56,43 @@ def _canonicalize_period(value: str) -> str | None:
 _CLOCK_PATTERN = re.compile(
     r"\b("
     r"noon|midnight|"
-    r"\d{1,2}(?::\d{2})?\s*(?:am|pm)|"
-    r"\d{1,2}:\d{2}"
+    r"\d{1,2}(?:[:.]\d{2})?\s*(?:am|pm)|"
+    r"\d{1,2}[:.]\d{2}"
     r")\b",
     re.I,
 )
+
+_RELATIVE_CLOCK_PATTERN = re.compile(
+    r"\b(half|quarter)\s+(past|to)\s+(\d{1,2})\s*(am|pm)?\b", re.I
+)
+
+
+def _parse_relative_clock(text: str) -> str:
+    """"half past 7" / "quarter past 7" / "quarter to 8[pm]" — the English
+    counterpart to the Chinese "点半" half-hour handling below; only
+    half/quarter are covered since English minute-count phrasing ("twenty
+    past 7") needs number words this module doesn't otherwise parse."""
+    match = _RELATIVE_CLOCK_PATTERN.search(text)
+    if not match:
+        return ""
+    word, direction, hour_text, meridiem = match.groups()
+    word, direction = word.lower(), direction.lower()
+    if word == "half" and direction == "to":
+        return ""  # "half to X" isn't idiomatic English
+    offset = 30 if word == "half" else 15
+    hour = int(hour_text)
+    if not 1 <= hour <= 12:
+        return ""
+    if meridiem:
+        meridiem = meridiem.lower()
+        if meridiem == "am":
+            hour = 0 if hour == 12 else hour
+        else:
+            hour = hour if hour == 12 else hour + 12
+    if direction == "past":
+        return f"{hour:02d}:{offset:02d}"
+    return f"{(hour - 1) % 24:02d}:{60 - offset:02d}"
+
 
 _CHINESE_CLOCK_PATTERN = re.compile(
     r"(?:(早上|上午|清晨|中午|下午|午后|傍晚|晚上|夜晚)\s*)?"
@@ -126,7 +158,12 @@ def extract_duration_minutes(message: str) -> int | None:
 def extract_time_range(message: str) -> tuple[str, str, int] | None:
     """Extract an explicit same-day start/end pair and its duration."""
     text = str(message or "").strip()
-    parts = re.split(r"\s+(?:to|until|till)\s+|\s*[-–—]\s*|\s*(?:到|至)\s*", text, maxsplit=1, flags=re.I)
+    parts = re.split(
+        r"\s+(?:to|until|till|hingga|sehingga)\s+|\s*[-–—]\s*|\s*(?:到|至)\s*",
+        text,
+        maxsplit=1,
+        flags=re.I,
+    )
     if len(parts) != 2:
         return None
     start = extract_time_from_message(parts[0])
@@ -165,8 +202,16 @@ def normalize_time(value: str) -> str:
     canonical_period = _canonicalize_period(value)
     if canonical_period:
         return canonical_period
+    relative_clock = _parse_relative_clock(text)
+    if relative_clock:
+        return relative_clock
 
     compact = re.sub(r"\s+", "", text)
+    # Accept "." as an HH:MM(:SS) separator too ("14.30", "9.05.30") — only
+    # when the whole string is bare digits-and-dots, so this can't misfire
+    # on something like a decimal-hours duration elsewhere in the codebase.
+    if re.fullmatch(r"\d{1,2}\.\d{2}(\.\d{2})?", compact):
+        compact = compact.replace(".", ":")
     for fmt in ("%H:%M", "%H:%M:%S"):
         try:
             parsed = datetime.strptime(compact, fmt)
@@ -174,7 +219,7 @@ def normalize_time(value: str) -> str:
         except ValueError:
             continue
 
-    match = re.match(r"^(\d{1,2})(?::(\d{2}))?\s*(am|pm)$", compact, re.I)
+    match = re.match(r"^(\d{1,2})(?:[:.](\d{2}))?\s*(am|pm)$", compact, re.I)
     if match:
         hour = int(match.group(1))
         minute = int(match.group(2) or 0)
@@ -190,6 +235,14 @@ def normalize_time(value: str) -> str:
     match = re.match(r"^(\d{1,2})\s*(am|pm)$", compact, re.I)
     if match:
         return normalize_time(f"{match.group(1)}{match.group(2)}")
+
+    # Compact military time ("1430", "930") — kept out of the free-text
+    # extraction regex above since a bare 3-4 digit number in a longer
+    # message is too likely to be something else (a price, a phone
+    # fragment); here the whole value is already known to be a time field.
+    match = re.fullmatch(r"([01]?\d|2[0-3])([0-5]\d)", compact)
+    if match and len(compact) in (3, 4):
+        return f"{int(match.group(1)):02d}:{match.group(2)}"
 
     return ""
 
@@ -210,6 +263,13 @@ def extract_time_from_message(message: str) -> str:
     text = str(message or "").strip().lower()
     if not text:
         return ""
+    # Checked before _CLOCK_PATTERN below: "half past 7pm" contains "7pm",
+    # which _CLOCK_PATTERN would otherwise match on its own and misread as
+    # 19:00 instead of the intended 18:30.
+    relative_clock = _parse_relative_clock(text)
+    if relative_clock:
+        return relative_clock
+
     # Concrete clock expressions take priority over broad period words. The
     # old order returned just "evening" for "晚上7点", losing the exact time.
     chinese_clock = _CHINESE_CLOCK_PATTERN.search(text)

@@ -1742,7 +1742,9 @@ def create_pet(
             {"missing_fields": ["breed"]},
             "Pet breed is required; use 'mixed' or 'unknown' only when that is the customer's answer",
         )
-    if normalized_breed.casefold() in {"dog", "cat", "canine", "feline", "犬", "狗", "猫", "貓"}:
+    if normalized_breed.casefold() in {
+        "dog", "cat", "canine", "feline", "犬", "狗", "猫", "貓", "anjing", "kucing",
+    }:
         return _result(
             "create_pet",
             "missing_information",
@@ -1967,7 +1969,27 @@ def create_booking(context: CustomerContext, intent_json: dict) -> dict:
             "; ".join(vaccination.errors),
         )
 
-    if not _slot_is_available(context, intent_json, booking_date=booking_date, booking_time=booking_time):
+    # check_available_slots (called inside _slot_is_available) has no draft
+    # fallback of its own — passing the raw intent_json here would silently
+    # skip the BOARDING room-capacity gate whenever room_type/service_type
+    # were only resolved from the draft above (a normal case: service_name
+    # falls back to draft.get("package_name"), service_type to
+    # draft.get("service_type")), not because the customer typed neither.
+    # Mirror reschedule_booking's own probe-enrichment for the same reason.
+    probe = dict(intent_json)
+    probe_entities = dict(entities)
+    probe_entities["service_type"] = service_type
+    if service_type == "BOARDING":
+        probe_entities["room_type"] = service_name
+        probe_check_out_date = _resolve_booking_date({"preferred_date": entities.get("check_out_date")})
+        if not probe_check_out_date:
+            parsed_check_in_for_probe = _parse_date(booking_date)
+            if parsed_check_in_for_probe is not None:
+                probe_check_out_date = (parsed_check_in_for_probe + timedelta(days=1)).isoformat()
+        probe_entities["check_out_date"] = probe_check_out_date
+    probe["service_type"] = service_type
+    probe["entities"] = probe_entities
+    if not _slot_is_available(context, probe, booking_date=booking_date, booking_time=booking_time):
         return _result(
             "create_booking",
             "error",

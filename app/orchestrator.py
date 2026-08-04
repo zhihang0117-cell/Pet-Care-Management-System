@@ -538,37 +538,40 @@ class PawfectOrchestrator:
     @staticmethod
     def _reject_unconfirmed_height(state, args: dict, user_message: str) -> dict | None:
         """
-        None if height_cm actually appears (as a real number, not just any
-        digit) somewhere in what the customer has actually said this
-        session; otherwise a rejection dict. create_pet requiring height_cm
-        doesn't stop the model from simply inventing a plausible number
-        instead of really asking — confirmed live (height_cm=30 sent with
-        no customer message ever containing that number). This can't verify
-        the number is TRUE, only that it was actually said by the customer
-        rather than fabricated wholesale.
+        None if some number in height_text actually appears (as a real
+        number, not just any digit) somewhere in what the customer has
+        actually said this session; otherwise a rejection dict. create_pet
+        requiring height_text doesn't stop the model from simply inventing a
+        plausible number instead of really asking — confirmed live
+        (height_cm=30 sent with no customer message ever containing that
+        number, back when this took an already-converted cm value). Checked
+        against the raw number in height_text rather than a converted cm
+        value, since e.g. "24 inches" only ever appears as "24" in what the
+        customer actually typed. This can't verify the number is TRUE, only
+        that it was actually said by the customer rather than fabricated
+        wholesale.
         """
-        height_cm = args.get("height_cm")
-        if height_cm is None:
+        height_text = args.get("height_text")
+        if not height_text:
             return None
-        try:
-            height_val = float(height_cm)
-        except (TypeError, ValueError):
+        stated_numbers = [float(n) for n in re.findall(r"\d+(?:\.\d+)?", str(height_text))]
+        if not stated_numbers:
             return None
         recent_human_text = " ".join(
             [user_message or ""]
             + [t["content"] for t in state.history[-8:] if t.get("role") == "human"]
         )
         mentioned_numbers = [float(n) for n in re.findall(r"\d+(?:\.\d+)?", recent_human_text)]
-        if any(abs(n - height_val) <= 2 for n in mentioned_numbers):
+        if any(abs(n - s) <= 2 for n in mentioned_numbers for s in stated_numbers):
             return None
         return {
             "error": "UNCONFIRMED_HEIGHT",
             "message": (
-                f"height_cm ({height_cm!r}) does not match any number the customer has "
-                "actually said this conversation. Do not invent/estimate a height — ask "
-                "the customer directly for their pet's height in cm (a rough estimate is "
-                "fine if they don't know exactly), then retry create_pet with the number "
-                "they actually give you."
+                f"height_text ({height_text!r}) does not match any number the customer "
+                "has actually said this conversation. Do not invent/estimate a height — "
+                "ask the customer directly for their pet's height (any unit is fine — cm, "
+                "inches, feet; a rough estimate is fine if they don't know exactly), then "
+                "retry create_pet with their exact wording."
             ),
         }
 
@@ -1754,7 +1757,12 @@ class PawfectOrchestrator:
         return bool(
             re.search(
                 r"[?？]|\b(?:what|which|when|where|who|could you|can you|please provide|please confirm)\b"
-                r"|请问|哪一|什么时候|几点|可以告诉|请提供|请确认|请回复",
+                r"|请问|哪一|什么时候|几点|可以告诉|请提供|请确认|请回复"
+                # "boleh" alone is a plain modal verb ("can/may") used in
+                # ordinary statements ("saya boleh bantu"), not a question
+                # marker — only "bolehkah" (the -kah interrogative particle)
+                # reliably signals a question the way the other words here do.
+                r"|\b(?:apa|bila|di\s*mana|siapa|bolehkah|sila\s+(?:beritahu|sahkan|berikan))\b",
                 text,
             )
         )
@@ -1818,7 +1826,10 @@ class PawfectOrchestrator:
         action_claim = bool(
             re.search(
                 r"\b(?:booked|booking confirmed|cancelled|canceled|rescheduled|redeemed)\b"
-                r"|预约.{0,8}(?:成功|确认)|已经.{0,8}(?:取消|改期|预约)|兑换.{0,8}(?:成功|提交)",
+                r"|预约.{0,8}(?:成功|确认)|已经.{0,8}(?:取消|改期|预约)|兑换.{0,8}(?:成功|提交)"
+                r"|tempahan.{0,8}(?:berjaya|disahkan)"
+                r"|telah.{0,8}(?:dibatalkan|dijadualkan\s+semula|ditempah)"
+                r"|penebusan.{0,8}(?:berjaya|dihantar)",
                 answer,
             )
         )
@@ -1828,7 +1839,9 @@ class PawfectOrchestrator:
         delivery_claim = bool(re.search(
             r"(?:confirmation|document|slip|pdf).{0,30}\b(?:sent|resent|delivered)\b"
             r"|\b(?:sent|resent|delivered)\b.{0,30}(?:confirmation|document|slip|pdf)"
-            r"|(?:确认单|确认文件|文件|PDF).{0,12}(?:已发送|重发|送达)",
+            r"|(?:确认单|确认文件|文件|PDF).{0,12}(?:已发送|重发|送达)"
+            r"|(?:pengesahan|dokumen|slip|pdf).{0,30}(?:dihantar(?:\s+semula)?)"
+            r"|dihantar(?:\s+semula)?.{0,30}(?:pengesahan|dokumen|slip|pdf)",
             answer,
             re.IGNORECASE,
         ))
@@ -1841,7 +1854,9 @@ class PawfectOrchestrator:
         confirmation_document_intent = bool(re.search(
             r"\b(?:booking\s+confirmation|confirmation\s+(?:slip|document|pdf)|my\s+confirmation)\b"
             r"|\b(?:send|resend|where).{0,24}(?:confirmation|slip|pdf)\b"
-            r"|预约确认单|确认单|确认文件",
+            r"|预约确认单|确认单|确认文件"
+            r"|pengesahan\s+tempahan|slip\s+pengesahan|dokumen\s+pengesahan"
+            r"|(?:hantar(?:kan)?|di\s*mana).{0,24}pengesahan",
             text,
             re.IGNORECASE,
         ))
@@ -1867,7 +1882,10 @@ class PawfectOrchestrator:
                 r"booking\s+confirmation|confirmation\s+(?:slip|document|pdf)|"
                 r"cancel|reschedule|voucher|coupon|loyalty|points?|payment|policy)\b"
                 r"|预约|预订|空位|时段|价格|多少钱|配套|房型|美容|日托|寄宿|附加服务|"
-                r"预约确认单|确认单|确认文件|推荐|建议|取消|改期|优惠券|积分|付款|政策",
+                r"预约确认单|确认单|确认文件|推荐|建议|取消|改期|优惠券|积分|付款|政策"
+                r"|\b(?:tempah(?:an)?|kekosongan|harga|kos|pakej|bilik|penginapan|"
+                r"tambahan|cadang(?:kan)?|batal(?:kan)?|tukar\s+tarikh|jadual\s+semula|"
+                r"baucar|kupon|mata\s+ganjaran|bayar(?:an)?|polisi)\b",
                 text,
             )
         )
@@ -1887,7 +1905,7 @@ class PawfectOrchestrator:
             return True
 
         availability_intent = bool(re.search(
-            r"\b(?:availability|available|slot)\b|空位|时段",
+            r"\b(?:availability|available|slot)\b|空位|时段|\bkekosongan\b",
             text,
         ))
         if availability_intent and not (
@@ -1899,7 +1917,8 @@ class PawfectOrchestrator:
 
         catalogue_intent = bool(re.search(
             r"\b(?:price|cost|package|room|grooming|daycare|boarding|add-?on|recommend|suggest)\b|"
-            r"价格|多少钱|配套|房型|美容|日托|寄宿|附加服务|推荐|建议",
+            r"价格|多少钱|配套|房型|美容|日托|寄宿|附加服务|推荐|建议|"
+            r"\b(?:harga|kos|pakej|bilik|penginapan|tambahan|cadang(?:kan)?)\b",
             text,
         ))
         if catalogue_intent and not (
@@ -1909,14 +1928,15 @@ class PawfectOrchestrator:
         ):
             return True
 
-        policy_intent = bool(re.search(r"\bpolicy\b|政策", text))
+        policy_intent = bool(re.search(r"\bpolicy\b|政策|\bpolisi\b", text))
         if policy_intent and not (
             facts.get("policy_knowledge") or "retrieve_policy" in called_tools
         ):
             return True
 
         loyalty_intent = bool(re.search(
-            r"\b(?:loyalty|points?|voucher|coupon)\b|积分|点数|优惠券",
+            r"\b(?:loyalty|points?|voucher|coupon)\b|积分|点数|优惠券|"
+            r"\b(?:baucar|kupon|mata\s+ganjaran)\b",
             text,
         ))
         if loyalty_intent and not (
@@ -1929,7 +1949,7 @@ class PawfectOrchestrator:
         ):
             return True
 
-        payment_intent = bool(re.search(r"\bpayment\b|付款", text))
+        payment_intent = bool(re.search(r"\bpayment\b|付款|\bbayar(?:an)?\b", text))
         if payment_intent and not (
             facts.get("payment_history") or "get_payment_history" in called_tools
         ):
@@ -1937,7 +1957,8 @@ class PawfectOrchestrator:
 
         booking_lookup_intent = bool(re.search(
             r"\b(?:booking status|my booking|cancel|reschedule)\b|"
-            r"我的预约|预约状态|取消|改期",
+            r"我的预约|预约状态|取消|改期|"
+            r"\btempahan\s+saya\b|\bstatus\s+tempahan\b|\bbatal(?:kan)?\b|\btukar\s+tarikh\b",
             text,
         ))
         if booking_lookup_intent and not (
@@ -1953,24 +1974,37 @@ class PawfectOrchestrator:
         # Reusing the right cached evidence is valid; unrelated tool activity
         # is not. These explicit matches are intentionally about evidence
         # categories, not a prescribed tool sequence.
-        if re.search(r"\b(?:price|cost|package|room)\b|价格|多少钱|配套|房型", text):
-            if facts.get("service_options") or facts.get("policy_knowledge"):
-                return False
         if re.search(
-            r"\b(?:grooming|daycare|boarding|add-?on|recommend|suggest)\b|"
-            r"美容|日托|寄宿|附加服务|推荐|建议",
+            r"\b(?:price|cost|package|room)\b|价格|多少钱|配套|房型|"
+            r"\b(?:harga|kos|pakej|bilik)\b",
             text,
         ):
             if facts.get("service_options") or facts.get("policy_knowledge"):
                 return False
-        if re.search(r"\b(?:policy)\b|政策", text) and facts.get("policy_knowledge"):
+        if re.search(
+            r"\b(?:grooming|daycare|boarding|add-?on|recommend|suggest)\b|"
+            r"美容|日托|寄宿|附加服务|推荐|建议|"
+            r"\b(?:penginapan|tambahan|cadang(?:kan)?)\b",
+            text,
+        ):
+            if facts.get("service_options") or facts.get("policy_knowledge"):
+                return False
+        if re.search(r"\b(?:policy)\b|政策|\bpolisi\b", text) and facts.get("policy_knowledge"):
             return False
-        if re.search(r"\b(?:loyalty|points?|voucher|coupon)\b|积分|点数|优惠券", text):
+        if re.search(
+            r"\b(?:loyalty|points?|voucher|coupon)\b|积分|点数|优惠券|"
+            r"\b(?:baucar|kupon|mata\s+ganjaran)\b",
+            text,
+        ):
             if facts.get("loyalty_balance") or facts.get("coupon_eligibility"):
                 return False
-        if re.search(r"\bpayment\b|付款", text) and facts.get("payment_history"):
+        if re.search(r"\bpayment\b|付款|\bbayar(?:an)?\b", text) and facts.get("payment_history"):
             return False
-        if re.search(r"\b(?:booking status|my booking)\b|我的预约|预约状态", text):
+        if re.search(
+            r"\b(?:booking status|my booking)\b|我的预约|预约状态|"
+            r"\btempahan\s+saya\b|\bstatus\s+tempahan\b",
+            text,
+        ):
             if facts.get("latest_booking") or facts.get("resolved_booking"):
                 return False
         # update_conversation_state is bookkeeping, not evidence for a live

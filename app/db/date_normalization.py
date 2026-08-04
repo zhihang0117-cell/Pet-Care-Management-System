@@ -5,6 +5,8 @@ from __future__ import annotations
 import re
 from datetime import date, datetime, timedelta
 
+from dateutil import parser as _dateutil_parser
+
 _MONTH_NAMES = (
     r"jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|"
     r"jul(?:y)?|aug(?:ust)?|sep(?:tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?"
@@ -35,6 +37,39 @@ _CHINESE_WEEKDAY_TO_INDEX = {
     for name in names
 }
 _CHINESE_NEXT_MODIFIERS = ("下个", "下")
+
+# Malay (Bahasa Malaysia) relative-day and weekday words — same reasoning as
+# the Chinese block above: this is a Malaysia-based business, and a Malay
+# customer saying "esok"/"isnin" deserves the same deterministic resolution
+# English/Chinese speakers get, not a silent fall-through to the LLM guessing.
+_MALAY_RELATIVE_DAYS = {"hari ini": 0, "esok": 1, "lusa": 2}
+_MALAY_WEEKDAY_NAMES = {
+    1: "isnin", 2: "selasa", 3: "rabu", 4: "khamis", 5: "jumaat", 6: "sabtu", 7: "ahad",
+}
+_MALAY_WEEKDAY_TO_INDEX = {name: num - 1 for num, name in _MALAY_WEEKDAY_NAMES.items()}
+# Malay puts the "next" modifier after the noun ("isnin depan"), unlike
+# Chinese's prefix ("下星期一") — handled with a trailing-word regex group
+# below instead of the prefix-matching loop _parse_chinese_date uses.
+_MALAY_NEXT_MODIFIER = "depan"
+
+
+def _parse_malay_date(text: str, reference: date) -> date | None:
+    """text: already stripped/lowercased/whitespace-collapsed."""
+    if text in _MALAY_RELATIVE_DAYS:
+        return reference + timedelta(days=_MALAY_RELATIVE_DAYS[text])
+    match = re.fullmatch(
+        r"(isnin|selasa|rabu|khamis|jumaat|sabtu|ahad)(?:\s+(depan|ini))?", text
+    )
+    if not match:
+        return None
+    weekday_text, modifier = match.groups()
+    weekday_index = _MALAY_WEEKDAY_TO_INDEX[weekday_text]
+    days_ahead = (weekday_index - reference.weekday()) % 7
+    if modifier == _MALAY_NEXT_MODIFIER:
+        days_ahead += 7
+    elif days_ahead == 0:
+        days_ahead = 7
+    return reference + timedelta(days=days_ahead)
 
 
 def _parse_chinese_date(text: str, reference: date) -> date | None:
@@ -76,6 +111,54 @@ def _parse_chinese_date(text: str, reference: date) -> date | None:
     return None
 
 
+def _parse_with_dateutil(text: str, reference: date, next_year_modifier: bool) -> date | None:
+    """Last-resort fallback for concrete-date spellings none of the rules
+    above cover (dotted "2026.8.4", dashed "04-08-26", compact "20260804",
+    alternate month spellings, ...) — everything above stays first since it
+    encodes business-specific behavior (Chinese/Malay wording, the
+    roll-to-next-year rule) dateutil doesn't know about.
+
+    Requires at least two digit groups so a single bare number ("5") isn't
+    silently read as "day 5 of the current month" — this only fires after
+    every specific rule above has already failed to match, so the input is
+    unstructured customer text, not a guaranteed date.
+
+    dayfirst=True matches the d/m/y-before-m/d/y preference already used for
+    slash dates above (this is a Malaysia-based business, a day-first
+    locale).
+    """
+    # A bare 8-digit run ("20260807") is an unambiguous compact YYYYMMDD —
+    # exempted from the "needs 2+ digit groups" guard below since it's not
+    # a lone ambiguous number the way "5" or "2026" alone would be.
+    if not re.fullmatch(r"\d{8}", text) and len(re.findall(r"\d+", text)) < 2:
+        return None
+    # A leading 4-digit year ("2026.8.4", "2026-8-4") is always followed by
+    # month-then-day — nobody writes year-day-month. dayfirst=True is only
+    # correct for the year-absent-or-last case; applying it here too makes
+    # dateutil swap month and day (e.g. misreads "2026.8.4" as Apr 8).
+    year_first = bool(re.match(r"^\d{4}", text))
+    try:
+        parsed = _dateutil_parser.parse(
+            text,
+            dayfirst=not year_first,
+            yearfirst=year_first,
+            default=datetime.combine(reference, datetime.min.time()),
+        )
+    except (ValueError, OverflowError, TypeError):
+        return None
+    result = parsed.date()
+    has_explicit_year = bool(re.search(r"\d{4}", text))
+    if not has_explicit_year:
+        if next_year_modifier:
+            result = result.replace(year=result.year + 1)
+        elif result < reference:
+            try:
+                result = result.replace(year=result.year + 1)
+            except ValueError:
+                return None
+    return result
+
+
 def parse_customer_date(value: str | None, *, today: date | None = None) -> date | None:
     if not value:
         return None
@@ -88,6 +171,9 @@ def parse_customer_date(value: str | None, *, today: date | None = None) -> date
     chinese_result = _parse_chinese_date(str(value).strip(), reference)
     if chinese_result is not None:
         return chinese_result
+    malay_result = _parse_malay_date(text, reference)
+    if malay_result is not None:
+        return malay_result
 
     # "next year 30 august" / "30 august next year" — strip the modifier
     # before the month-day match below and force the year forward instead
@@ -149,7 +235,7 @@ def parse_customer_date(value: str | None, *, today: date | None = None) -> date
     elif month_day:
         month_text, day_number, explicit_year = month_day.groups()
     else:
-        return None
+        return _parse_with_dateutil(text, reference, next_year_modifier)
     month = datetime.strptime(month_text[:3], "%b").month
     year = int(explicit_year) if explicit_year else reference.year
     if next_year_modifier and not explicit_year:
@@ -178,10 +264,10 @@ def parse_week_range(value: str | None, *, today: date | None = None) -> tuple[d
     reference = today or date.today()
     this_monday = reference - timedelta(days=reference.weekday())
 
-    if re.search(r"\bnext week\b", text):
+    if re.search(r"\b(?:next week|minggu depan)\b", text):
         start = this_monday + timedelta(days=7)
         return start, start + timedelta(days=6)
-    if re.search(r"\bthis week\b", text):
+    if re.search(r"\b(?:this week|minggu ini)\b", text):
         return reference, this_monday + timedelta(days=6)
     raw = str(value).strip()
     if any(token in raw for token in ("下周", "下星期", "下个星期", "下礼拜", "下个礼拜")):
@@ -219,7 +305,15 @@ def extract_customer_date(value: str | None, *, today: date | None = None) -> da
     patterns = (
         r"\b(?:today|tomorrow)\b",
         r"\b(?:(?:next|this)\s+)?(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b",
+        r"\b(?:hari\s+ini|esok|lusa)\b",
+        r"\b(?:isnin|selasa|rabu|khamis|jumaat|sabtu|ahad)(?:\s+(?:depan|ini))?\b",
         r"\b\d{4}-\d{2}-\d{2}\b",
+        # any other digit-separator date shape ("4/8/2026", "04-08-26",
+        # "2026.8.4", ...) — parse_customer_date resolves the exact
+        # day/month/year order (slash formats explicitly, everything else
+        # via the dateutil fallback).
+        r"\b\d{1,2}[./-]\d{1,2}[./-]\d{2,4}\b",
+        r"\b\d{4}[./-]\d{1,2}[./-]\d{1,2}\b",
         # day-then-month ("20 August[, 2026]"), with an optional "next/this
         # year" modifier either side ("next year 20 August", "20 August next
         # year") — kept in the matched substring so parse_customer_date

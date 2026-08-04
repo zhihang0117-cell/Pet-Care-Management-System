@@ -154,34 +154,50 @@ def create_pet(
     customer_id: str | int,
     pet_name: str,
     pet_type: str,
-    height_cm: int | float,
+    height_text: str,
     breed: str,
 ) -> dict:
     """
-    Register a new pet for an existing customer. breed and height_cm are
+    Register a new pet for an existing customer. breed and height_text are
     REQUIRED, but breed is not restricted to a fixed list. Preserve the
     customer's wording; pass "mixed" for a mixed breed or "unknown" when the
     customer explicitly says they do not know. Never infer a breed from species,
     size, name, or appearance.
 
-    The pet's size (S/M/L/XL/...) is computed from height_cm against the company's real
-    grooming price breakpoints, never guessed or asked as a separate free-text
-    field. If you don't know the pet's exact height, ask the customer for it
-    (e.g. "about how tall is Milo, roughly, in cm?") rather than assuming a
-    size — an unverified size risks quoting the wrong grooming price later.
+    height_text is the customer's own wording for their pet's height, in
+    whatever unit they used (e.g. "24 inches", "60cm", "2 feet") — it is
+    converted to cm here, never converted or estimated by you. The pet's
+    size (S/M/L/XL/...) is computed from that cm value against the company's
+    real grooming price breakpoints, never guessed or asked as a separate
+    free-text field. If you don't know the pet's exact height, ask the
+    customer for it (e.g. "about how tall is Milo, roughly?") rather than
+    assuming a size — an unverified size risks quoting the wrong grooming
+    price later.
 
     pet_type must be "cat" or "dog" for a verified size to be computed; other
     species are still recorded but size stays unset (no grooming price
     breakpoints exist for them in this company's documents).
     """
+    from app.db.height_normalization import parse_height_cm
     from app.db.relational_repository import PetData
+
+    height_cm = parse_height_cm(height_text)
+    if height_cm is None:
+        return {
+            "error": "INVALID_HEIGHT",
+            "message": (
+                f"Could not resolve a height from {height_text!r}. Ask the customer "
+                "for their pet's height as a number (any unit is fine — cm, inches, "
+                "feet), then retry with their exact wording."
+            ),
+        }
 
     verified_size = compute_verified_pet_size(pet_type, height_cm)
     pet_data = PetData(
         pet_name=pet_name,
         pet_type=pet_type,
         pet_size=verified_size or "",
-        height_cm=int(height_cm) if height_cm is not None else None,
+        height_cm=int(round(height_cm)),
         breed=breed,
     )
     result = _repo().create_pet(int(company_id), int(customer_id), pet_data)
@@ -363,7 +379,7 @@ def get_booking_service_options(
     For a personalized booking quote, resolve pet_id first via
     find_pet_by_name/get_pets (or RUNTIME_CONTEXT.customer.pets). If this is
     a pet NOT yet on record (a new customer, or an existing customer's new
-    pet), call create_pet first — collecting name/species/height_cm so its
+    pet), call create_pet first — collecting name/species/height so its
     size is genuinely verified — and use the pet_id it returns. Do not
     compute a size or quote any price yourself before that pet is actually
     registered; nothing is real until create_pet/find_pet_by_name has run.
