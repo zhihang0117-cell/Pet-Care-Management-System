@@ -351,6 +351,43 @@ def test_tool_repair_is_narrow_and_reuses_existing_evidence():
     )
 
 
+def test_tool_repair_catches_booking_status_and_policy_claims_behind_a_question():
+    # Same bypass shape as the price/availability/coupon/vaccination claims
+    # above: a fabricated status/policy claim immediately followed by a
+    # follow-up question must still be caught, not skipped by the
+    # customer-input early return.
+    assert PawfectOrchestrator._needs_tool_repair(
+        ConversationState(phone_number="+60123456705", company_id="1"),
+        "What's the status of my booking?",
+        "Your booking is confirmed for tomorrow at 10am. Anything else I can help with?",
+        [],
+    )
+    assert PawfectOrchestrator._needs_tool_repair(
+        ConversationState(phone_number="+60123456705", company_id="1"),
+        "What's your policy on bringing my own pet food?",
+        "Yes, that's allowed. Would you like to know anything else about our policies?",
+        [],
+    )
+
+    # Real evidence (this turn or cached) must still be accepted, even with
+    # a trailing question.
+    booking_trace = [{"tool": "get_latest_booking", "result": '{"status":"success"}'}]
+    assert not PawfectOrchestrator._needs_tool_repair(
+        ConversationState(phone_number="+60123456705", company_id="1"),
+        "What's the status of my booking?",
+        "Your booking is confirmed for tomorrow at 10am. Anything else I can help with?",
+        booking_trace,
+    )
+    state_with_policy = ConversationState(phone_number="+60123456705", company_id="1")
+    state_with_policy.verified_facts["policy_knowledge"] = {"status": "success"}
+    assert not PawfectOrchestrator._needs_tool_repair(
+        state_with_policy,
+        "What's your policy on bringing my own pet food?",
+        "Yes, that's allowed. Would you like to know anything else about our policies?",
+        [],
+    )
+
+
 def test_prompt_keeps_recommendations_evidence_based_and_optional():
     assert "Helpful recommendations are a core capability" in SYSTEM_PROMPT
     assert "suggest only options supported by current-company evidence" in SYSTEM_PROMPT

@@ -212,7 +212,7 @@
     border-top: 1px solid var(--wa-border); padding: 10px; font-size: 11px; color: var(--wa-sub);
   }
   .trace-request-error { color: #a32622; }
-  .inspector-toggle, .inspector-close { display: none; }
+  .inspector-toggle, .inspector-close, .sidebar-toggle, .sidebar-close { display: none; }
 
   /* ---------- Sidebar ---------- */
   .sidebar {
@@ -283,6 +283,10 @@
   .chat-header .who p { margin: 1px 0 0; font-size: 11.5px; opacity: .85; }
   .chat-header .who { min-width: 0; }
   .chat-header .inspector-toggle { margin-left: auto; background: rgba(255,255,255,.16); }
+  .chat-header .sidebar-toggle { background: rgba(255,255,255,.16); }
+  .sidebar-header .sidebar-close {
+    margin-left: auto; width: 28px; height: 28px; padding: 0; background: rgba(255,255,255,.13);
+  }
 
   .transcript {
     flex: 1; overflow-y: auto; padding: 18px 8%;
@@ -427,6 +431,7 @@
     .app-shell { grid-template-columns: 1fr; }
     .sidebar { position: fixed; inset: 0; z-index: 5; transform: translateX(-100%); transition: transform .2s; }
     .sidebar.open { transform: translateX(0); }
+    .sidebar-toggle, .sidebar-close { display: inline-flex; align-items: center; justify-content: center; }
   }
 </style>
 </head>
@@ -439,6 +444,7 @@
         <h1>Pawfect LLM Console</h1>
         <p>Live /chat tester</p>
       </div>
+      <button id="sidebarClose" class="sidebar-close" type="button" aria-label="Close menu">×</button>
     </div>
     <div class="sidebar-body">
       <div class="field">
@@ -473,6 +479,7 @@
 
   <section class="chat-pane">
     <div class="chat-header">
+      <button id="sidebarToggle" class="sidebar-toggle" type="button" aria-label="Open menu">☰</button>
       <div class="avatar">🐾</div>
       <div class="who">
         <h2>Pawfect Assistant</h2>
@@ -911,6 +918,12 @@ document.getElementById('inspectorToggle').addEventListener('click', () => {
 });
 document.getElementById('inspectorClose').addEventListener('click', () => {
   document.getElementById('inspectorPane').classList.remove('open');
+});
+document.getElementById('sidebarToggle').addEventListener('click', () => {
+  document.getElementById('sidebar').classList.add('open');
+});
+document.getElementById('sidebarClose').addEventListener('click', () => {
+  document.getElementById('sidebar').classList.remove('open');
 });
 
 // ---------- Backend Flow Process ----------

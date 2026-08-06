@@ -575,6 +575,87 @@ class PawfectOrchestrator:
             ),
         }
 
+    _DOG_WORDS_RE = re.compile(r"\b(?:dog|puppy|anjing)\b|犬|狗")
+    _CAT_WORDS_RE = re.compile(r"\b(?:cat|kitten|kucing)\b|猫|貓")
+
+    @classmethod
+    def _stated_species(cls, user_message: str) -> str | None:
+        text = (user_message or "").lower()
+        has_dog = bool(cls._DOG_WORDS_RE.search(text))
+        has_cat = bool(cls._CAT_WORDS_RE.search(text))
+        if has_dog and not has_cat:
+            return "dog"
+        if has_cat and not has_dog:
+            return "cat"
+        return None  # neither mentioned, or both — too ambiguous to act on
+
+    @classmethod
+    def _reject_species_mismatch(cls, state, args: dict, user_message: str) -> dict | None:
+        """None unless the customer's current message states a species that
+        contradicts the specific pet this tool call is about to use.
+
+        Confirmed live: a customer asked about "Anjing" (Malay for dog)
+        pricing while their only registered pet (Milo) is a real Cat — the
+        model reflexively reused Milo's pet_id (system prompt: "when exactly
+        one known pet exists, use it without asking which pet") and silently
+        answered with Milo's cat pricing instead of noticing the mismatch.
+        get_booking_service_options has no way to be asked for a species'
+        pricing independent of a specific registered pet_id, so the model
+        had no better tool call available either way — the fix is to force
+        it to ask instead of silently guessing which pet/species is meant.
+
+        Covers any tool call carrying a resolved pet_id (a DB lookup for
+        that pet's real species), plus retrieve_policy calls backfilled from
+        the session's cached state.pet_type a few lines above — both are the
+        same failure shape: a known species silently overriding what the
+        customer just said this turn.
+        """
+        stated = cls._stated_species(user_message)
+        if stated is None:
+            return None
+
+        known_species = ""
+        pet_label = "the pet on file"
+        pet_id = args.get("pet_id")
+        if pet_id:
+            try:
+                company_id = int(args.get("company_id") or state.company_id)
+                pet_id_int = int(pet_id)
+            except (TypeError, ValueError):
+                return None
+            from app.db.supabase_client import get_supabase_client
+
+            rows = (
+                get_supabase_client()
+                .table("pet")
+                .select("pet_type, pet_name")
+                .eq("company_id", company_id)
+                .eq("pet_id", pet_id_int)
+                .limit(1)
+                .execute()
+                .data
+                or []
+            )
+            if rows:
+                known_species = str(rows[0].get("pet_type") or "").strip().lower()
+                pet_label = rows[0].get("pet_name") or pet_label
+        elif args.get("pet_type"):
+            known_species = str(args.get("pet_type") or "").strip().lower()
+            pet_label = "the pet already on file"
+
+        if known_species not in ("dog", "cat") or known_species == stated:
+            return None
+
+        return {
+            "error": "SPECIES_MISMATCH",
+            "message": (
+                f"The customer's message says {stated!r}, but this call is about to use "
+                f"{pet_label}'s real species ({known_species!r}). Do not silently answer "
+                f"with {pet_label}'s species/pricing — ask the customer directly whether "
+                f"they mean {pet_label} or a different pet before calling this tool again."
+            ),
+        }
+
     @staticmethod
     def _reject_unconfirmed_breed(state, args: dict, user_message: str) -> dict | None:
         """Require breed to come from the customer without enforcing a breed list.
@@ -1139,6 +1220,9 @@ class PawfectOrchestrator:
                 date_rejection = self._reject_unverified_date(state, tool_call["name"], args)
                 if date_rejection:
                     return date_rejection
+                species_rejection = self._reject_species_mismatch(state, args, user_message)
+                if species_rejection:
+                    return species_rejection
                 if tool_call["name"] == "create_pet":
                     breed_rejection = self._reject_unconfirmed_breed(state, args, user_message)
                     if breed_rejection:
@@ -1850,6 +1934,162 @@ class PawfectOrchestrator:
             # repair prose. The final-response guard below replaces the false
             # success statement with an honest delivery failure instead.
             return not cls._trace_has_document_delivery_attempt(trace)
+
+        # Confirmed live: get_loyalty_balance only returns points_balance/tier
+        # — there is no generic points-to-RM conversion rate anywhere in this
+        # data model, discounts only exist per real coupon (coupon.points_
+        # required / "discount_value (RM)"). The model still fabricated
+        # "1 point = RM1" and a specific deductible amount from the balance
+        # number alone, having called get_loyalty_balance but never
+        # check_coupon_eligibility (the tool that actually returns real
+        # coupons). Checked here (before the customer-input early return
+        # below) because this exact response also ends in a follow-up
+        # question ("Would you like to redeem...?"), which would otherwise
+        # make _response_requests_customer_input short-circuit the whole
+        # function before ever reaching the loyalty_intent check further
+        # down — a false claim immediately followed by a question must still
+        # be caught.
+        coupon_value_claim = bool(re.search(
+            r"\d+\s*points?\s*=\s*rm|point.{0,15}=.{0,10}rm\s?\d|"
+            r"redeem.{0,30}(?:full\s+amount|rm\s?\d)|deduct.{0,20}(?:up\s+to\s+)?rm\s?\d|"
+            r"cover.{0,20}(?:the\s+)?(?:entire|full).{0,20}cost"
+            r"|积分.{0,10}(?:等于|=).{0,10}(?:rm|令吉)|抵扣.{0,10}(?:rm|令吉)\s?\d"
+            r"|mata.{0,10}=.{0,10}rm|tolak.{0,10}rm\s?\d",
+            answer,
+            re.IGNORECASE,
+        ))
+        if coupon_value_claim and not any(item.get("tool") == "check_coupon_eligibility" for item in trace):
+            return True
+
+        # Same bypass shape as coupon_value_claim above, for prices instead
+        # of coupon math: the prompt's own "never invent... prices" rule has
+        # no enforcement behind it. Deliberately conservative — requires ANY
+        # tool that could legitimately have produced a real RM figure to be
+        # completely absent from the trace, rather than tying the claim to
+        # one specific tool the way coupon_value_claim does, since a price
+        # can legitimately come from several different sources (a live
+        # catalogue quote, a just-created booking's real total, an existing
+        # booking/payment being read back, a policy document mentioning a
+        # fee) — and, same as catalogue_intent/policy_intent/etc. further
+        # down, a fact already verified and cached from an earlier turn
+        # counts too; re-quoting an already-verified RM50 must not force a
+        # redundant re-call. Only fires when NEITHER this turn's trace NOR
+        # any cached fact could account for it — the response naming a
+        # concrete RM figure with nothing anywhere to back it means Grade A
+        # confidence it's invented, at the cost of not catching every
+        # possible price hallucination.
+        price_value_claim = bool(re.search(r"\brm\s?\d", answer, re.IGNORECASE))
+        price_evidence_tools = {
+            "get_booking_service_options", "create_booking", "cancel_booking",
+            "reschedule_booking", "get_latest_booking", "get_last_completed_booking",
+            "get_booking_by_id", "get_payment_history", "check_availability",
+            "check_availability_range", "retrieve_policy",
+        }
+        price_evidence_facts = {
+            "service_options", "policy_knowledge", "latest_booking", "resolved_booking",
+            "payment_history", "availability", "availability_range",
+        }
+        if price_value_claim and not (
+            any(item.get("tool") in price_evidence_tools for item in trace)
+            or any((state.verified_facts or {}).get(key) for key in price_evidence_facts)
+        ):
+            return True
+
+        # Same bypass shape again, for slot/availability claims — confirmed
+        # live via this exact function: "10 AM is available." with no
+        # check_availability call anywhere was already caught by
+        # availability_intent further down, but only when the response had
+        # no trailing question; appending "Would you like to book it?" made
+        # _response_requests_customer_input's early return skip past
+        # availability_intent entirely and silently accept the same
+        # fabricated slot.
+        availability_value_claim = bool(re.search(
+            r"\d{1,2}(?::\d{2})?\s*(?:am|pm)?\s+is\s+available|"
+            r"available\s+(?:at|on)\s+\d|"
+            r"\bslots?\s+(?:is|are)\s+available\b|"
+            r"有空位|有档期|时段.{0,5}有空",
+            answer,
+            re.IGNORECASE,
+        ))
+        if availability_value_claim and not (
+            any(item.get("tool") in {"check_availability", "check_availability_range"} for item in trace)
+            or (state.verified_facts or {}).get("availability")
+            or (state.verified_facts or {}).get("availability_range")
+        ):
+            return True
+
+        # HEALTH BOUNDARY in the system prompt says "Only after success may
+        # the updated status be treated as recorded" — this had zero
+        # enforcement behind it at all (unlike action_claim above, which
+        # covers booking/cancel/reschedule/redeem specifically and doesn't
+        # include vaccination wording). Confirmed live: with an empty trace,
+        # "I have recorded your vaccination as updated!" passed straight
+        # through.
+        vaccination_claim = bool(re.search(
+            r"vaccinat(?:ed|ion).{0,20}(?:recorded|updated|verified|confirmed|on\s+file)|"
+            r"(?:recorded|updated|noted).{0,20}vaccinat(?:ed|ion)|"
+            r"疫苗.{0,10}(?:已更新|已记录|已确认)",
+            answer,
+            re.IGNORECASE,
+        ))
+        if vaccination_claim and not any(item.get("tool") == "update_pet_vaccination" for item in trace):
+            return True
+
+        # Same bypass shape, for booking-status lookups: "what's the status
+        # of my booking?" answered with a specific status ("Your booking is
+        # confirmed for tomorrow") never matches action_claim above — "is
+        # confirmed" isn't the adjacent "booking confirmed" phrase, because
+        # this is a status readback, not a just-performed action — and,
+        # positioned after the early return the same way availability/coupon/
+        # price used to be, would let the model report a fabricated status
+        # the moment the reply also asks a follow-up question.
+        booking_status_claim = bool(re.search(
+            r"\b(?:your|the)\s+booking\s+(?:is|status\s+is|has\s+been)\s*(?:currently\s+)?"
+            r"(?:confirmed|cancelled|canceled|rescheduled|completed|pending|paid|no[- ]show)\b|"
+            r"\bbooking\s+status\s*(?:is|:)\s*\w+|"
+            r"您的预约(?:状态)?(?:是|为|已)(?:确认|取消|改期|完成|待处理)|"
+            r"预约状态[:：]\s*\S+|"
+            r"status\s+tempahan\s+(?:anda\s+)?(?:ialah|adalah)\s*\w+",
+            answer,
+            re.IGNORECASE,
+        ))
+        if booking_status_claim and not (
+            any(
+                item.get("tool") in {
+                    "get_latest_booking", "get_booking_by_id",
+                    "cancel_booking", "reschedule_booking", "create_booking",
+                }
+                for item in trace
+            )
+            or any(
+                (state.verified_facts or {}).get(key)
+                for key in ("latest_booking", "resolved_booking", "created_booking")
+            )
+        ):
+            return True
+
+        # Same bypass shape, for policy answers: a definitive allowed/
+        # required/prohibited-style answer to a policy question, with no
+        # retrieve_policy evidence anywhere, is as fabricatable as a price or
+        # availability claim. Deliberately narrower than the price/
+        # availability checks — no bare "yes"/"no" (far too broad on its
+        # own) — and gated on the customer's own message actually asking
+        # about policy, so an unrelated "not allowed" elsewhere in a reply
+        # never triggers this.
+        policy_question = bool(re.search(r"\bpolicy\b|政策|\bpolisi\b", text))
+        policy_claim = policy_question and bool(re.search(
+            r"\ballowed\b|\bnot\s+allowed\b|\brequired\b|\bmandatory\b|\bprohibited\b|"
+            r"\bpolicy\s+(?:is|requires|allows)\b|"
+            r"必须|不允许|允许|禁止|规定是|政策(?:是|规定)|"
+            r"\bmesti\b|\bdibenarkan\b|\btidak\s+dibenarkan\b|\bpolisi\s+(?:ialah|memerlukan)\b",
+            answer,
+            re.IGNORECASE,
+        ))
+        if policy_claim and not (
+            (state.verified_facts or {}).get("policy_knowledge")
+            or any(item.get("tool") == "retrieve_policy" for item in trace)
+        ):
+            return True
 
         confirmation_document_intent = bool(re.search(
             r"\b(?:booking\s+confirmation|confirmation\s+(?:slip|document|pdf)|my\s+confirmation)\b"

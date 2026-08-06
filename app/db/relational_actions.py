@@ -2411,6 +2411,16 @@ def create_booking(context: CustomerContext, intent_json: dict) -> dict:
             service_type,
             expected,
         )
+        if verified:
+            # booking_status is always "Pending" at this exact point — every
+            # new booking starts there regardless of path — so it tells the
+            # customer nothing. payment_status ("Pending" until staff verify
+            # it, matching the local `payment` dict just inserted in both the
+            # RPC and compensating-fallback paths above) is what's actually
+            # still outstanding and worth surfacing in the confirmation.
+            # persisted (not serialized above) is what the final result
+            # below actually spreads into the tool response.
+            persisted["payment_status"] = payment["status"]
         if not verified:
             if used_compensating_fallback:
                 (
