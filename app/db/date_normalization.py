@@ -12,6 +12,45 @@ _MONTH_NAMES = (
     r"jul(?:y)?|aug(?:ust)?|sep(?:tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?"
 )
 
+# Common WhatsApp-texting abbreviations/misspellings — a customer typing
+# "tmr" (as casually happens) previously matched nothing at all here.
+_TODAY_WORDS = ("today", "tdy", "2day")
+_TOMORROW_WORDS = (
+    "tomorrow", "tmr", "tmrw", "tmrrw", "tmo", "tmro", "2mrw", "2moro", "2morrow",
+    "tomorow", "tommorow", "tommorrow",
+)
+_TODAY_ALT = "|".join(_TODAY_WORDS)
+_TOMORROW_ALT = "|".join(_TOMORROW_WORDS)
+
+
+def _looks_like_abbreviation(word: str, target: str) -> bool:
+    """True if word's letters appear in target in the same order (an
+    ordered subsequence — "tmr" -> t.o.m.o.r.row, "tmo" -> t.omo.rrow),
+    the general shape of a texting abbreviation. This is what lets
+    parse_customer_date recognize a variant that isn't in the explicit
+    _TODAY_WORDS/_TOMORROW_WORDS list above, instead of only ever
+    understanding exactly the spellings someone thought to enumerate.
+
+    Guarded by a minimum length and a matching first letter so short,
+    unrelated real words ("to", "at", "or", "tow") can't accidentally
+    qualify — without that guard, "to" would trivially subsequence-match
+    "tomorrow". 4 chars, not 3: every 3-letter abbreviation actually in use
+    ("tmr", "tdy", "tmo") is already caught by the exact-match word lists
+    above before this fallback ever runs — this only has to catch novel
+    4+ letter variants (typos like "tmrow", "tomoro") nobody enumerated.
+    """
+    word = word.strip()
+    if len(word) < 4 or word[0] != target[0]:
+        return False
+    remaining = iter(target)
+    return all(letter in remaining for letter in word)
+
+
+def _normalize_texting_shorthand(word: str) -> str:
+    """"2" as a stand-in for "to" ("2day", "2mrw", "2moro") — a narrow,
+    specific substitution, not a general leetspeak decoder."""
+    return re.sub(r"^2(?=[a-z])", "to", word)
+
 # Chinese day-word and weekday aliases. This module previously had zero
 # non-English support, so "明天"/"后天"/"星期一" etc. never resolved to a
 # date at all — resolve_datetime returned ambiguous=True and the customer's
@@ -164,10 +203,28 @@ def parse_customer_date(value: str | None, *, today: date | None = None) -> date
         return None
     reference = today or date.today()
     text = " ".join(str(value).strip().lower().replace(",", " ").split())
-    if text == "today":
+    if text in _TODAY_WORDS:
         return reference
-    if text == "tomorrow":
+    # Checked before the bare "tomorrow" case below: extract_customer_date's
+    # substring scan for "tomorrow" would otherwise match just the last word
+    # of this phrase and silently return the wrong (one day short) date —
+    # Chinese ("后天") and Malay ("lusa") already had their own +2-day word
+    # for this; English never did.
+    if any(text in (f"day after {w}", f"the day after {w}") for w in _TOMORROW_WORDS):
+        return reference + timedelta(days=2)
+    if text in _TOMORROW_WORDS:
         return reference + timedelta(days=1)
+    # Generic fallback for a texting abbreviation nobody thought to list
+    # above — only reached once the whole value has failed every exact
+    # match, and only when it's a single bare word (never risked against a
+    # longer phrase, where a stray short word coincidentally subsequencing
+    # "tomorrow" would be a real false-positive risk).
+    if " " not in text:
+        shorthand = _normalize_texting_shorthand(text)
+        if _looks_like_abbreviation(shorthand, "today") and not _looks_like_abbreviation(shorthand, "tomorrow"):
+            return reference
+        if _looks_like_abbreviation(shorthand, "tomorrow"):
+            return reference + timedelta(days=1)
     chinese_result = _parse_chinese_date(str(value).strip(), reference)
     if chinese_result is not None:
         return chinese_result
@@ -303,7 +360,11 @@ def extract_customer_date(value: str | None, *, today: date | None = None) -> da
         if parsed is not None:
             return parsed
     patterns = (
-        r"\b(?:today|tomorrow)\b",
+        # Tried before the bare today/tomorrow pattern below — otherwise
+        # that pattern's substring match on "tomorrow" wins first and this
+        # phrase's "day after" never gets seen at all.
+        rf"\b(?:the\s+)?day\s+after\s+(?:{_TOMORROW_ALT})\b",
+        rf"\b(?:{_TODAY_ALT}|{_TOMORROW_ALT})\b",
         r"\b(?:(?:next|this)\s+)?(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b",
         r"\b(?:hari\s+ini|esok|lusa)\b",
         r"\b(?:isnin|selasa|rabu|khamis|jumaat|sabtu|ahad)(?:\s+(?:depan|ini))?\b",

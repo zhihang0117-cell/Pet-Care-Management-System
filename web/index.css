@@ -644,12 +644,35 @@ body.showcase-demo-open {
     border: 0;
 }
 
-.showcase-note,
-.showcase-fallback {
+.showcase-note {
     margin-top: 16px;
     color: var(--text-muted);
     font-size: 0.82rem;
     text-align: center;
+}
+
+/* Overlaid on .showcase-stage (position: relative) rather than a normal
+   block below it — .showcase-main is a fixed-aspect-ratio, overflow:hidden
+   box with no spare room for extra content, so a block-flow element here
+   would risk being clipped instead of shown. */
+.showcase-stage .showcase-fallback {
+    position: absolute;
+    right: 12px;
+    bottom: 12px;
+    z-index: 2;
+    padding: 6px 12px;
+    border-radius: 999px;
+    background: rgba(17, 17, 17, 0.72);
+    color: #F0E4D0;
+    font-size: 0.78rem;
+    font-weight: 600;
+    text-decoration: none;
+    backdrop-filter: blur(4px);
+}
+
+.showcase-stage .showcase-fallback:hover {
+    background: rgba(17, 17, 17, 0.9);
+    text-decoration: underline;
 }
 
 .showcase-demo-launcher {

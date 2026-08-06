@@ -61,8 +61,22 @@
           allowfullscreen="allowfullscreen"
           allow="fullscreen">
         </iframe>
-      </div>
 
+        <!-- An iframe blocked by the embedding device (third-party cookie
+             blocking, an ad/privacy blocker, a restricted network, or a
+             Canva share-permission prompt that can't render inside a frame)
+             fails silently — the load event still fires with nothing
+             visible, so there's no reliable way to detect the failure and
+             show this conditionally. Always showing a direct link
+             guarantees every device has a way to actually see the
+             presentation. Positioned as an overlay (not a block sibling
+             below the stage) since .showcase-main is a fixed-aspect-ratio,
+             overflow:hidden box with no spare room budgeted for extra
+             content — a normal block element here risks being clipped. -->
+        <a class="showcase-fallback" href="https://www.canva.com/design/DAHRCdfnHvI/4_ytCXe8kgkp8TypNAhq0A/view" target="_blank" rel="noopener">
+          Trouble viewing? Open in Canva ↗
+        </a>
+      </div>
     </section>
   </main>
 </div>
