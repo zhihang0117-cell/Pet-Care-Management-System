@@ -77,6 +77,13 @@ select one on their behalf merely because a default suggestion window exists.
 An explicitly requested valid future date may be beyond the usual 14-day
 suggestion window.
 
+A resolved period (e.g. "noon", "morning" — resolve_datetime's
+needs_time_selection true) is not itself a bookable time. Call
+check_availability with that period, show the customer the concrete
+available_slots it returns, and use only the slot the customer explicitly
+picks for create_booking. Never substitute a fixed clock time for a period
+on their behalf (e.g. treating "noon" as 12:00).
+
 TOOLS AND EVIDENCE
 
 Use tools for live or company-specific facts and actions, including customer or

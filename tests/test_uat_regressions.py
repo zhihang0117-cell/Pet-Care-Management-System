@@ -1,3 +1,4 @@
+from datetime import date, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -47,6 +48,64 @@ def test_chinese_date_time_and_duration_are_deterministic():
     assert extract_time_range("下午5点半到晚上8点半") == ("17:30", "20:30", 180)
     assert extract_customer_date("大后天早上") is not None
     assert parse_week_range("下周下午") is not None
+
+
+def test_chinese_next_weekday_modifier_is_not_dropped_inside_a_sentence():
+    # Thursday. "下个星期五" (next Friday) embedded in a longer sentence
+    # previously matched the bare "星期五" substring first and silently
+    # returned this Friday instead of next Friday — see extract_customer_date.
+    thursday = date(2026, 8, 6)
+    this_friday = date(2026, 8, 7)
+    next_friday = date(2026, 8, 14)
+
+    assert extract_customer_date("下个星期五大概中午这样", today=thursday) == next_friday
+    assert extract_customer_date("下个星期5大概中午这样", today=thursday) == next_friday
+    assert extract_customer_date("下个星期5", today=thursday) == extract_customer_date(
+        "下个星期五", today=thursday
+    )
+    # Bare weekday (no "next" modifier) must still resolve to the nearest
+    # occurring Friday, unaffected by the prefix-ordering fix.
+    assert extract_customer_date("星期五", today=thursday) == this_friday
+
+
+def test_english_next_weekday_modifier_is_not_silently_ignored():
+    # Found via scenario testing, not code reading: `days_ahead == 0 or
+    # modifier == "next" and days_ahead == 0` in parse_customer_date's
+    # English weekday branch is, by operator precedence, exactly
+    # `days_ahead == 0` — the `modifier == "next"` clause never changed the
+    # outcome. "next friday" said on any day but Friday itself silently
+    # returned THIS Friday, ignoring "next" entirely, while the equivalent
+    # Chinese/Malay branches (_parse_chinese_date/_parse_malay_date) already
+    # handled the same "next" modifier correctly.
+    thursday = date(2026, 8, 6)
+    assert extract_customer_date("this friday", today=thursday) == date(2026, 8, 7)
+    assert extract_customer_date("next friday", today=thursday) == date(2026, 8, 14)
+    # Bare weekday (no modifier) must still resolve to the nearest occurrence.
+    assert extract_customer_date("friday", today=thursday) == date(2026, 8, 7)
+    # today IS Thursday: bare "thursday" and "next thursday" both correctly
+    # roll to next week (the one case the old buggy condition happened to
+    # get right, since days_ahead == 0 covers it regardless of "next").
+    assert extract_customer_date("thursday", today=thursday) == date(2026, 8, 13)
+    assert extract_customer_date("next thursday", today=thursday) == date(2026, 8, 13)
+
+
+def test_resolve_datetime_uses_business_local_today_not_server_utc_date(monkeypatch):
+    # The container runs in UTC with no TZ set. resolve_datetime previously
+    # called extract_customer_date/parse_week_range with no `today`, so they
+    # fell back to date.today() — the server's naive UTC date — even though
+    # the tool's own docstring claims "business-local time,
+    # Asia/Kuala_Lumpur". Malaysia is UTC+8, so any customer message sent
+    # during Malaysia's local 00:00-07:59 (UTC 16:00-23:59 the day before)
+    # was resolved a full calendar day behind the real business-local date.
+    # This pins resolve_datetime to actually use today_business(), not
+    # whatever date.today() happens to return.
+    import app.tools.calendar_tools as calendar_tools
+
+    fake_business_today = date(2026, 8, 14)  # a Friday
+    monkeypatch.setattr(calendar_tools, "today_business", lambda: fake_business_today)
+
+    result = calendar_tools.resolve_datetime.invoke({"text": "tomorrow"})
+    assert result["date"] == (fake_business_today + timedelta(days=1)).isoformat()
 
 
 def test_existing_booking_survives_beyond_first_turn(monkeypatch):

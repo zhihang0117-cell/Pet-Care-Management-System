@@ -141,7 +141,7 @@ class SupabaseRelationalRepository:
             **dict(payload.get("entities") or {}),
             "pet_id": booking_command.pet_id,
             "pet_name": booking_command.pet_name,
-            "preferred_date": booking_command.preferred_date or booking_command.booking_date,
+            "preferred_date": booking_command.preferred_date,
             "preferred_time": booking_command.selected_slot or booking_command.preferred_time,
             "service_type": booking_command.service_type,
             "package_name": booking_command.package_name,

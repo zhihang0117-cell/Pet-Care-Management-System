@@ -1600,7 +1600,17 @@ def _next_table_id(client, table: str, id_column: str) -> int:
 
 
 def _today_parts() -> tuple[str, str]:
-    now = datetime.now()
+    """A booking row's created_date/created_time — must be business-local
+    (Asia/Kuala_Lumpur), not naive server time. The container runs in UTC
+    (no TZ set), so a bare datetime.now() silently recorded a created_time
+    up to 8 hours off real local time (and, near midnight either side, the
+    wrong calendar date) — inconsistent with booking_date/booking_time,
+    which are always real business-local values via resolve_datetime."""
+    from zoneinfo import ZoneInfo
+
+    from .time_normalization import BUSINESS_TIMEZONE
+
+    now = datetime.now(ZoneInfo(BUSINESS_TIMEZONE))
     return now.date().isoformat(), now.strftime("%H:%M:%S")
 
 

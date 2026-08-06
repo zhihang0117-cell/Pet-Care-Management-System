@@ -26,17 +26,51 @@ _RATE_MARKER_RE = re.compile(
 )
 
 
+def _find_catalogue_match(catalogue: list[dict], name: str) -> dict | None:
+    normalized_name = re.sub(r"\s+", " ", str(name or "")).strip().casefold()
+    return next(
+        (
+            opt for opt in catalogue
+            if re.sub(r"\s+", " ", str(opt.get("service_name") or "")).strip().casefold() == normalized_name
+        ),
+        None,
+    )
+
+
+def _price_mismatch_error(field_label: str, submitted_price, match: dict) -> dict | None:
+    if match is None or _RATE_MARKER_RE.search(str(match.get("service_name") or "")):
+        return None
+    try:
+        catalogue_price = float(match["price"])
+        submitted = float(submitted_price)
+    except (TypeError, ValueError):
+        return None
+    if abs(submitted - catalogue_price) <= 0.01:
+        return None
+    return {
+        "error": "INVALID_PRICE",
+        "message": (
+            f"{field_label} ({submitted_price}) does not match {match['service_name']!r}'s real "
+            f"catalogue price (RM{catalogue_price:g}) from get_booking_service_options. "
+            "Use its exact price, not a recalled, rounded, or guessed number."
+        ),
+    }
+
+
 def _verify_flat_price_against_catalogue(
     company_id, service_type: str, package_name: str, price,
     pet_type: str = "", pet_size: str = "",
+    add_on: str = "", add_on_price=None,
 ) -> dict | None:
     """
-    Best-effort, FAIL-OPEN cross-check of a GROOMING/DAYCARE package price
-    against the same RAG catalogue get_booking_service_options already
-    parses for the model (app.tools.customer_tools._extract_daycare_catalogue_options
-    — genuinely service-agnostic despite its name: it structures any RAG
-    segment containing exactly one RM amount, which is exactly what a
-    pet-size-narrowed grooming chunk or a daycare package line looks like).
+    Best-effort, FAIL-OPEN cross-check of a GROOMING/DAYCARE package (and, if
+    given, add-on) price against the same RAG catalogue
+    get_booking_service_options already parses for the model
+    (app.tools.customer_tools._extract_daycare_catalogue_options — genuinely
+    service-agnostic despite its name: it structures any RAG segment
+    containing exactly one RM amount, which is exactly what a
+    pet-size-narrowed grooming chunk, a daycare package line, or a grooming
+    add-on line (nail trim, ear cleaning, teeth brushing, ...) looks like).
 
     Unlike BOARDING (a real per-night rate in the structured `room` table),
     GROOMING/DAYCARE prices only ever exist as unstructured document text,
@@ -45,10 +79,13 @@ def _verify_flat_price_against_catalogue(
     service errors, or the matched catalogue line looks like a per-hour/
     per-day RATE rather than a flat total (an hourly package's real total is
     rate x hours, which legitimately differs from the bare rate). Only
-    returns a rejection when a package_name — which the model is already
-    required to copy verbatim from get_booking_service_options — has a
-    submitted price that does not match that exact catalogue entry's real
-    price.
+    returns a rejection when a package_name/add_on — which the model is
+    already required to copy verbatim from get_booking_service_options — has
+    a submitted price that does not match that exact catalogue entry's real
+    price. The add_on check reuses the exact same catalogue lookup as the
+    base package (previously the parsed add_ons list was fetched and
+    discarded here, leaving add-on prices as the one line item type never
+    checked against anything real).
     """
     normalized_service = str(service_type or "").strip().upper()
     if normalized_service not in {"GROOMING", "DAYCARE"}:
@@ -67,36 +104,22 @@ def _verify_flat_price_against_catalogue(
             rag_rows = CompanyRAGRetriever().search(
                 company_id, "daycare packages and prices", service_type="daycare",
             )
-        services, _add_ons = _extract_daycare_catalogue_options(rag_rows)
+        services, add_ons = _extract_daycare_catalogue_options(rag_rows)
     except Exception:
         return None  # RAG unavailable/erroring must never block a booking write
 
-    normalized_package = re.sub(r"\s+", " ", str(package_name or "")).strip().casefold()
-    match = next(
-        (
-            opt for opt in services
-            if re.sub(r"\s+", " ", str(opt.get("service_name") or "")).strip().casefold() == normalized_package
-        ),
-        None,
+    catalogue = services + add_ons
+    package_mismatch = _price_mismatch_error(
+        "price", price, _find_catalogue_match(catalogue, package_name)
     )
-    if match is None or _RATE_MARKER_RE.search(str(match.get("service_name") or "")):
-        return None
-    try:
-        catalogue_price = float(match["price"])
-        submitted_price = float(price)
-    except (TypeError, ValueError):
-        return None
-    if abs(submitted_price - catalogue_price) <= 0.01:
-        return None
+    if package_mismatch:
+        return package_mismatch
 
-    return {
-        "error": "INVALID_PRICE",
-        "message": (
-            f"price ({price}) does not match {match['service_name']!r}'s real "
-            f"catalogue price (RM{catalogue_price:g}) from get_booking_service_options. "
-            "Use its exact price, not a recalled, rounded, or guessed number."
-        ),
-    }
+    if str(add_on or "").strip() and add_on_price is not None:
+        return _price_mismatch_error(
+            "add_on_price", add_on_price, _find_catalogue_match(catalogue, add_on)
+        )
+    return None
 
 
 @tool
@@ -327,6 +350,7 @@ def create_booking(
         price_mismatch = _verify_flat_price_against_catalogue(
             company_id, normalized_service, package_name, price,
             pet_type=catalogue_pet_type, pet_size=catalogue_pet_size,
+            add_on=add_on, add_on_price=add_on_price,
         )
         if price_mismatch:
             return price_mismatch
