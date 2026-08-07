@@ -20,6 +20,7 @@ from app.db.customer_context import CustomerContext
 from app.db.time_normalization import extract_duration_minutes, extract_time_from_message, extract_time_range
 from app.documents import service as document_service
 from app.orchestrator import PawfectOrchestrator
+from app.tools import availability_tools
 
 
 def test_phone_identity_never_matches_a_short_suffix():
@@ -113,6 +114,7 @@ def test_1730_can_be_a_daycare_pickup_without_being_a_late_start(monkeypatch):
     )
 
     assert "17:30:00" in pickup_choices["data"]["available_check_out_times"]
+    assert "18:30:00" in pickup_choices["data"]["available_check_out_times"]
     assert pickup_choices["data"]["available_slots"] == []
     assert "17:30:00" not in late_starts["data"]["available_slots"]
 
@@ -122,6 +124,128 @@ def test_half_hour_slots_are_available_even_when_business_opens_on_the_hour():
 
     assert "09:30:00" in slots
     assert "17:30:00" in slots
+
+
+def test_daycare_availability_rejects_checkout_not_after_checkin(monkeypatch):
+    monkeypatch.setattr(
+        relational_actions,
+        "_business_hours_for_date",
+        lambda company_id, target_date: ("09:00", "18:00", None),
+    )
+    monkeypatch.setattr(relational_actions, "get_supabase_client", lambda: object())
+    monkeypatch.setattr(relational_actions, "_shared_booking_holds", lambda client, company_id: None)
+    monkeypatch.setattr(
+        relational_actions,
+        "_staff_day_roster",
+        lambda client, company_id, target_date, service_type=None: [
+            {"staff_id": 7, "staff_name": "Ari"}
+        ],
+    )
+    monkeypatch.setattr(
+        relational_actions,
+        "_cross_service_staff_bookings",
+        lambda client, company_id, staff_ids, date_str: [],
+    )
+
+    result = check_available_slots(
+        CustomerContext(company_id=1),
+        {
+            "service_type": "DAYCARE",
+            "entities": {
+                "preferred_date": "2026-08-10",
+                "preferred_time": "10:00",
+                "check_out_time": "09:00",
+            },
+        },
+    )
+
+    assert result["status"] == "error"
+    assert result["data"]["available_slots"] == []
+    assert "must be after" in result["error"]
+
+
+def test_unknown_service_does_not_silently_return_grooming_slots():
+    result = check_available_slots(
+        CustomerContext(company_id=1),
+        {"service_type": "DAY_CARE", "entities": {"preferred_date": "2026-08-10"}},
+    )
+
+    assert result["status"] == "error"
+    assert result["data"]["available_slots"] == []
+
+
+def test_read_side_active_statuses_match_database_conflict_statuses():
+    assert relational_actions._booking_blocks_availability({"booking_status": "Pending"})
+    assert relational_actions._booking_blocks_availability({"booking_status": "Scheduled"})
+    assert not relational_actions._booking_blocks_availability({"booking_status": "Done"})
+    assert not relational_actions._booking_blocks_availability({"booking_status": "mystery-status"})
+
+
+def test_boarding_checkout_date_is_free_for_another_pet_service():
+    pet_bookings = [
+        {
+            "_service_type": "GROOMING",
+            "grooming_booking_id": 12,
+            "booking_date": "2026-08-12",
+            "booking_time": "10:00",
+            "booking_status": "Scheduled",
+        }
+    ]
+
+    assert relational_actions._pet_free_for_boarding_stay(
+        pet_bookings,
+        date(2026, 8, 10),
+        date(2026, 8, 12),
+        check_in_time="14:00",
+        check_out_time="10:00",
+    )
+
+    pet_bookings[0]["booking_time"] = "09:00"
+    assert not relational_actions._pet_free_for_boarding_stay(
+        pet_bookings,
+        date(2026, 8, 10),
+        date(2026, 8, 12),
+        check_in_time="14:00",
+        check_out_time="10:00",
+    )
+
+
+def test_range_availability_threads_customer_pet_and_staff_constraints(monkeypatch):
+    calls = []
+
+    class Repo:
+        def check_availability(self, company_id, *, service, date, time, intent_json=None):
+            calls.append(intent_json)
+            return {"status": "success", "data": {"available_slots": ["10:00:00"]}}
+
+    monkeypatch.setattr(availability_tools, "get_relational_repository", lambda: Repo())
+
+    result = availability_tools.check_availability_range.invoke(
+        {
+            "company_id": 1,
+            "service_type": "DAYCARE",
+            "start_date": "2026-08-10",
+            "end_date": "2026-08-10",
+            "duration_minutes": 240,
+            "customer_id": 31,
+            "pet_id": 44,
+            "exclude_booking_id": 55,
+            "preferred_staff": "Ari",
+        }
+    )
+
+    assert result["status"] == "success"
+    assert calls == [
+        {
+            "entities": {
+                "duration_minutes": 240,
+                "customer_id": 31,
+                "pet_id": 44,
+                "exclude_booking_id": 55,
+                "preferred_staff": "Ari",
+            }
+        }
+    ]
 
 
 def test_overlapping_room_holds_conflict_even_when_date_ranges_differ():

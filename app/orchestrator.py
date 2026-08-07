@@ -90,6 +90,7 @@ CUSTOMER_SCOPED_TOOL_NAMES = {
     "get_last_completed_booking",
     "get_booking_by_id",
     "check_availability",
+    "check_availability_range",
     "create_booking",
     "cancel_booking",
     "reschedule_booking",
@@ -889,6 +890,123 @@ class PawfectOrchestrator:
             content = f"After a complete availability check, no {target} time satisfies all booking conditions. Give me another date or condition and I’ll check again."
         return response.model_copy(update={"content": with_repeat_context(content)})
 
+    @staticmethod
+    def _ground_daycare_recommendation_response(
+        response, user_message: str, trace: list[dict], state
+    ):
+        """Recommend DAYCARE options from structured duration/price evidence."""
+        latest = None
+        for item in reversed(trace):
+            if item.get("tool") in {"resolve_datetime", "update_conversation_state"}:
+                continue
+            if item.get("tool") != "get_booking_service_options":
+                return response
+            latest = item
+            break
+        if latest is None or str((latest.get("args") or {}).get("service_type") or "").upper() != "DAYCARE":
+            return response
+        try:
+            result = json.loads(latest.get("result") or "{}")
+        except (TypeError, json.JSONDecodeError):
+            return response
+        if not isinstance(result, dict) or result.get("status") != "success":
+            return response
+        options = [
+            option for option in (result.get("data") or {}).get("service_options") or []
+            if isinstance(option, dict)
+        ]
+        if not options:
+            return response
+
+        recommendation_requested = bool(re.search(
+            r"\b(?:recommend|suggest|best|suitable|which\s+(?:one|package)|"
+            r"which.{0,30}daycare|what.{0,30}daycare)\b|"
+            r"推荐|推薦|建议|建議|适合|適合|哪个好|哪個好",
+            user_message or "",
+            re.IGNORECASE,
+        ))
+        booking_daycare = (
+            state.active_scenario == "MAKE_BOOKING"
+            and str(state.service_type or "").upper() == "DAYCARE"
+        )
+        if not recommendation_requested and not booking_daycare:
+            return response
+
+        duration = getattr(state, "daycare_duration_minutes", None)
+        chinese = bool(re.search(r"[\u3400-\u9fff]", user_message or ""))
+        if not duration:
+            content = (
+                "为了推荐正确的日托套餐，请告诉我预计托管多久，或提供接送时间。确认时长后我会比较适用套餐和实际总价。"
+                if chinese else
+                "To recommend the right daycare package, how long will your pet stay, "
+                "or what are the drop-off and pickup times? I’ll compare only the applicable "
+                "packages and their actual totals."
+            )
+            return response.model_copy(update={"content": content})
+
+        ranked: list[tuple[int, float, dict]] = []
+        for option in options:
+            try:
+                rate = float(option.get("price"))
+            except (TypeError, ValueError):
+                continue
+            exact = option.get("duration_minutes")
+            minimum = option.get("min_duration_minutes")
+            maximum = option.get("max_duration_minutes")
+            unit = str(option.get("pricing_unit") or "flat").casefold()
+            eligible = False
+            rank = 9
+            if exact not in (None, ""):
+                eligible = int(exact) == int(duration)
+                rank = 0
+            elif minimum not in (None, "") or maximum not in (None, ""):
+                eligible = True
+                if minimum not in (None, ""):
+                    eligible = eligible and (
+                        duration > int(minimum)
+                        if option.get("min_duration_exclusive")
+                        else duration >= int(minimum)
+                    )
+                if maximum not in (None, ""):
+                    eligible = eligible and (
+                        duration < int(maximum)
+                        if option.get("max_duration_exclusive")
+                        else duration <= int(maximum)
+                    )
+                rank = 1
+            elif unit == "hour":
+                eligible = True
+                rank = 2
+            if not eligible:
+                continue
+            total = rate * duration / 60 if unit == "hour" else rate
+            ranked.append((rank, total, option))
+
+        if not ranked:
+            return response
+        ranked.sort(key=lambda item: (item[0], item[1], str(item[2].get("service_name") or "")))
+        recommendations = ranked[:2]
+        duration_text = (
+            f"{duration // 60:g} 小时" if duration % 60 == 0 else f"{duration} 分钟"
+        ) if chinese else (
+            f"{duration // 60:g} hours" if duration % 60 == 0 else f"{duration} minutes"
+        )
+        rendered = [
+            f"{item[2].get('service_name')} — RM{item[1]:g}"
+            for item in recommendations
+        ]
+        if chinese:
+            content = f"按 {duration_text} 的托管时长，最适合的是：{rendered[0]}。"
+            if len(rendered) > 1:
+                content += f" 另一个适用选择是 {rendered[1]}。"
+            content += "请选择其中一个；确定后我再按完整时长检查接送时段。"
+        else:
+            content = f"For a {duration_text} stay, the best direct match is {rendered[0]}."
+            if len(rendered) > 1:
+                content += f" Another applicable option is {rendered[1]}."
+            content += " Choose one, then I’ll check drop-off and pickup availability for the full stay."
+        return response.model_copy(update={"content": content})
+
     def build_messages(
         self,
         company_context: dict,
@@ -977,9 +1095,14 @@ class PawfectOrchestrator:
         stated_numbers = [float(n) for n in re.findall(r"\d+(?:\.\d+)?", str(height_text))]
         if not stated_numbers:
             return None
+        # state.history is already capped to MAX_HISTORY_TURNS complete
+        # human/AI pairs. Slicing its last 8 entries meant only about four
+        # customer answers survived validation, which is shorter than the
+        # customer+pet profile flow itself and caused earlier breed/species
+        # answers to be rejected at the final create_pet call.
         recent_human_text = " ".join(
             [user_message or ""]
-            + [t["content"] for t in state.history[-8:] if t.get("role") == "human"]
+            + [t["content"] for t in state.history if t.get("role") == "human"]
         )
         mentioned_numbers = [float(n) for n in re.findall(r"\d+(?:\.\d+)?", recent_human_text)]
         if any(abs(n - s) <= 2 for n in mentioned_numbers for s in stated_numbers):
@@ -1096,7 +1219,10 @@ class PawfectOrchestrator:
                 ),
             }
 
-        generic_species = {"dog", "cat", "canine", "feline", "犬", "狗", "猫", "貓"}
+        generic_species = {
+            "dog", "cat", "canine", "feline", "犬", "狗", "猫", "貓",
+            "anjing", "kucing",
+        }
         if breed.casefold() in generic_species:
             return {
                 "error": "SPECIES_IS_NOT_BREED",
@@ -1108,7 +1234,7 @@ class PawfectOrchestrator:
 
         recent_human_text = " ".join(
             [user_message or ""]
-            + [turn["content"] for turn in state.history[-8:] if turn.get("role") == "human"]
+            + [turn["content"] for turn in state.history if turn.get("role") == "human"]
         )
 
         def compact(value: str) -> str:
@@ -1163,10 +1289,47 @@ class PawfectOrchestrator:
             [str(user_message or "")]
             + [
                 str(turn.get("content") or "")
-                for turn in state.history[-8:]
+                for turn in state.history
                 if turn.get("role") == "human"
             ]
         )
+
+    @staticmethod
+    def _canonicalize_explicit_breed_answer(args: dict, user_message: str) -> dict:
+        """Repair only unambiguous mixed/unknown answers from this turn.
+
+        The model has repeatedly mapped "I don't know the breed" to "mixed",
+        or sent the species as breed after the customer answered "mixed". Both
+        lose the customer's meaning and then trigger a guard rejection loop.
+        Current-turn wording is authoritative enough to canonicalize these two
+        special answers without guessing an actual breed.
+        """
+        text = str(user_message or "").casefold()
+        mixed_answer = bool(
+            re.search(
+                r"\b(?:mixed\s*breed|cross\s*breed|crossbreed|mongrel|kacukan)\b"
+                r"|混种|混種|米克斯|串串",
+                text,
+            )
+        )
+        unknown_answer = bool(
+            re.search(
+                r"(?:\b(?:don['’]?t|do\s+not|not\s+sure|unsure|unknown|no\s+idea)\b"
+                r".{0,24}\b(?:breed|kind)\b)"
+                r"|(?:\b(?:breed|kind)\b.{0,24}"
+                r"\b(?:don['’]?t\s+know|do\s+not\s+know|not\s+sure|unknown)\b)"
+                r"|(?:(?:不知道|不清楚|不确定|不確定|不晓得|不曉得).{0,8}(?:品种|品種))"
+                r"|(?:(?:品种|品種).{0,8}(?:不知道|不清楚|不确定|不確定|不晓得|不曉得))"
+                r"|(?:\b(?:tak\s+tahu|tidak\s+tahu|kurang\s+pasti)\b.{0,24}"
+                r"\b(?:baka|breed)\b)",
+                text,
+            )
+        )
+        if mixed_answer:
+            return {**args, "breed": "mixed"}
+        if unknown_answer:
+            return {**args, "breed": "unknown"}
+        return args
 
     @staticmethod
     def _customer_stated_value(value: object, customer_text: str) -> bool:
@@ -1874,6 +2037,55 @@ class PawfectOrchestrator:
         return None
 
     @staticmethod
+    def _availability_args_for_booking(args: dict) -> dict:
+        """Build an exact fresh availability probe from a proposed booking."""
+        service_type = str(args.get("service_type") or "").strip().upper()
+        return {
+            "company_id": args.get("company_id"),
+            "service_type": service_type,
+            "date": args.get("date") or "",
+            "time": args.get("time") or "",
+            "room_type": (
+                args.get("package_name") if service_type == "BOARDING"
+                else args.get("room_type") or ""
+            ),
+            "check_out_date": args.get("check_out_date") or "",
+            "customer_id": args.get("customer_id") or "",
+            "pet_id": args.get("pet_id") or "",
+            "exclude_booking_id": "",
+            "duration_minutes": args.get("duration_minutes"),
+            "check_out_time": args.get("check_out_time") or "",
+            "preferred_staff": args.get("preferred_staff") or "",
+            "selection_target": "CHECK_IN",
+            "check_in_time": "",
+        }
+
+    @classmethod
+    def _availability_result_contains_booking(cls, result: dict, booking_args: dict) -> bool:
+        if not isinstance(result, dict) or result.get("status") != "success":
+            return False
+        requested = cls._normalize_clock(booking_args.get("time"))
+        return any(
+            cls._normalize_clock(slot) == requested
+            for slot in (result.get("data") or {}).get("available_slots") or []
+        )
+
+    def _customer_selected_booking_time(
+        self, state, args: dict, user_message: str
+    ) -> bool:
+        """True only when this turn explicitly selects the proposed time."""
+        requested = self._normalize_clock(args.get("time"))
+        resolved = state.current_datetime_resolution or {}
+        if requested and self._normalize_clock(resolved.get("time")) == requested:
+            return True
+        selected = self._resolve_ordinal_reference(state, user_message)
+        return bool(
+            selected
+            and requested
+            and self._normalize_clock(selected.get("slot")) == requested
+        )
+
+    @staticmethod
     def _known_pet_by_id(state, pet_id) -> dict | None:
         """The state.known_pets entry matching pet_id, or None if pet_id is
         missing/blank or isn't actually one of this customer's real pets
@@ -1894,6 +2106,7 @@ class PawfectOrchestrator:
         sibling_tool_names: frozenset = frozenset(),
         successful_read_results: dict[str, object] | None = None,
         successful_read_lock: Lock | None = None,
+        authoritative_args: dict | None = None,
     ):
         """Execute one tool call and return its raw result (dict). No state mutation here — safe to run off-thread.
 
@@ -1912,7 +2125,11 @@ class PawfectOrchestrator:
         tool = TOOLS_BY_NAME.get(tool_call["name"])
         if tool is None:
             return {"error": f"UNKNOWN_TOOL:{tool_call['name']}"}
-        args = dict(tool_call.get("args") or {})
+        args = dict(
+            authoritative_args
+            if authoritative_args is not None
+            else (tool_call.get("args") or {})
+        )
         confirmed_preview_turn: int | None = None
         try:
             if state is not None:
@@ -1989,7 +2206,9 @@ class PawfectOrchestrator:
                         # trust whatever the model supplies instead, same
                         # reasoning as pet_id below.
                         args = {**args, "customer_id": state.customer_id}
-                    elif tool_call["name"] != "check_availability":
+                    elif tool_call["name"] not in {
+                        "check_availability", "check_availability_range"
+                    }:
                         # No real identity exists yet for this phone number.
                         # Confirmed live: for a brand-new customer, the model
                         # skipped ever calling create_customer and instead
@@ -2087,7 +2306,10 @@ class PawfectOrchestrator:
                         )
                         if repeat_service:
                             args = {**args, "service_type": repeat_service}
-                if tool_call["name"] == "check_availability" and state.pet_id is not None:
+                if (
+                    tool_call["name"] in {"check_availability", "check_availability_range"}
+                    and state.pet_id is not None
+                ):
                     # Availability must include the selected pet so a second
                     # service cannot be offered over that pet's active booking.
                     known = self._known_pet_by_id(state, args.get("pet_id"))
@@ -2289,6 +2511,7 @@ class PawfectOrchestrator:
                         ),
                     }
                 if tool_call["name"] == "create_pet":
+                    args = self._canonicalize_explicit_breed_answer(args, user_message)
                     registration_rejection = self._reject_unconfirmed_registration_fields(
                         state, tool_call["name"], args, user_message
                     )
@@ -2356,6 +2579,18 @@ class PawfectOrchestrator:
                         state, args, confirmed_preview_turn=confirmed_preview_turn
                     )
                     if booking_rejection:
+                        if (
+                            booking_rejection.get("error") == "UNVERIFIED_AVAILABILITY_SLOT"
+                            and self._customer_selected_booking_time(
+                                state, args, user_message
+                            )
+                        ):
+                            booking_rejection = {
+                                **booking_rejection,
+                                "_internal_required_tool": "check_availability",
+                                "_internal_required_args": self._availability_args_for_booking(args),
+                                "_internal_retry_args": dict(args),
+                            }
                         return booking_rejection
                     confirmation_rejection = self._authorize_pending_action(
                         state, tool_call["name"], args, user_message
@@ -2770,7 +3005,7 @@ class PawfectOrchestrator:
                         "check_out_date": "",
                         "check_out_time": "",
                         "duration_minutes": args.get("duration_minutes"),
-                        "preferred_staff": "",
+                        "preferred_staff": args.get("preferred_staff") or "",
                     })
         if new_slots:
             keys = {
@@ -3967,6 +4202,53 @@ class PawfectOrchestrator:
         return response.model_copy(update={"content": truthful})
 
     @staticmethod
+    def _ground_booking_preview_response(response, user_message: str, trace: list[dict]):
+        """Render an exact create-booking preview instead of model error prose."""
+        latest = next(
+            (item for item in reversed(trace) if item.get("tool") == "create_booking"),
+            None,
+        )
+        if latest is None:
+            return response
+        try:
+            result = json.loads(latest.get("result") or "{}")
+        except (TypeError, json.JSONDecodeError):
+            return response
+        if not isinstance(result, dict) or result.get("status") != "confirmation_required":
+            return response
+        preview = (result.get("data") or {}).get("preview")
+        if not isinstance(preview, dict):
+            return response
+
+        pet = preview.get("pet_name") or "your pet"
+        package = preview.get("package_name") or preview.get("service_type") or "service"
+        date_value = preview.get("date") or ""
+        start = str(preview.get("time") or "")[:5]
+        checkout = str(preview.get("check_out_time") or "")[:5]
+        duration = preview.get("duration_minutes")
+        price = preview.get("price")
+        price_text = f"RM{float(price):g}" if price not in (None, "") else ""
+        chinese = bool(re.search(r"[\u3400-\u9fff]", user_message or ""))
+        if chinese:
+            timing = f"{start} 至 {checkout}" if checkout else (
+                f"{start}，时长 {duration} 分钟" if duration else start
+            )
+            content = (
+                f"请确认预约：{pet}，{package}，{date_value} {timing}"
+                f"{f'，{price_text}' if price_text else ''}。回复“确认”后才会正式建立预约。"
+            )
+        else:
+            timing = f"{start} to {checkout}" if checkout else (
+                f"{start} for {duration} minutes" if duration else start
+            )
+            content = (
+                f"Please confirm this booking for {pet}: {package} on {date_value}, "
+                f"{timing}{f', {price_text}' if price_text else ''}. "
+                "Reply yes to create the booking."
+            )
+        return response.model_copy(update={"content": content})
+
+    @staticmethod
     def _ground_unavailable_profile_claims(response, user_message: str, customer: dict):
         """Never let a failed profile read become a verified-empty claim."""
         content = str(response.content or "")
@@ -4175,6 +4457,9 @@ class PawfectOrchestrator:
         forced_repeat_tools: set[str] = set()
         force_repeat_tool_once: str | None = None
         force_pending_tool_once = self._pending_confirmation_tool(state, user_message)
+        force_exact_tool_once: tuple[str, dict] | None = None
+        retry_booking_after_availability: dict | None = None
+        booking_availability_repair_used = False
         force_final_after_duplicate_read = False
         successful_read_results: dict[str, object] = {}
         successful_read_lock = Lock()
@@ -4287,6 +4572,8 @@ class PawfectOrchestrator:
                     successful_read_results.clear()
 
         for iteration_index in range(MAX_TOOL_ITERATIONS):
+            active_authoritative_tool: str | None = None
+            active_authoritative_args: dict | None = None
             if force_final_after_duplicate_read:
                 # An identical read was requested again after it had already
                 # completed (successfully, empty, or failed). Remove tool
@@ -4313,6 +4600,23 @@ class PawfectOrchestrator:
                     bound_tools, tool_choice="required", strict=True
                 )
                 bound_scenario = "__FORCED_PENDING_CONFIRMATION__"
+            elif force_exact_tool_once:
+                # Repair a stale cross-turn slot selection with a fresh exact
+                # availability read, then retry the identical booking draft.
+                # The LLM supplies only the tool call envelope; application
+                # code owns every argument copied from the rejected draft.
+                required_name, required_args = force_exact_tool_once
+                force_exact_tool_once = None
+                required_tool = TOOLS_BY_NAME.get(required_name)
+                if required_tool is None:
+                    continue
+                active_authoritative_tool = required_name
+                active_authoritative_args = required_args
+                bound_tools = [required_tool]
+                model = self._base_model.bind_tools(
+                    bound_tools, tool_choice="required", strict=True
+                )
+                bound_scenario = "__FORCED_EXACT_BOOKING_REPAIR__"
             elif force_repeat_tool_once:
                 # The repeat-booking path has a small, evidence-defined read
                 # chain. Bind only the one missing tool so a general required
@@ -4431,10 +4735,19 @@ class PawfectOrchestrator:
                     trace,
                     state,
                 )
+                response = self._ground_daycare_recommendation_response(
+                    response,
+                    user_message,
+                    trace,
+                    state,
+                )
                 response = self._ground_document_delivery_response(
                     response, user_message, trace
                 )
                 response = self._ground_membership_response(
+                    response, user_message, trace
+                )
+                response = self._ground_booking_preview_response(
                     response, user_message, trace
                 )
                 response = self._ground_unavailable_profile_claims(
@@ -4478,6 +4791,11 @@ class PawfectOrchestrator:
                     sibling_tool_names,
                     successful_read_results,
                     successful_read_lock,
+                    (
+                        active_authoritative_args
+                        if tool_call["name"] == active_authoritative_tool
+                        else None
+                    ),
                 )
                 duration_ms = round((time_module.perf_counter() - started_at) * 1000, 1)
                 return result, duration_ms, queue_wait_ms
@@ -4662,6 +4980,67 @@ class PawfectOrchestrator:
                     "result": content,
                 })
                 messages.append(ToolMessage(content=content, tool_call_id=tool_call["id"]))
+
+            # A customer naturally selects a slot on the turn after it was
+            # shown. The old guard required availability evidence from this
+            # same turn, rejected that normal selection, and let the model
+            # loop through catalogue/create_booking again. Recheck the exact
+            # complete constraints once, then retry the exact original draft.
+            if not booking_availability_repair_used:
+                stale_booking_record = next(
+                    (
+                        record for record in records_by_id.values()
+                        if record["tool_call"]["name"] == "create_booking"
+                        and isinstance(record["result"], dict)
+                        and record["result"].get("error") == "UNVERIFIED_AVAILABILITY_SLOT"
+                        and isinstance(record["result"].get("_internal_required_args"), dict)
+                        and isinstance(record["result"].get("_internal_retry_args"), dict)
+                    ),
+                    None,
+                )
+                if stale_booking_record is not None:
+                    repair_result = stale_booking_record["result"]
+                    retry_booking_after_availability = repair_result["_internal_retry_args"]
+                    force_exact_tool_once = (
+                        "check_availability", repair_result["_internal_required_args"]
+                    )
+                    booking_availability_repair_used = True
+                    messages.append((
+                        "system",
+                        "The customer selected a previously offered slot. Recheck that exact "
+                        "slot now with every service/date/duration/staff constraint before "
+                        "retrying the unchanged booking preview.",
+                    ))
+                    continue
+
+            if (
+                active_authoritative_tool == "check_availability"
+                and retry_booking_after_availability is not None
+            ):
+                availability_record = next(
+                    (
+                        record for record in records_by_id.values()
+                        if record["tool_call"]["name"] == "check_availability"
+                    ),
+                    None,
+                )
+                if (
+                    availability_record is not None
+                    and self._availability_result_contains_booking(
+                        availability_record["result"], retry_booking_after_availability
+                    )
+                ):
+                    force_exact_tool_once = (
+                        "create_booking", retry_booking_after_availability
+                    )
+                    retry_booking_after_availability = None
+                    messages.append((
+                        "system",
+                        "The exact customer-selected slot is freshly available. Retry the "
+                        "unchanged booking draft now so it can enter confirmation preview.",
+                    ))
+                    continue
+                retry_booking_after_availability = None
 
             if any(
                 isinstance(record["result"], dict)

@@ -211,6 +211,10 @@ def check_availability(
 def check_availability_range(
     company_id: str | int, service_type: ServiceType, start_date: str, end_date: str, time: str = "",
     duration_minutes: int | None = None,
+    customer_id: str | int = "",
+    pet_id: str | int = "",
+    exclude_booking_id: str | int = "",
+    preferred_staff: str = "",
 ) -> dict:
     """
     Check real availability across a range of days (e.g. "next week", "this
@@ -218,6 +222,10 @@ def check_availability_range(
     returned a date_range rather than a single date — do not ask the
     customer to narrow it down to one specific day first. The range is
     automatically capped at the 14-day booking window.
+
+    Pass customer_id and pet_id whenever they are known so every day is
+    checked against the selected pet's other bookings. For rescheduling pass
+    exclude_booking_id; for a requested staff member pass preferred_staff.
 
     Pass the customer's stated period (morning/afternoon/evening/night) or
     exact time as `time` — each day's available_slots is pre-filtered for
@@ -239,6 +247,12 @@ def check_availability_range(
         }
 
     normalized_service = str(service_type or "").strip().upper()
+    if normalized_service not in {"GROOMING", "DAYCARE", "BOARDING"}:
+        return {
+            "status": "error",
+            "data": {},
+            "error": "service_type must be GROOMING, DAYCARE, or BOARDING.",
+        }
     if normalized_service == "BOARDING":
         return {
             "status": "missing_information",
@@ -274,9 +288,22 @@ def check_availability_range(
     failures = []
     current = start
     while current <= end:
+        day_entities = {
+            "duration_minutes": duration_minutes,
+            "customer_id": customer_id,
+            "pet_id": pet_id,
+            "exclude_booking_id": exclude_booking_id,
+            "preferred_staff": preferred_staff,
+        }
         result = _check_with_transient_retry(
             repo, int(company_id), service=service_type, date=current.isoformat(), time=time,
-            intent_json={"entities": {"duration_minutes": duration_minutes}} if duration_minutes else None,
+            intent_json={
+                "entities": {
+                    key: value
+                    for key, value in day_entities.items()
+                    if value not in (None, "")
+                }
+            },
         )
         if result.get("status") != "success":
             failures.append(
@@ -298,6 +325,7 @@ def check_availability_range(
             "date": current.isoformat(),
             "weekday": current.strftime("%A"),
             "available_slots": filtered if filtered is not None else all_slots,
+            "preferred_staff": preferred_staff or None,
         }
         days.append(day_entry)
         current += timedelta(days=1)

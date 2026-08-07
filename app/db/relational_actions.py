@@ -8,7 +8,7 @@ not from customer free-text messages.
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import Any
 
 from .customer_context import (
@@ -78,6 +78,11 @@ QUALIFYING_PREVIOUS_BOOKING_STATUSES = frozenset(
 # remain valid for generic latest-booking lookups above, but repeat-service
 # history is intentionally stricter.
 COMPLETED_BOOKING_STATUSES = frozenset({"completed", "done"})
+
+# This must match the database conflict RPCs and booking status constraint.
+# Only bookings that can still consume a real resource block availability;
+# unknown/legacy values must not drift from the SQL-side decision.
+ACTIVE_BOOKING_STATUSES = frozenset({"pending", "scheduled"})
 
 # Statuses that must never be presented as a previous completed service.
 EXCLUDED_PREVIOUS_BOOKING_STATUSES = frozenset(
@@ -1067,14 +1072,16 @@ def _business_hours_for_date(company_id: int, target_date: date) -> tuple[str | 
     return open_time, close_time, None
 
 
-def _time_slots_for_day(open_time: str, close_time: str) -> list[str]:
+def _time_slots_for_day(
+    open_time: str, close_time: str, *, include_close: bool = False
+) -> list[str]:
     start_minutes = _time_to_minutes(open_time)
     end_minutes = _time_to_minutes(close_time)
     if start_minutes is None or end_minutes is None or end_minutes <= start_minutes:
         return []
     slots: list[str] = []
     cursor = start_minutes
-    while cursor < end_minutes:
+    while cursor < end_minutes or (include_close and cursor == end_minutes):
         slots.append(f"{cursor // 60:02d}:{cursor % 60:02d}:00")
         cursor += SLOT_MINUTES
     return slots
@@ -1161,17 +1168,7 @@ def _booking_interval(row: dict, service_type: str, date_str: str | None = None)
 
 def _booking_blocks_availability(row: dict) -> bool:
     status = _normalize_booking_status(row.get("booking_status"))
-    return status not in {
-        "cancelled",
-        "canceled",
-        "done",
-        "completed",
-        "no show",
-        "no-show",
-        "rejected",
-        "deleted",
-        "failed",
-    }
+    return status in ACTIVE_BOOKING_STATUSES
 
 
 def _cross_service_staff_bookings(client, company_id: int, staff_ids: list[int], date_str: str) -> list[dict]:
@@ -1297,8 +1294,37 @@ def _pet_free_for_interval(
 
 def _pet_free_for_boarding_stay(
     pet_bookings: list[dict], check_in: date, check_out: date,
-    *, exclude_booking_id: int | None = None,
+    *,
+    check_in_time: object = None,
+    check_out_time: object = None,
+    exclude_booking_id: int | None = None,
 ) -> bool:
+    """Whether one pet is free for the exact half-open boarding stay.
+
+    Date-only comparisons used to reject every grooming/daycare visit on the
+    check-in date, even one completed before the boarding arrival.  They also
+    could not validate a selected checkout endpoint.  Use timestamps whenever
+    the caller has them; missing times use the date boundary for compatibility
+    with date-only probes until the customer selects exact endpoints.
+    """
+
+    checkin_minutes = _time_to_minutes(check_in_time)
+    checkout_minutes = _time_to_minutes(check_out_time)
+    if checkin_minutes is None:
+        checkin_minutes = 0
+    if checkout_minutes is None:
+        checkout_minutes = 0
+    requested_start = datetime(
+        check_in.year,
+        check_in.month,
+        check_in.day,
+    ) + timedelta(minutes=checkin_minutes)
+    requested_end = datetime(
+        check_out.year,
+        check_out.month,
+        check_out.day,
+    ) + timedelta(minutes=checkout_minutes)
+
     for row in pet_bookings:
         if not _booking_blocks_availability(row):
             continue
@@ -1315,12 +1341,35 @@ def _pet_free_for_boarding_stay(
         if service_type == "BOARDING":
             existing_in = _parse_date(row.get("check_in_date"))
             existing_out = _parse_date(row.get("check_out_date"))
-            if existing_in and existing_out and existing_in < check_out and check_in < existing_out:
-                return False
+            existing_in_minutes = _time_to_minutes(row.get("check_in_time"))
+            existing_out_minutes = _time_to_minutes(row.get("check_out_time"))
+            if existing_in and existing_out:
+                existing_start = datetime(
+                    existing_in.year, existing_in.month, existing_in.day
+                ) + timedelta(
+                    minutes=existing_in_minutes if existing_in_minutes is not None else 0
+                )
+                existing_end = datetime(
+                    existing_out.year, existing_out.month, existing_out.day
+                ) + timedelta(
+                    minutes=existing_out_minutes if existing_out_minutes is not None else 0
+                )
+                if requested_start < existing_end and existing_start < requested_end:
+                    return False
         else:
             booked_date = _parse_date(row.get("booking_date"))
-            if booked_date and check_in <= booked_date <= check_out:
-                return False
+            if booked_date:
+                for booked_start, booked_end in _booking_interval(
+                    row, service_type, booked_date.isoformat()
+                ):
+                    existing_start = datetime(
+                        booked_date.year, booked_date.month, booked_date.day
+                    ) + timedelta(minutes=booked_start)
+                    existing_end = datetime(
+                        booked_date.year, booked_date.month, booked_date.day
+                    ) + timedelta(minutes=booked_end)
+                    if requested_start < existing_end and existing_start < requested_end:
+                        return False
     return True
 
 
@@ -1508,7 +1557,12 @@ def check_available_slots(context: CustomerContext, intent_json: dict) -> dict:
         intent_json.get("service_type") or entities.get("service_type") or "GROOMING"
     ).strip().upper()
     if service_type not in SERVICE_TYPE_TO_BOOKING_TABLE:
-        service_type = "GROOMING"
+        return _result(
+            "check_available_slots",
+            "error",
+            {"service_type": service_type, "available_slots": []},
+            "service_type must be GROOMING, DAYCARE, or BOARDING.",
+        )
     if context.resolved_customer_id is None and entities.get("customer_id"):
         try:
             context.resolved_customer_id = int(entities["customer_id"])
@@ -1701,7 +1755,9 @@ def check_available_slots(context: CustomerContext, intent_json: dict) -> dict:
                 # when 17:30 would be too late to START a multi-hour visit.
                 check_out_choices = [
                     candidate
-                    for candidate in _time_slots_for_day(open_time, close_time)
+                    for candidate in _time_slots_for_day(
+                        open_time, close_time, include_close=True
+                    )
                     if (
                         (_time_to_minutes(candidate) or 0) > checkin_minutes
                         and _staff_free_for_interval(
@@ -1840,13 +1896,18 @@ def check_available_slots(context: CustomerContext, intent_json: dict) -> dict:
                     )
                 if not capacity_status["available"]:
                     check_out_choices = []
-                if not _pet_free_for_boarding_stay(
-                    pet_bookings,
-                    preferred_date,
-                    parsed_check_out_date,
-                    exclude_booking_id=exclude_booking_id,
-                ):
-                    check_out_choices = []
+                check_out_choices = [
+                    candidate
+                    for candidate in check_out_choices
+                    if _pet_free_for_boarding_stay(
+                        pet_bookings,
+                        preferred_date,
+                        parsed_check_out_date,
+                        check_in_time=fixed_check_in_time,
+                        check_out_time=candidate,
+                        exclude_booking_id=exclude_booking_id,
+                    )
+                ]
 
             holder = (
                 str(context.resolved_customer_id)
@@ -1912,6 +1973,23 @@ def check_available_slots(context: CustomerContext, intent_json: dict) -> dict:
         if service_type == "DAYCARE":
             requested_start = _time_to_minutes(entities.get("preferred_time"))
             requested_end = _time_to_minutes(entities.get("check_out_time"))
+            if (
+                requested_start is not None
+                and requested_end is not None
+                and requested_end <= requested_start
+            ):
+                return _result(
+                    "check_available_slots",
+                    "error",
+                    {
+                        "check_in_time": _normalize_time_value(
+                            str(entities.get("preferred_time") or "")
+                        ),
+                        "check_out_time": requested_check_out_time,
+                        "available_slots": [],
+                    },
+                    "DAYCARE check_out_time must be after check_in_time on the same day.",
+                )
             if requested_start is not None and requested_end is not None and requested_end > requested_start:
                 duration_minutes = requested_end - requested_start
             elif requested_duration is not None:
@@ -1968,17 +2046,10 @@ def check_available_slots(context: CustomerContext, intent_json: dict) -> dict:
         ]
 
         # A boarding slot is valid only when the SAME qualified staff member
-        # is free for both check-in and check-out, and the checkout event also
-        # fits that day's operating hours. Previously only check-in was tested;
-        # the create path could therefore reject a slot just shown as free.
+        # can perform both events.  When checkout time has not been selected,
+        # prove that at least one real checkout endpoint exists instead of
+        # inventing a checkout at the same clock time as check-in.
         if service_type == "BOARDING" and parsed_check_out_date is not None:
-            if not _pet_free_for_boarding_stay(
-                pet_bookings,
-                preferred_date,
-                parsed_check_out_date,
-                exclude_booking_id=exclude_booking_id,
-            ):
-                free_slots = []
             checkout_open, checkout_close, checkout_closed_reason = _business_hours_for_date(
                 context.company_id, parsed_check_out_date
             )
@@ -2011,16 +2082,16 @@ def check_available_slots(context: CustomerContext, intent_json: dict) -> dict:
                     )
 
                 boarding_width = service_duration_minutes("BOARDING")
+                if requested_check_out_time:
+                    checkout_candidates = [requested_check_out_time]
+                else:
+                    checkout_candidates = _time_slots_for_day(
+                        checkout_open, checkout_close
+                    )
                 jointly_available_slots: list[str] = []
                 for slot in free_slots:
                     checkin_start = _time_to_minutes(slot)
-                    checkout_start = _time_to_minutes(requested_check_out_time or slot)
-                    if checkin_start is None or checkout_start is None:
-                        continue
-                    if (
-                        checkout_start < checkout_open_minutes
-                        or checkout_start + boarding_width > checkout_close_minutes
-                    ):
+                    if checkin_start is None:
                         continue
                     checkin_ids = {
                         row.get("staff_id")
@@ -2032,18 +2103,34 @@ def check_available_slots(context: CustomerContext, intent_json: dict) -> dict:
                             date_str=date_str,
                         )
                     }
-                    checkout_ids = {
-                        row.get("staff_id")
-                        for row in _staff_free_for_interval(
-                            checkout_start,
-                            checkout_start + boarding_width,
-                            checkout_roster,
-                            checkout_bookings,
-                            date_str=parsed_check_out_date.isoformat(),
-                        )
-                    }
-                    if checkin_ids & checkout_ids:
-                        jointly_available_slots.append(slot)
+                    for checkout_candidate in checkout_candidates:
+                        checkout_start = _time_to_minutes(checkout_candidate)
+                        if (
+                            checkout_start is None
+                            or checkout_start < checkout_open_minutes
+                            or checkout_start + boarding_width > checkout_close_minutes
+                        ):
+                            continue
+                        checkout_ids = {
+                            row.get("staff_id")
+                            for row in _staff_free_for_interval(
+                                checkout_start,
+                                checkout_start + boarding_width,
+                                checkout_roster,
+                                checkout_bookings,
+                                date_str=parsed_check_out_date.isoformat(),
+                            )
+                        }
+                        if checkin_ids & checkout_ids and _pet_free_for_boarding_stay(
+                            pet_bookings,
+                            preferred_date,
+                            parsed_check_out_date,
+                            check_in_time=slot,
+                            check_out_time=checkout_candidate,
+                            exclude_booking_id=exclude_booking_id,
+                        ):
+                            jointly_available_slots.append(slot)
+                            break
                 free_slots = jointly_available_slots
 
         capacity_status = None

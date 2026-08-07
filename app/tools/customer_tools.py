@@ -28,11 +28,6 @@ _DOG_SIZE_BREAKPOINTS = [(25, "XS"), (40, "S"), (55, "M"), (70, "L"), (85, "XL")
 _DOG_MAX_SIZE = "XXL"
 
 
-_DAYCARE_COMPARATIVE_DURATION_RE = re.compile(
-    r"\b(?:above|over|more\s+than|below|under|less\s+than|up\s+to|at\s+least|maximum|minimum)\b"
-    r"|以上|以下|超过|超過|少于|少於|至少|最多",
-    re.IGNORECASE,
-)
 _DAYCARE_ADD_ON_RE = re.compile(r"\badd[\s-]?on\b|附加|加购|加購", re.IGNORECASE)
 _RINGGIT_RE = re.compile(r"\bRM\s*(\d+(?:\.\d{1,2})?)\b", re.IGNORECASE)
 _HOURLY_RATE_RE = re.compile(r"/\s*(?:hour|hr)\b|\bper\s+(?:hour|hr)\b", re.IGNORECASE)
@@ -162,8 +157,6 @@ def _extract_daycare_catalogue_options(
             seen.add(key)
 
             duration = extract_duration_minutes(label)
-            if duration and _DAYCARE_COMPARATIVE_DURATION_RE.search(label):
-                duration = None
             option = {
                 "service_name": label,
                 "price": price,
@@ -177,7 +170,35 @@ def _extract_daycare_catalogue_options(
                 option["pricing_unit"] = "day"
             else:
                 option["pricing_unit"] = "flat"
-            if duration:
+            if duration and re.search(
+                r"\b(?:above|over|more\s+than)\b|超过|超過|以上",
+                label,
+                re.IGNORECASE,
+            ):
+                option["min_duration_minutes"] = duration
+                option["min_duration_exclusive"] = not bool(re.search(r"以上", label))
+            elif duration and re.search(
+                r"\b(?:at\s+least|minimum)\b|至少",
+                label,
+                re.IGNORECASE,
+            ):
+                option["min_duration_minutes"] = duration
+                option["min_duration_exclusive"] = False
+            elif duration and re.search(
+                r"\b(?:below|under|less\s+than)\b|少于|少於|以下",
+                label,
+                re.IGNORECASE,
+            ):
+                option["max_duration_minutes"] = duration
+                option["max_duration_exclusive"] = not bool(re.search(r"以下", label))
+            elif duration and re.search(
+                r"\b(?:up\s+to|maximum)\b|最多",
+                label,
+                re.IGNORECASE,
+            ):
+                option["max_duration_minutes"] = duration
+                option["max_duration_exclusive"] = False
+            elif duration:
                 option["duration_minutes"] = duration
             (add_ons if is_add_on else services).append(option)
 

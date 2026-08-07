@@ -354,6 +354,71 @@ def test_create_pet_breed_guard_accepts_customer_wording_and_flexible_unknown_an
     assert "breed" in schema["required"]
 
 
+def test_create_pet_breed_guard_keeps_answers_from_the_full_profile_flow():
+    state = ConversationState(phone_number="+60123456705", company_id="1")
+    state.history = [
+        {"role": "human", "content": "Her breed is British Shorthair"},
+        {"role": "ai", "content": "What is her name?"},
+        {"role": "human", "content": "Luna"},
+        {"role": "ai", "content": "Cat or dog?"},
+        {"role": "human", "content": "Cat"},
+        {"role": "ai", "content": "How tall?"},
+        {"role": "human", "content": "Around 28 cm"},
+        {"role": "ai", "content": "Let me create the profile."},
+    ]
+
+    assert PawfectOrchestrator._reject_unconfirmed_breed(
+        state, {"breed": "British Shorthair"}, "yes"
+    ) is None
+
+
+def test_create_pet_repairs_explicit_unknown_instead_of_rejecting_wrong_mixed_mapping(monkeypatch):
+    class CapturingTool:
+        def __init__(self):
+            self.calls = []
+
+        def invoke(self, args):
+            self.calls.append(dict(args))
+            return {"status": "success", "data": {"pet": dict(args)}}
+
+    capturing = CapturingTool()
+    monkeypatch.setitem(TOOLS_BY_NAME, "create_pet", capturing)
+    state = ConversationState(
+        phone_number="+60123456705",
+        company_id="1",
+        customer_id=10,
+        active_scenario="MAKE_BOOKING",
+    )
+    state.history = [
+        {"role": "human", "content": "My pet is a dog named Milo"},
+        {"role": "ai", "content": "What breed is Milo?"},
+    ]
+
+    result = object.__new__(PawfectOrchestrator)._run_tool(
+        {
+            "name": "create_pet",
+            "args": {
+                "pet_name": "Milo",
+                "pet_type": "dog",
+                "height_text": "30 cm",
+                "breed": "mixed",
+            },
+        },
+        state,
+        "I don't know Milo's breed, and he is around 30 cm tall",
+    )
+
+    assert result["status"] == "success"
+    assert capturing.calls[0]["breed"] == "unknown"
+
+
+def test_new_pet_prompt_requires_breed_in_addition_to_name_species_and_height():
+    from app.prompts.system_prompt import SYSTEM_PROMPT
+
+    registration = SYSTEM_PROMPT.split("CUSTOMER AND PET REGISTRATION", 1)[1]
+    assert "collect name, species, breed, and height" in registration
+
+
 def test_create_pet_breed_guard_rejects_missing_invented_or_species_values():
     state = ConversationState(phone_number="+60123456705", company_id="1")
 

@@ -302,6 +302,8 @@ def test_daycare_catalogue_separates_add_ons_and_only_exposes_exact_duration():
     ]
     assert services[0]["duration_minutes"] == 180
     assert "duration_minutes" not in services[1]
+    assert services[1]["min_duration_minutes"] == 180
+    assert services[1]["min_duration_exclusive"] is True
     assert [option["service_name"] for option in add_ons] == ["Splash Pool Session Add-on"]
 
 
@@ -320,6 +322,55 @@ def test_daycare_catalogue_marks_hourly_rates_for_total_price_validation():
             "pricing_unit": "hour",
         }
     ]
+
+
+def test_daycare_recommendation_uses_duration_ranges_and_calculated_hourly_total():
+    state = ConversationState(
+        phone_number="+60123456705",
+        company_id="1",
+        service_type="DAYCARE",
+        daycare_duration_minutes=240,
+    )
+    trace = [{
+        "tool": "get_booking_service_options",
+        "args": {"service_type": "DAYCARE", "pet_id": 7},
+        "result": json.dumps({
+            "status": "success",
+            "data": {
+                "service_options": [
+                    {
+                        "service_name": "Daycare 3 Hours",
+                        "price": 45,
+                        "pricing_unit": "flat",
+                        "duration_minutes": 180,
+                    },
+                    {
+                        "service_name": "Daycare Above 3 Hours",
+                        "price": 55,
+                        "pricing_unit": "flat",
+                        "min_duration_minutes": 180,
+                        "min_duration_exclusive": True,
+                    },
+                    {
+                        "service_name": "Hourly Care",
+                        "price": 15,
+                        "pricing_unit": "hour",
+                    },
+                ]
+            },
+        }),
+    }]
+
+    grounded = PawfectOrchestrator._ground_daycare_recommendation_response(
+        AIMessage(content="Here is the entire menu."),
+        "Which daycare service should I choose for four hours?",
+        trace,
+        state,
+    )
+
+    assert "Daycare Above 3 Hours — RM55" in grounded.content
+    assert "Hourly Care — RM60" in grounded.content
+    assert "Daycare 3 Hours" not in grounded.content
 
 
 def test_grooming_catalogue_uses_only_selected_size_and_inherits_add_on_section():

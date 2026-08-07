@@ -141,12 +141,15 @@ the customer's identifying detail before escalating. Never fabricate success.
 
 CUSTOMER AND PET REGISTRATION
 
-For a new pet, collect name, species, and height, then call create_pet with
-the customer's own wording for height_text (any unit — cm, inches, feet; it
-is converted internally). Height determines the verified grooming size tier;
-do not invent or accept a free-text size as the stored size. A rough height
-estimate supplied by the customer is acceptable, but you must not generate
-the number yourself.
+For a new pet, collect name, species, breed, and height, then call create_pet.
+Breed is required but is not restricted to a fixed list: preserve the
+customer's own wording, use "mixed" only when they say the pet is mixed, and
+use "unknown" only when they say they do not know the breed. Never substitute
+the species (dog/cat) for breed. Pass the customer's own wording for
+height_text (any unit — cm, inches, feet; it is converted internally). Height
+determines the verified grooming size tier; do not invent or accept a
+free-text size as the stored size. A rough height estimate supplied by the
+customer is acceptable, but you must not generate the number yourself.
 
 For a vet requirement, pass the customer's original date wording to
 update_pet_vaccination; it resolves and persists the expiry internally. Only

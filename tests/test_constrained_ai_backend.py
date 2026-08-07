@@ -994,6 +994,157 @@ def test_repeat_booking_guard_replaces_catalogue_dump_with_scoped_history_and_av
     assert "I booked it" not in response.content
 
 
+def test_cross_turn_daycare_slot_selection_is_rechecked_then_enters_exact_preview(monkeypatch):
+    availability_tool = _CapturingTool({
+        "status": "success",
+        "data": {
+            "service_type": "DAYCARE",
+            "selection_target": "CHECK_IN",
+            "booking_date": "2026-08-15",
+            "available_slots": ["10:00:00"],
+            "service_duration_minutes": 180,
+            "check_out_time": None,
+        },
+    })
+    create_tool = _CapturingTool({"status": "success", "data": {"booking_id": 91}})
+    availability_tool.name = "check_availability"
+    create_tool.name = "create_booking"
+    monkeypatch.setitem(TOOLS_BY_NAME, "check_availability", availability_tool)
+    monkeypatch.setitem(TOOLS_BY_NAME, "create_booking", create_tool)
+
+    exact_booking = {
+        "company_id": "1",
+        "customer_id": 22,
+        "pet_id": 7,
+        "pet_name": "Yoyo",
+        "service_type": "DAYCARE",
+        "package_name": "Daycare 3 Hours",
+        "date": "2026-08-15",
+        "time": "10:00",
+        "price": 45,
+        "check_out_date": "",
+        "check_out_time": "",
+        "preferred_staff": "",
+        "add_on": "",
+        "add_on_price": None,
+        "duration_minutes": 180,
+    }
+
+    class _DaycareSelectionModel:
+        def __init__(self):
+            self.bound_names = []
+            self.initial_create_sent = False
+
+        def bind_tools(self, tools, **_kwargs):
+            self.bound_names = [tool.name for tool in tools]
+            return self
+
+        def invoke(self, _messages):
+            if self.bound_names == ["check_availability"]:
+                return AIMessage(content="", tool_calls=[_call(
+                    "check_availability",
+                    company_id="wrong",
+                    service_type="GROOMING",
+                    date="2099-01-01",
+                    time="14:00",
+                )])
+            if self.bound_names == ["create_booking"]:
+                return AIMessage(content="", tool_calls=[_call(
+                    "create_booking",
+                    company_id="wrong",
+                    customer_id="wrong",
+                    pet_id=999,
+                    pet_name="Wrong",
+                    service_type="GROOMING",
+                    package_name="Wrong",
+                    date="2099-01-01",
+                    time="14:00",
+                    price=999,
+                )])
+            if not self.initial_create_sent:
+                self.initial_create_sent = True
+                return AIMessage(content="", tool_calls=[_call("create_booking", **exact_booking)])
+            return AIMessage(content="It looks like there was an issue with 10:00.")
+
+    orchestrator = object.__new__(PawfectOrchestrator)
+    orchestrator._base_model = _DaycareSelectionModel()
+    orchestrator._resolve_identity = lambda _company_id, _state: {
+        "found": True,
+        "customer_id": 22,
+        "full_name": "Alicia Lee",
+        "pets": [{"pet_id": 7, "pet_name": "Yoyo", "pet_type": "Dog", "size": "S"}],
+        "pets_context_status": "available",
+        "booking_context_status": "not_found",
+    }
+    orchestrator._save_escalation_message = lambda *_args: None
+    state = ConversationState(
+        phone_number="+60123456705",
+        company_id="1",
+        active_scenario="MAKE_BOOKING",
+        service_type="DAYCARE",
+        customer_id=22,
+        customer_name="Alicia Lee",
+        pet_id=7,
+        pet_name="Yoyo",
+        pet_type="Dog",
+        pet_size="S",
+        known_pets=[{
+            "pet_id": 7,
+            "pet_name": "Yoyo",
+            "pet_type": "Dog",
+            "pet_size": "S",
+            "pet_breed": "Poodle",
+        }],
+        pets_context_status="available",
+        booking_context_status="not_found",
+        daycare_duration_minutes=180,
+        loyalty_decision="declined",
+        resolved_dates=["2026-08-15"],
+        turn_counter=1,
+        history=[
+            {"role": "human", "content": "Which drop-off time is available?"},
+            {"role": "ai", "content": "10:00, 10:30, or 11:00."},
+        ],
+        verified_service_options=[{
+            "service_type": "DAYCARE",
+            "pet_id": 7,
+            "service_name": "Daycare 3 Hours",
+            "price": 45,
+            "pricing_unit": "flat",
+            "duration_minutes": 180,
+        }],
+        verified_availability_slots=[{
+            "service_type": "DAYCARE",
+            "verified_turn": 1,
+            "date": "2026-08-15",
+            "time": "10:00:00",
+            "room_type": "",
+            "check_out_date": "",
+            "check_out_time": "",
+            "duration_minutes": 180,
+            "preferred_staff": "",
+        }],
+    )
+
+    response, trace = orchestrator.invoke_with_trace(
+        {"company_id": "1", "company_name": "Pawfect", "timezone": "Asia/Kuala_Lumpur"},
+        state,
+        "10:00",
+    )
+
+    assert [item["tool"] for item in trace] == [
+        "create_booking", "check_availability", "create_booking"
+    ], trace
+    assert availability_tool.calls[0]["service_type"] == "DAYCARE"
+    assert availability_tool.calls[0]["date"] == "2026-08-15"
+    assert availability_tool.calls[0]["time"] == "10:00"
+    assert availability_tool.calls[0]["duration_minutes"] == 180
+    assert create_tool.calls == []  # exact preview first; no write before the next yes
+    assert "Please confirm this booking for Yoyo" in response.content
+    assert "10:00 for 180 minutes" in response.content
+    assert "create_booking" in state.pending_actions
+
+
 def test_loyalty_lookup_alone_does_not_mark_offer_as_presented():
     state = ConversationState(phone_number="+60123456705", company_id="7")
     state.turn_counter = 4
