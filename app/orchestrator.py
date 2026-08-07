@@ -159,6 +159,7 @@ SCENARIO_TOOL_NAMES = {
     "MAKE_BOOKING": {
         "create_customer", "create_pet", "update_pet_vaccination",
         "find_pet_by_name", "check_availability", "check_availability_range", "create_booking",
+        "register_loyalty_member",
     },
     "CANCEL_BOOKING": {"get_booking_by_id", "cancel_booking"},
     "RESCHEDULE_BOOKING": {"get_booking_by_id", "check_availability", "check_availability_range", "reschedule_booking"},
@@ -170,12 +171,8 @@ SCENARIO_TOOL_NAMES = {
     "POLICY_QUERY": set(),
 }
 
-# Was 6 — the LOYALTY_OFFER_PENDING gate (create_booking rejected once,
-# then get_loyalty_balance/check_coupon_eligibility, then a real retry) adds
-# a mandatory extra round trip on top of package-selection/price-grounding
-# retries that were already close to this ceiling; confirmed live hitting
-# MAX_TOOL_ITERATIONS on an otherwise-normal "yes confirm" once the gate
-# was added.
+# Keep enough room for catalogue, availability, preview and final write repair
+# turns without letting a malformed model plan loop indefinitely.
 MAX_TOOL_ITERATIONS = 9
 MAX_HISTORY_TURNS = 6  # keep the last N human+ai turn pairs
 MAX_RECENT_TOOL_EVIDENCE = 20
@@ -1604,7 +1601,8 @@ class PawfectOrchestrator:
         if not text:
             return
         loyalty_topic = bool(re.search(
-            r"\b(?:loyalty|voucher|coupon|points?)\b|积分|点数|优惠券|礼券|"
+            r"\b(?:loyalty|voucher|coupon|points?|member(?:ship)?|register|enrol|sign\s*up)\b|"
+            r"积分|点数|优惠券|礼券|会员|會員|注册|註冊|"
             r"\b(?:baucar|kupon|ganjaran|keahlian)\b",
             text,
         ))
@@ -1620,7 +1618,9 @@ class PawfectOrchestrator:
         )
         accepted = loyalty_topic and bool(
             re.search(
-                r"\b(?:use|apply|redeem|yes|join)\b|使用|要用|兑换|加入|\b(?:guna|boleh|nak|mahu)\b",
+                r"\b(?:use|apply|redeem|yes|join|register|enrol|sign\s*up)\b|"
+                r"使用|要用|兑换|加入|注册|註冊|成为会员|成為會員|"
+                r"\b(?:guna|boleh|nak|mahu|daftar)\b",
                 text,
             )
         )
@@ -1845,6 +1845,21 @@ class PawfectOrchestrator:
         signature = cls._mutation_signature(tool_name, args)
         pending = state.pending_actions.get(tool_name)
         intent = cls._confirmation_intent(user_message)
+        if tool_name == "register_loyalty_member" and intent is None:
+            membership_reply = re.sub(
+                r"[\s.!?,，。！？]+", " ", str(user_message or "").strip()
+            ).strip()
+            if re.fullmatch(
+                r"(?:register(?: me)?|sign me up|join(?: the)? membership|"
+                r"注册|註冊|加入会员|加入會員|成为会员|成為會員)",
+                membership_reply,
+                re.IGNORECASE,
+            ):
+                # A direct response to an already-presented membership offer is
+                # the user's explicit consent for this action only.  Keep these
+                # phrases out of the global affirmative matcher so that
+                # "register" can never confirm a booking or another mutation.
+                intent = "affirmative"
         if pending and pending.get("signature") == signature:
             if intent == "negative":
                 state.pending_actions.pop(tool_name, None)
@@ -2122,14 +2137,50 @@ class PawfectOrchestrator:
         executed against the wrong pet while the trace kept showing the
         model's correct, intended pet_id).
         """
-        tool = TOOLS_BY_NAME.get(tool_call["name"])
-        if tool is None:
-            return {"error": f"UNKNOWN_TOOL:{tool_call['name']}"}
         args = dict(
             authoritative_args
             if authoritative_args is not None
             else (tool_call.get("args") or {})
         )
+        # Membership belongs to an existing customer row.  The model has been
+        # observed calling create_customer after the customer accepted a
+        # membership offer, which can only return "Customer already exists"
+        # and caused an endless registration/booking loop. Redirect that exact
+        # mistake to the idempotent membership tool using server-resolved
+        # identity. If a prior offer was actually shown and accepted, that is
+        # already the required two-turn consent; otherwise request a preview.
+        if (
+            state is not None
+            and tool_call.get("name") == "create_customer"
+            and state.customer_id is not None
+            and (
+                state.active_scenario == "MEMBER"
+                or state.loyalty_decision == "accepted"
+            )
+        ):
+            accepted_prior_offer = bool(
+                state.loyalty_decision == "accepted"
+                and state.loyalty_offer_shown_turn is not None
+                and state.loyalty_offer_shown_turn < state.turn_counter
+            )
+            tool_call["name"] = "register_loyalty_member"
+            args = {
+                "company_id": state.company_id,
+                "customer_id": state.customer_id,
+                "confirmed": accepted_prior_offer,
+            }
+            if accepted_prior_offer:
+                state.pending_actions["register_loyalty_member"] = {
+                    "signature": self._mutation_signature(
+                        "register_loyalty_member", args
+                    ),
+                    "args": dict(args),
+                    "preview_turn": state.loyalty_offer_shown_turn,
+                }
+
+        tool = TOOLS_BY_NAME.get(tool_call["name"])
+        if tool is None:
+            return {"error": f"UNKNOWN_TOOL:{tool_call['name']}"}
         confirmed_preview_turn: int | None = None
         try:
             if state is not None:
@@ -2549,31 +2600,6 @@ class PawfectOrchestrator:
                     coupon_rejection = self._reject_mismatched_coupon(state, args, user_message)
                     if coupon_rejection:
                         return coupon_rejection
-                loyalty_ready = (
-                    state.loyalty_decision in {"accepted", "declined"}
-                    or (
-                        state.loyalty_offer_shown_turn is not None
-                        and state.loyalty_offer_shown_turn < state.turn_counter
-                    )
-                )
-                if tool_call["name"] == "create_booking" and not loyalty_ready:
-                    return {
-                        "error": "LOYALTY_OFFER_PENDING",
-                        "message": (
-                            "Before finalizing this booking, check the customer's loyalty "
-                            "status — call get_loyalty_balance and/or check_coupon_eligibility "
-                            "now. If they're a member with a coupon they can afford, offer it; "
-                            "if not a member, briefly offer to join (register_loyalty_member "
-                            "if they say yes). Then END YOUR REPLY HERE with that question — "
-                            "do not also call create_booking in this same reply. Only retry "
-                            "create_booking once the customer has actually answered you on "
-                            "their NEXT message (whether they accept, decline, or ignore the "
-                                "offer, proceed with the booking either way at that point). If the "
-                                "customer has already explicitly accepted or declined loyalty in "
-                                "their current message, record that choice and proceed without "
-                                "forcing an extra turn. This check only blocks an unresolved offer."
-                        ),
-                    }
                 if tool_call["name"] == "create_booking":
                     booking_rejection = self._reject_unverified_booking_payload(
                         state, args, confirmed_preview_turn=confirmed_preview_turn
@@ -4286,12 +4312,11 @@ class PawfectOrchestrator:
         if tool_name == "update_conversation_state" and isinstance(result, dict) and not result.get("error"):
             previous_scenario = state.active_scenario
             requested_scenario = result.get("active_scenario")
-            preserve_main_goal_for_policy_side_question = bool(
-                previous_scenario
-                and previous_scenario != "POLICY_QUERY"
-                and requested_scenario == "POLICY_QUERY"
+            preserve_main_goal_for_side_question = bool(
+                previous_scenario == "MAKE_BOOKING"
+                and requested_scenario in {"POLICY_QUERY", "MEMBER"}
             )
-            if not preserve_main_goal_for_policy_side_question:
+            if not preserve_main_goal_for_side_question:
                 state.active_scenario = requested_scenario
                 state.current_step = result.get("current_step")
                 if result.get("service_type"):

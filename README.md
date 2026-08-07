@@ -118,17 +118,15 @@ gcloud run deploy pawfectai-ai \
   it looks like a random mid-request crash, not an obvious memory error,
   unless you already know to look for it.
 - **`--min-instances 1 --max-instances 1` is required for correctness, not
-  just cost** — `app/context/memory.py` (conversation state) and
-  `app/context/slot_holds.py` (booking-slot holds) are both in-process,
-  in-memory stores with no shared backing store today. Cloud Run's default
-  autoscaling (`min-instances=0`, unbounded max) would let two container
-  instances run at once under real concurrent traffic, and each gets its
-  own independent copy of both — a customer's conversation could silently
-  lose context mid-flow depending which instance handles which message.
-  Pinning to exactly one instance is the correct interim fix at this
-  traffic scale (a single pet-care business) without the larger work of
-  moving that state into Supabase; revisit this the moment real traffic
-  needs more than one instance. `min-instances=1` also avoids the
+  just cost** — `app/context/memory.py` (conversation state) is still an
+  in-process store, so Cloud Run's default autoscaling could route consecutive
+  messages to different instances and silently lose conversation context.
+  Slot holds use the shared Supabase `booking_slot_hold` table after
+  `backend/sql/booking_slot_holds_migration.sql` is applied, with the local
+  registry retained only as a compatibility fallback; without that migration,
+  multiple workers can still offer the same provisional slot. Pinning to one
+  instance remains the correct interim deployment until conversation state is
+  also shared. `min-instances=1` also avoids the
   BGE-Large model being re-downloaded from Hugging Face on every cold start
   (the container filesystem is not persisted across restarts), which
   `main.py`'s startup warmup hook (`_warm_up_embedding_model`) would

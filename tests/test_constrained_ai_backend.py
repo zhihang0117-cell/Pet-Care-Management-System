@@ -693,6 +693,129 @@ def test_membership_yes_forces_exact_pending_write_and_cannot_jump_to_greeting(m
     assert "register_loyalty_member" not in state.pending_actions
 
 
+def test_booking_preview_does_not_require_loyalty_membership(monkeypatch):
+    capturing = _CapturingTool({"status": "success", "data": {"booking_id": 91}})
+    monkeypatch.setitem(TOOLS_BY_NAME, "create_booking", capturing)
+    orchestrator = object.__new__(PawfectOrchestrator)
+    state = ConversationState(
+        phone_number="+60123456705",
+        company_id="7",
+        customer_id=22,
+        pet_id=9,
+        active_scenario="MAKE_BOOKING",
+        turn_counter=1,
+    )
+    state.known_pets = [
+        {"pet_id": 9, "pet_name": "Milo", "pet_type": "Dog", "pet_size": "S"}
+    ]
+    state.resolved_dates = ["2026-08-15"]
+    state.verified_service_options = [
+        {
+            "service_type": "GROOMING",
+            "pet_id": 9,
+            "service_name": "Standard Bath",
+            "price": 43,
+        }
+    ]
+    state.verified_availability_slots = [
+        {
+            "service_type": "GROOMING",
+            "verified_turn": 1,
+            "date": "2026-08-15",
+            "time": "10:00",
+            "room_type": "",
+            "check_out_date": "",
+            "check_out_time": "",
+            "duration_minutes": 90,
+            "preferred_staff": "",
+        }
+    ]
+
+    result = orchestrator._run_tool(
+        _call(
+            "create_booking",
+            pet_id=9,
+            pet_name="Milo",
+            service_type="GROOMING",
+            package_name="Standard Bath",
+            date="2026-08-15",
+            time="10:00",
+            price=43,
+        ),
+        state,
+        "please book it",
+    )
+
+    assert result["status"] == "confirmation_required"
+    assert result.get("error") != "LOYALTY_OFFER_PENDING"
+    assert capturing.calls == []
+
+
+def test_existing_customer_membership_never_calls_create_customer(monkeypatch):
+    create_customer = _CapturingTool({"status": "error", "error": "must not run"})
+    membership = _CapturingTool({
+        "status": "success",
+        "data": {
+            "loyalty_id": 81,
+            "tier": "Bronze",
+            "points_balance": 0,
+            "already_member": False,
+        },
+    })
+    monkeypatch.setitem(TOOLS_BY_NAME, "create_customer", create_customer)
+    monkeypatch.setitem(TOOLS_BY_NAME, "register_loyalty_member", membership)
+    orchestrator = object.__new__(PawfectOrchestrator)
+    state = ConversationState(
+        phone_number="+60123456705",
+        company_id="7",
+        customer_id=22,
+        customer_name="Bing Xue Pang",
+        active_scenario="MEMBER",
+        turn_counter=3,
+        loyalty_offer_shown_turn=2,
+    )
+    PawfectOrchestrator._capture_explicit_loyalty_decision(state, "注册")
+
+    tool_call = _call("create_customer", full_name="Bing Xue Pang")
+    result = orchestrator._run_tool(tool_call, state, "注册")
+
+    assert result["status"] == "success"
+    assert create_customer.calls == []
+    assert membership.calls == [
+        {
+            "company_id": "7",
+            "customer_id": 22,
+            "confirmed": True,
+        }
+    ]
+    assert tool_call["name"] == "register_loyalty_member"
+
+
+def test_membership_side_flow_does_not_replace_booking_scenario():
+    state = ConversationState(
+        phone_number="+60123456705",
+        company_id="7",
+        customer_id=22,
+        active_scenario="MAKE_BOOKING",
+        service_type="DAYCARE",
+    )
+    orchestrator = object.__new__(PawfectOrchestrator)
+
+    orchestrator._apply_tool_result_state(
+        state,
+        _call(
+            "update_conversation_state",
+            active_scenario="MEMBER",
+            current_step="register",
+            service_type=None,
+        ),
+        {"active_scenario": "MEMBER", "current_step": "register"},
+    )
+
+    assert state.active_scenario == "MAKE_BOOKING"
+    assert state.service_type == "DAYCARE"
+
+
 def test_redemption_requires_verified_ids_and_separate_confirmation(monkeypatch):
     capturing = _CapturingTool({"status": "success", "data": {"redemption_id": 77}})
     monkeypatch.setitem(TOOLS_BY_NAME, "redeem_reward", capturing)
