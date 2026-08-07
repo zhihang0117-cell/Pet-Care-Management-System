@@ -2,6 +2,8 @@ from datetime import date, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 
+from langchain_core.messages import AIMessage
+
 from app.context.state import ConversationState
 from app.db import relational_actions
 from app.db.customer_context import canonical_phone_number, phones_match, validate_phone_number
@@ -258,6 +260,88 @@ def test_existing_booking_survives_beyond_first_turn(monkeypatch):
     state.history.append({"role": "human", "content": "hi"})
     second = orchestrator._resolve_identity("1", state)
     assert second["latest_booking"]["booking_id"] == 88
+
+
+def test_profile_hydration_is_not_tied_to_greeting_and_retries_failed_pet_read(monkeypatch):
+    class Repo:
+        def __init__(self):
+            self.pet_calls = 0
+
+        def get_customer_by_phone(self, *_args):
+            raise AssertionError("cached customer identity should remain authoritative")
+
+        def list_customer_pets(self, *_args):
+            self.pet_calls += 1
+            if self.pet_calls == 1:
+                return {"status": "error", "error": "temporary Supabase failure"}
+            return {
+                "status": "success",
+                "data": {
+                    "pets": [{
+                        "pet_id": 31,
+                        "pet_name": "Snowy",
+                        "pet_type": "Cat",
+                        "size": "S",
+                        "breed": "Domestic Shorthair",
+                    }]
+                },
+            }
+
+        def get_latest_booking(self, *_args):
+            return {"status": "not_found", "data": None}
+
+    repo = Repo()
+    monkeypatch.setattr("app.orchestrator.get_relational_repository", lambda: repo)
+    orchestrator = object.__new__(PawfectOrchestrator)
+    state = ConversationState(
+        phone_number="+60123456705",
+        company_id="1",
+        customer_id=9,
+        customer_name="Alicia Lee",
+        # This is deliberately not a greeting and not the first session turn.
+        history=[
+            {"role": "human", "content": "I want to join as a member"},
+            {"role": "ai", "content": "Would you like to join?"},
+        ],
+    )
+
+    unavailable = orchestrator._resolve_identity("1", state)
+    assert unavailable["found"] is True
+    assert unavailable["pets"] is None
+    assert unavailable["pets_context_status"] == "unavailable"
+    assert state.booking_context_status == "not_found"
+
+    hydrated = orchestrator._resolve_identity("1", state)
+    assert repo.pet_calls == 2
+    assert hydrated["pets_context_status"] == "available"
+    assert hydrated["pets"][0]["pet_name"] == "Snowy"
+    assert state.pet_id == 31
+    assert state.pet_name == "Snowy"
+
+    # A successful empty/non-empty result is cached; only failed reads retry.
+    orchestrator._resolve_identity("1", state)
+    assert repo.pet_calls == 2
+
+
+def test_failed_profile_read_cannot_be_rewritten_as_no_registered_pets():
+    response = AIMessage(
+        content="Hi Alicia! I see you don't have any pets registered yet."
+    )
+
+    grounded = PawfectOrchestrator._ground_unavailable_profile_claims(
+        response,
+        "next Saturday have booking?",
+        {
+            "found": True,
+            "pets": None,
+            "pets_context_status": "unavailable",
+            "booking_context_status": "unavailable",
+        },
+    )
+
+    assert "couldn't read" in grounded.content
+    assert "can't truthfully say that no record exists" in grounded.content
+    assert "don't have any pets" not in grounded.content
 
 
 def test_pdf_paths_do_not_collide_across_service_tables(monkeypatch):

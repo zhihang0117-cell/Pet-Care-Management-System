@@ -264,15 +264,13 @@ class PawfectOrchestrator:
         """
         Deterministic identity resolution — never left to the model to decide.
 
-        On the very first message of a session (state.history still empty),
-        also deterministically prefetches pets + latest booking (SMART
-        GREETING needs these) so the model doesn't have to spend a whole
-        extra LLM round trip deciding to call get_pets/get_latest_booking
-        itself — a session's first turn is exactly when that rule applies.
+        Customer/pet/latest-booking hydration is independent of greeting and
+        conversation flow. Any turn whose session lacks a successful profile
+        read performs the missing reads before the model runs; failed reads
+        remain retryable on the next turn, while a verified empty result is
+        retained as genuinely empty rather than confused with "not loaded".
         """
-        is_first_message = not state.history
-
-        if state.customer_id is not None:
+        if state.customer_id is not None and state.customer_name:
             # Reuse the cached name/address instead of re-querying Supabase
             # every turn — but never drop them the way a bare {"customer_id"}
             # shortcut previously did (the model had no name from turn 2 on).
@@ -303,84 +301,99 @@ class PawfectOrchestrator:
                     "identity_context_status": "unavailable",
                 }
 
-        if is_first_message and customer.get("found"):
+        if customer.get("found"):
             repo = get_relational_repository()
-            pets_future = _TOOL_EXECUTOR.submit(
-                repo.list_customer_pets, int(company_id), int(state.customer_id)
+            hydrate_pets = state.pets_context_status != "available"
+            hydrate_booking = state.booking_context_status not in {"available", "not_found"}
+            pets_future = (
+                _TOOL_EXECUTOR.submit(
+                    repo.list_customer_pets, int(company_id), int(state.customer_id)
+                )
+                if hydrate_pets else None
             )
-            booking_future = _TOOL_EXECUTOR.submit(
-                repo.get_latest_booking, int(company_id), int(state.customer_id)
+            booking_future = (
+                _TOOL_EXECUTOR.submit(
+                    repo.get_latest_booking, int(company_id), int(state.customer_id)
+                )
+                if hydrate_booking else None
             )
             prefetch_deadline = time_module.monotonic() + TOOL_CALL_TIMEOUT_SECONDS
 
             def remaining_prefetch_time() -> float:
                 return max(0.0, prefetch_deadline - time_module.monotonic())
 
-            try:
-                pets_result = pets_future.result(timeout=remaining_prefetch_time())
-            except FutureTimeoutError:
-                pets_future.cancel()
-                pets_result = {"status": "error", "error": "PREFETCH_TIMEOUT"}
-            except Exception as exc:
-                pets_result = {"status": "error", "error": f"PREFETCH_FAILED:{exc}"}
-                logging.getLogger(__name__).exception("Pet prefetch failed: %s", exc)
-            try:
-                booking_result = booking_future.result(timeout=remaining_prefetch_time())
-            except FutureTimeoutError:
-                booking_future.cancel()
-                booking_result = {"status": "error", "error": "PREFETCH_TIMEOUT"}
-            except Exception as exc:
-                booking_result = {"status": "error", "error": f"PREFETCH_FAILED:{exc}"}
-                logging.getLogger(__name__).exception("Booking prefetch failed: %s", exc)
+            if pets_future is not None:
+                try:
+                    pets_result = pets_future.result(timeout=remaining_prefetch_time())
+                except FutureTimeoutError:
+                    pets_future.cancel()
+                    pets_result = {"status": "error", "error": "PREFETCH_TIMEOUT"}
+                except Exception as exc:
+                    pets_result = {"status": "error", "error": f"PREFETCH_FAILED:{exc}"}
+                    logging.getLogger(__name__).exception("Pet prefetch failed: %s", exc)
+            else:
+                pets_result = None
+            if booking_future is not None:
+                try:
+                    booking_result = booking_future.result(timeout=remaining_prefetch_time())
+                except FutureTimeoutError:
+                    booking_future.cancel()
+                    booking_result = {"status": "error", "error": "PREFETCH_TIMEOUT"}
+                except Exception as exc:
+                    booking_result = {"status": "error", "error": f"PREFETCH_FAILED:{exc}"}
+                    logging.getLogger(__name__).exception("Booking prefetch failed: %s", exc)
+            else:
+                booking_result = None
 
-            if pets_result.get("status") == "success":
-                customer["pets"] = (pets_result.get("data") or {}).get("pets", [])
-                customer["pets_context_status"] = "available"
-            else:
-                customer["pets"] = None
-                customer["pets_context_status"] = "unavailable"
-            if booking_result.get("status") == "success":
-                customer["latest_booking"] = booking_result.get("data")
-                state.latest_booking = booking_result.get("data")
-                customer["booking_context_status"] = "available"
-            elif booking_result.get("status") == "not_found":
-                customer["latest_booking"] = None
-                state.latest_booking = None
-                customer["booking_context_status"] = "not_found"
-            else:
-                # Do not silently turn a database/network failure into "this
-                # customer has no booking history". The model must avoid making
-                # that false claim, and diagnostics can now distinguish failure
-                # from a genuinely empty history.
-                customer["latest_booking"] = None
-                customer["booking_context_status"] = "unavailable"
+            if pets_result is not None:
+                if pets_result.get("status") == "success":
+                    pets = (pets_result.get("data") or {}).get("pets", [])
+                    state.pets_context_status = "available"
+                    self._cache_single_pet(state, pets)
+                    state.known_pets = [
+                        {
+                            "pet_id": p.get("pet_id"),
+                            "pet_type": p.get("pet_type"),
+                            "pet_name": p.get("pet_name"),
+                            "pet_size": p.get("size"),
+                            "pet_breed": p.get("breed"),
+                        }
+                        for p in pets
+                    ]
+                else:
+                    state.pets_context_status = "unavailable"
+
+            if booking_result is not None:
+                if booking_result.get("status") == "success":
+                    state.latest_booking = booking_result.get("data")
+                    state.booking_context_status = (
+                        "available" if state.latest_booking else "not_found"
+                    )
+                elif booking_result.get("status") == "not_found":
+                    state.latest_booking = None
+                    state.booking_context_status = "not_found"
+                else:
+                    # Do not silently turn a database/network failure into
+                    # "this customer has no booking history". The unavailable
+                    # status remains retryable on the next customer turn.
+                    state.booking_context_status = "unavailable"
+
+            customer["pets"] = (
+                state.known_pets if state.pets_context_status == "available" else None
+            )
+            customer["pets_context_status"] = state.pets_context_status or "unavailable"
+            customer["latest_booking"] = (
+                state.latest_booking if state.booking_context_status == "available" else None
+            )
+            customer["booking_context_status"] = (
+                state.booking_context_status or "unavailable"
+            )
             # Deterministic formatting only (see text_formatting.py) — the
             # model still decides what to say; this just removes
             # "Milo, Luna and Coco" vs "Milo, Luna,
             # or Coco" style drift when a message needs to list pet names.
             customer["first_name"] = first_name(customer.get("full_name"))
-            customer["pets_formatted"] = format_pet_names(customer["pets"])
-            # Same tool never runs as a traced tool_call on the first message
-            # (this prefetch bypasses _run_tool), so caching has to happen
-            # here too — otherwise a single-pet customer's pet_id/pet_type
-            # stays unset all session and every downstream tool call risks
-            # getting pet_id=None (breaking species filtering) until the
-            # model happens to call find_pet_by_name/get_pets itself.
-            self._cache_single_pet(state, customer["pets"] or [])
-            state.known_pets = [
-                {
-                    "pet_id": p.get("pet_id"),
-                    "pet_type": p.get("pet_type"),
-                    "pet_name": p.get("pet_name"),
-                    "pet_size": p.get("size"),
-                    "pet_breed": p.get("breed"),
-                }
-                for p in (customer["pets"] or [])
-            ]
-
-        if customer.get("found") and "latest_booking" not in customer and state.latest_booking:
-            customer["latest_booking"] = state.latest_booking
-            customer["booking_context_status"] = "available"
+            customer["pets_formatted"] = format_pet_names(customer["pets"] or [])
 
         if customer.get("found"):
             customer["first_name"] = first_name(customer.get("full_name"))
@@ -426,12 +439,16 @@ class PawfectOrchestrator:
                 "address": state.customer_address,
                 "phone_number": state.phone_number,
             })
-        if state.known_pets:
-            merged["pets"] = state.known_pets
-            merged["pets_context_status"] = "available"
-        if state.latest_booking:
-            merged["latest_booking"] = state.latest_booking
-            merged["booking_context_status"] = "available"
+        if state.pets_context_status:
+            merged["pets"] = (
+                state.known_pets if state.pets_context_status == "available" else None
+            )
+            merged["pets_context_status"] = state.pets_context_status
+        if state.booking_context_status:
+            merged["latest_booking"] = (
+                state.latest_booking if state.booking_context_status == "available" else None
+            )
+            merged["booking_context_status"] = state.booking_context_status
         if merged.get("found"):
             merged["first_name"] = first_name(merged.get("full_name"))
             merged["pets_formatted"] = format_pet_names(merged.get("pets") or [])
@@ -1625,6 +1642,39 @@ class PawfectOrchestrator:
         return None
 
     @classmethod
+    def _pending_confirmation_tool(cls, state, user_message: str) -> str | None:
+        """Return the exact pending write that a standalone ``yes`` confirms.
+
+        Confirmation is application state, not a planning decision for the
+        model.  Without this guard the model can answer a standalone ``yes``
+        with prose (including a fresh greeting) and never call the pending
+        mutation at all.  Prefer the action owned by the active scenario and
+        fail closed when more than one unrelated action is pending.
+        """
+        if cls._confirmation_intent(user_message) != "affirmative":
+            return None
+
+        preferred = {
+            "MAKE_BOOKING": "create_booking",
+            "LOYALTY_QUERY": "redeem_reward",
+            "MEMBER": "register_loyalty_member",
+        }.get(state.active_scenario)
+        candidates = []
+        for tool_name in ("create_booking", "redeem_reward", "register_loyalty_member"):
+            pending = state.pending_actions.get(tool_name)
+            args = pending.get("args") if isinstance(pending, dict) else None
+            if (
+                isinstance(args, dict)
+                and not args.get("truncated")
+                and int(pending.get("preview_turn") or 0) < state.turn_counter
+            ):
+                candidates.append(tool_name)
+
+        if preferred in candidates:
+            return preferred
+        return candidates[0] if len(candidates) == 1 else None
+
+    @classmethod
     def _authorize_pending_action(cls, state, tool_name: str, args: dict, user_message: str) -> dict | None:
         """Return None only when an exact preview was affirmatively confirmed
         on a later customer turn. Otherwise store/retain the preview and return
@@ -1960,25 +2010,28 @@ class PawfectOrchestrator:
                                 "call with the real customer_id it returns."
                             ),
                         }
-                if tool_call["name"] == "create_booking":
-                    pending_booking = state.pending_actions.get("create_booking")
+                if tool_call["name"] in {
+                    "create_booking", "redeem_reward", "register_loyalty_member"
+                }:
+                    pending_action = state.pending_actions.get(tool_call["name"])
                     pending_args = (
-                        pending_booking.get("args")
-                        if isinstance(pending_booking, dict)
+                        pending_action.get("args")
+                        if isinstance(pending_action, dict)
                         else None
                     )
                     if (
                         self._confirmation_intent(user_message) == "affirmative"
                         and isinstance(pending_args, dict)
                         and not pending_args.get("truncated")
-                        and int(pending_booking.get("preview_turn") or 0) < state.turn_counter
+                        and int(pending_action.get("preview_turn") or 0) < state.turn_counter
                     ):
                         # A confirmation authorizes the exact payload shown to
                         # the customer. Never let the model rebuild, omit, or
-                        # alter the package/add-on/time after the customer says
-                        # "correct"/"confirm". Tenant and customer authority
-                        # are still overwritten from server state below.
-                        confirmed_preview_turn = int(pending_booking["preview_turn"])
+                        # alter it after the customer says "correct"/"confirm".
+                        # This also prevents membership confirmation from
+                        # silently dropping confirmed=true.
+                        if tool_call["name"] == "create_booking":
+                            confirmed_preview_turn = int(pending_action["preview_turn"])
                         args = {
                             **pending_args,
                             "company_id": state.company_id,
@@ -2433,19 +2486,23 @@ class PawfectOrchestrator:
                 state.pet_name = data.get("pet_name")
                 state.pet_size = data.get("size")
                 state.pet_breed = data.get("breed")
-        elif tool_name == "get_pets" and result.get("status") == "success":
-            pets = (result.get("data") or {}).get("pets") or []
-            self._cache_single_pet(state, pets)
-            state.known_pets = [
-                {
-                    "pet_id": p.get("pet_id"),
-                    "pet_type": p.get("pet_type"),
-                    "pet_name": p.get("pet_name"),
-                    "pet_size": p.get("size"),
-                    "pet_breed": p.get("breed"),
-                }
-                for p in pets
-            ]
+        elif tool_name == "get_pets":
+            if result.get("status") == "success":
+                pets = (result.get("data") or {}).get("pets") or []
+                state.pets_context_status = "available"
+                self._cache_single_pet(state, pets)
+                state.known_pets = [
+                    {
+                        "pet_id": p.get("pet_id"),
+                        "pet_type": p.get("pet_type"),
+                        "pet_name": p.get("pet_name"),
+                        "pet_size": p.get("size"),
+                        "pet_breed": p.get("breed"),
+                    }
+                    for p in pets
+                ]
+            else:
+                state.pets_context_status = "unavailable"
         elif tool_name == "create_pet" and result.get("status") == "success":
             # A brand-new pet just got a real pet_id — cache it the same way
             # create_customer's own result gets cached, otherwise nothing
@@ -2471,13 +2528,27 @@ class PawfectOrchestrator:
                         "pet_breed": pet.get("breed"),
                     }
                 ]
+                state.pets_context_status = "available"
 
     @staticmethod
     def _cache_latest_booking(state, tool_name: str, result: dict) -> None:
         """Keep DB-fetched existing bookings visible after the tool turn."""
         if tool_name not in ("get_latest_booking", "get_booking_by_id", "reschedule_booking"):
             return
-        if not isinstance(result, dict) or result.get("status") != "success":
+        if not isinstance(result, dict):
+            return
+        if tool_name == "get_latest_booking":
+            if result.get("status") == "not_found":
+                state.latest_booking = None
+                state.booking_context_status = "not_found"
+                return
+            if result.get("status") != "success":
+                state.booking_context_status = "unavailable"
+                return
+            state.booking_context_status = (
+                "available" if result.get("data") else "not_found"
+            )
+        elif result.get("status") != "success":
             return
         data = result.get("data") or {}
         if data:
@@ -3858,6 +3929,73 @@ class PawfectOrchestrator:
             )
         return response.model_copy(update={"content": truthful})
 
+    @staticmethod
+    def _ground_membership_response(response, user_message: str, trace: list[dict]):
+        """Make the customer-facing result match the observed membership write.
+
+        A successful registration must not be replaced by a model-generated
+        greeting or another confirmation request.  Only a real tool result is
+        allowed to trigger this deterministic completion message.
+        """
+        attempts = [item for item in trace if item.get("tool") == "register_loyalty_member"]
+        if not attempts:
+            return response
+        try:
+            result = json.loads(attempts[-1].get("result") or "{}")
+        except (TypeError, json.JSONDecodeError):
+            return response
+        if not isinstance(result, dict) or result.get("status") != "success":
+            return response
+
+        data = result.get("data") if isinstance(result.get("data"), dict) else {}
+        tier = data.get("tier") or data.get("membership_status") or "Bronze"
+        points = data.get("points_balance")
+        points = 0 if points is None else points
+        chinese = bool(re.search(r"[\u3400-\u9fff]", user_message or ""))
+        if data.get("already_member"):
+            truthful = (
+                f"您已经是会员。目前等级为 {tier}，积分余额为 {points}。"
+                if chinese else
+                f"You're already a loyalty member. Your current tier is {tier}, with {points} points."
+            )
+        else:
+            truthful = (
+                f"会员注册已完成。您的等级为 {tier}，初始积分为 {points}。"
+                if chinese else
+                f"Your loyalty membership is now active. Your tier is {tier}, with {points} points."
+            )
+        return response.model_copy(update={"content": truthful})
+
+    @staticmethod
+    def _ground_unavailable_profile_claims(response, user_message: str, customer: dict):
+        """Never let a failed profile read become a verified-empty claim."""
+        content = str(response.content or "")
+        false_no_pet_claim = bool(re.search(
+            r"\b(?:no|don't|do not|doesn't|does not|haven't|have not)\b.{0,35}"
+            r"\bpets?\b|没有.{0,8}宠物|未.{0,8}(?:登记|注册).{0,8}宠物",
+            content,
+            re.IGNORECASE,
+        ))
+        false_no_booking_claim = bool(re.search(
+            r"\b(?:no|don't|do not|doesn't|does not|haven't|have not)\b.{0,40}"
+            r"\bbookings?\b|没有.{0,8}预约|查不到.{0,8}预约",
+            content,
+            re.IGNORECASE,
+        ))
+        pets_failed = customer.get("pets_context_status") == "unavailable"
+        booking_failed = customer.get("booking_context_status") == "unavailable"
+        if not ((pets_failed and false_no_pet_claim) or (booking_failed and false_no_booking_claim)):
+            return response
+
+        chinese = bool(re.search(r"[\u3400-\u9fff]", user_message or ""))
+        truthful = (
+            "目前无法读取您的客户、宠物或预约资料，因此我不能判断记录为空。请稍后再试。"
+            if chinese else
+            "I couldn't read your customer, pet, or booking profile just now, so I can't "
+            "truthfully say that no record exists. Please try again shortly."
+        )
+        return response.model_copy(update={"content": truthful})
+
     def _apply_tool_result_state(self, state, tool_call: dict, result) -> None:
         """Apply one observed result immediately so dependent calls can use it."""
         tool_name = tool_call["name"]
@@ -4036,6 +4174,7 @@ class PawfectOrchestrator:
         force_tool_once = False
         forced_repeat_tools: set[str] = set()
         force_repeat_tool_once: str | None = None
+        force_pending_tool_once = self._pending_confirmation_tool(state, user_message)
         force_final_after_duplicate_read = False
         successful_read_results: dict[str, object] = {}
         successful_read_lock = Lock()
@@ -4159,6 +4298,21 @@ class PawfectOrchestrator:
                 bound_scenario = "__FORCED_FINAL_AFTER_DUPLICATE_READ__"
                 force_final_after_duplicate_read = False
                 repair_used = True
+            elif force_pending_tool_once:
+                # A standalone affirmative on a later turn is an explicit
+                # transition for the exact server-cached preview. Bind only
+                # that mutation and require the call; the LLM cannot turn the
+                # confirmation into a greeting or choose a different action.
+                required_name = force_pending_tool_once
+                required_tool = TOOLS_BY_NAME.get(required_name)
+                force_pending_tool_once = None
+                if required_tool is None:
+                    continue
+                bound_tools = [required_tool]
+                model = self._base_model.bind_tools(
+                    bound_tools, tool_choice="required", strict=True
+                )
+                bound_scenario = "__FORCED_PENDING_CONFIRMATION__"
             elif force_repeat_tool_once:
                 # The repeat-booking path has a small, evidence-defined read
                 # chain. Bind only the one missing tool so a general required
@@ -4279,6 +4433,12 @@ class PawfectOrchestrator:
                 )
                 response = self._ground_document_delivery_response(
                     response, user_message, trace
+                )
+                response = self._ground_membership_response(
+                    response, user_message, trace
+                )
+                response = self._ground_unavailable_profile_claims(
+                    response, user_message, final_customer
                 )
                 if is_first_message:
                     response = self._ensure_first_message_greeting(

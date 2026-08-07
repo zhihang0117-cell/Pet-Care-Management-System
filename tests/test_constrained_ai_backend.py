@@ -609,6 +609,90 @@ def test_membership_confirmation_cannot_be_inferred_from_unrelated_turn(monkeypa
     assert len(capturing.calls) == 1
 
 
+def test_membership_yes_forces_exact_pending_write_and_cannot_jump_to_greeting(monkeypatch):
+    capturing = _CapturingTool({
+        "status": "success",
+        "data": {
+            "loyalty_id": 81,
+            "tier": "Bronze",
+            "points_balance": 0,
+            "already_member": False,
+        },
+    })
+    capturing.name = "register_loyalty_member"
+    monkeypatch.setitem(TOOLS_BY_NAME, "register_loyalty_member", capturing)
+
+    class _ForgetfulMembershipModel:
+        def __init__(self):
+            self.bound_names = []
+            self.registration_called = False
+
+        def bind_tools(self, tools, **_kwargs):
+            self.bound_names = [tool.name for tool in tools]
+            return self
+
+        def invoke(self, _messages):
+            if self.bound_names == ["register_loyalty_member"] and not self.registration_called:
+                self.registration_called = True
+                # Simulate the real failure: the model loses confirmed=true
+                # and invents identity fields even after the customer says yes.
+                return AIMessage(
+                    content="",
+                    tool_calls=[_call(
+                        "register_loyalty_member",
+                        company_id="wrong",
+                        customer_id="wrong",
+                        confirmed=False,
+                    )],
+                )
+            # Simulate the other observed failure: after a successful tool call
+            # the model tries to restart the conversation with a greeting.
+            return AIMessage(content="Hi Alicia! How can I help you?")
+
+    orchestrator = object.__new__(PawfectOrchestrator)
+    orchestrator._base_model = _ForgetfulMembershipModel()
+    orchestrator._resolve_identity = lambda _company_id, _state: {
+        "found": True,
+        "customer_id": 22,
+        "full_name": "Alicia Lee",
+    }
+    orchestrator._save_escalation_message = lambda *_args: None
+    state = ConversationState(
+        phone_number="+60123456705",
+        company_id="7",
+        active_scenario="MEMBER",
+        customer_id=22,
+        customer_name="Alicia Lee",
+        turn_counter=1,
+        history=[
+            {"role": "human", "content": "I want to join as a member"},
+            {"role": "ai", "content": "Would you like me to enrol you?"},
+        ],
+    )
+    exact_args = {"company_id": "7", "customer_id": 22, "confirmed": True}
+    state.pending_actions["register_loyalty_member"] = {
+        "signature": orchestrator._mutation_signature(
+            "register_loyalty_member", exact_args
+        ),
+        "args": exact_args,
+        "preview_turn": 1,
+    }
+
+    response, trace = orchestrator.invoke_with_trace(
+        {"company_id": "7", "company_name": "Pawfect", "timezone": "Asia/Kuala_Lumpur"},
+        state,
+        "yes",
+    )
+
+    assert capturing.calls == [exact_args]
+    assert [item["tool"] for item in trace] == ["register_loyalty_member"]
+    assert "membership is now active" in response.content
+    assert "Bronze" in response.content
+    assert not response.content.startswith("Hi")
+    assert state.active_scenario is None
+    assert "register_loyalty_member" not in state.pending_actions
+
+
 def test_redemption_requires_verified_ids_and_separate_confirmation(monkeypatch):
     capturing = _CapturingTool({"status": "success", "data": {"redemption_id": 77}})
     monkeypatch.setitem(TOOLS_BY_NAME, "redeem_reward", capturing)

@@ -45,6 +45,14 @@ class ConversationState:
     # rather than reliably resolving the named pet first.
     known_pets: list[dict] = field(default_factory=list)
 
+    # Profile hydration is request infrastructure, not a greeting step. These
+    # statuses distinguish a successfully loaded empty result from data that
+    # was never loaded (or whose Supabase read failed), so any later business
+    # turn can retry instead of telling the customer "you have no pets" from
+    # missing context.
+    pets_context_status: str | None = None
+    booking_context_status: str | None = None
+
     # Set whenever cancel_booking succeeds this session — {"booking_id",
     # "service_type", "package_name", "pet_id", "date", "time", "price"}.
     # "Book it again"/"actually I can make it" right after a cancellation
