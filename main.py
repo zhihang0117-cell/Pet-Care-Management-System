@@ -528,6 +528,12 @@ def documents_invoice(request: InvoiceRequest):
     if not payment_rows:
         return {"status": "error", "error": f"payment_id {request.payment_id} not found"}
     payment = payment_rows[0]
+    if str(payment.get("status") or "").strip().casefold() != "paid":
+        return {
+            "status": "error",
+            "error": "INVOICE_REQUIRES_PAID_PAYMENT",
+            "message": "An invoice can only be generated for a payment whose status is Paid.",
+        }
 
     booking = {}
     for table, id_col, date_col in (
@@ -552,15 +558,14 @@ def documents_invoice(request: InvoiceRequest):
     return generate_and_send_invoice(request.company_id, payment, booking, send=request.send)
 
 
-def _seed_notice_into_history(phone_number: str, message: str) -> None:
+def _seed_notice_into_history(company_id: int | str, phone_number: str, message: str) -> None:
     """
     So that if the customer replies to this outbound notice, the next /chat
     turn already has it in state.history as an "ai" turn — e.g. a reply to
     the No Show notice ("sorry, can we reschedule?") reads naturally in
     context instead of the model having no idea what's being responded to.
     """
-    company_id = str(get_relational_company_id())
-    state = _memory.get(phone_number, company_id)
+    state = _memory.get(phone_number, str(company_id))
     state.history.append({"role": "ai", "content": message})
     _memory.save(state)
 
@@ -584,7 +589,7 @@ def documents_booking_status_notice(request: BookingStatusNoticeRequest):
     )
     if notice is None:
         return {"status": "no_notice_needed"}
-    _seed_notice_into_history(notice["phone_number"], notice["message"])
+    _seed_notice_into_history(request.company_id, notice["phone_number"], notice["message"])
     send_result = send_whatsapp_text(notice["phone_number"], notice["message"])
     return {"status": "success", "message": notice["message"], "send_result": send_result}
 
@@ -602,7 +607,7 @@ def documents_redemption_notice(request: RedemptionNoticeRequest):
     notice = build_redemption_decision_notice(request.company_id, request.redemption_id, request.status)
     if notice is None:
         return {"status": "no_notice_needed"}
-    _seed_notice_into_history(notice["phone_number"], notice["message"])
+    _seed_notice_into_history(request.company_id, notice["phone_number"], notice["message"])
     send_result = send_whatsapp_text(notice["phone_number"], notice["message"])
     return {"status": "success", "message": notice["message"], "send_result": send_result}
 
@@ -619,7 +624,7 @@ def documents_refund_notice(request: RefundNoticeRequest):
     notice = build_payment_refund_notice(request.company_id, request.payment_id)
     if notice is None:
         return {"status": "no_notice_needed"}
-    _seed_notice_into_history(notice["phone_number"], notice["message"])
+    _seed_notice_into_history(request.company_id, notice["phone_number"], notice["message"])
     send_result = send_whatsapp_text(notice["phone_number"], notice["message"])
     return {"status": "success", "message": notice["message"], "send_result": send_result}
 

@@ -89,6 +89,20 @@ class ConversationState:
     missing_slots: list[str] = field(default_factory=list)
     offered_options: list[dict[str, Any]] = field(default_factory=list)
 
+    # Server-observed catalogue and availability evidence used to validate a
+    # booking write.  These are deliberately separate from offered_options:
+    # the latter is UI/conversation memory and may be replaced whenever a new
+    # list is shown, while these two collections form the authorization input
+    # for create_booking.
+    verified_service_options: list[dict[str, Any]] = field(default_factory=list)
+    verified_availability_slots: list[dict[str, Any]] = field(default_factory=list)
+
+    # Consequential actions are always previewed on one customer turn and may
+    # execute only after an affirmative reply on a later turn. Each entry is
+    # {"signature", "args", "preview_turn"}; it is created and checked by the
+    # orchestrator, never by the model.
+    pending_actions: dict[str, dict[str, Any]] = field(default_factory=dict)
+
     # Exact DAYCARE duration explicitly supplied by the customer (or carried
     # by a structured catalogue option they selected). Keep it separate from
     # free-form history so a loyalty/policy side trip cannot make the model
@@ -125,6 +139,11 @@ class ConversationState:
     # reject any date argument not in this list, so a self-computed/guessed
     # date (confirmed to happen live, repeatedly) can never reach a write.
     resolved_dates: list[str] = field(default_factory=list)
+
+    # Deterministic resolution of a relative date/time expression in the
+    # current message. This is refreshed every turn and exposed in
+    # RUNTIME_CONTEXT so the model never has to calculate "next Tuesday".
+    current_datetime_resolution: dict[str, Any] | None = None
 
     # Real prior turns as [{"role": "human"|"ai", "content": ...}, ...], fed
     # back as proper conversation messages (not crammed into a JSON blob) so

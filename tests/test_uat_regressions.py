@@ -89,6 +89,27 @@ def test_english_next_weekday_modifier_is_not_silently_ignored():
     assert extract_customer_date("next thursday", today=thursday) == date(2026, 8, 13)
 
 
+def test_weekday_modifiers_use_calendar_week_boundaries_in_all_languages():
+    # Every day in this reference week must resolve "next Tuesday" to the
+    # same Tuesday in the following calendar week.  Adding seven days to the
+    # nearest occurrence used to jump to Aug 18 from Wednesday onward.
+    week_start = date(2026, 8, 3)  # Monday
+    this_tuesday = date(2026, 8, 4)
+    next_tuesday = date(2026, 8, 11)
+
+    for offset in range(7):
+        reference = week_start + timedelta(days=offset)
+        for phrase in ("next tuesday", "下个星期二", "下周二", "selasa depan"):
+            assert extract_customer_date(phrase, today=reference) == next_tuesday
+        for phrase in ("this tuesday", "这个星期二", "这周二", "selasa ini"):
+            assert extract_customer_date(phrase, today=reference) == this_tuesday
+
+
+def test_chinese_weekday_modifier_allows_customer_whitespace():
+    friday = date(2026, 8, 7)
+    assert extract_customer_date("下个 星期二下午", today=friday) == date(2026, 8, 11)
+
+
 def test_resolve_datetime_uses_business_local_today_not_server_utc_date(monkeypatch):
     # The container runs in UTC with no TZ set. resolve_datetime previously
     # called extract_customer_date/parse_week_range with no `today`, so they

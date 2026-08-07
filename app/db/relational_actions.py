@@ -410,6 +410,7 @@ def get_booking_service_options(context: CustomerContext, service_type: str, pet
                     "service_name": row.get("room_type"),
                     "room_type": row.get("room_type"),
                     "capacity": row.get("capacity"),
+                    "price": row.get("price"),
                     "price_display": (
                         f"RM{row.get('price')}/night"
                         if row.get("price") not in (None, "")

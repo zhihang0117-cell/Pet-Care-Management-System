@@ -1,0 +1,8 @@
+{
+  "scenario": "PAYMENT_QUERY",
+  "goal": "Answer the customer's payment-history or payment-status question from tenant- and customer-scoped records.",
+  "required_evidence": ["resolved_customer", "verified_payment_history"],
+  "completion_condition": "The answer is grounded in get_payment_history output.",
+  "flow_policy": "This AI surface is read-only for payments; never mark paid, refund, or fabricate invoice eligibility.",
+  "step_vocabulary": ["GET_PAYMENT_HISTORY", "ANSWER_PAYMENT_QUERY"]
+}

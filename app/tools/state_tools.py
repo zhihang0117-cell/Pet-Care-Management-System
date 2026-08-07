@@ -6,7 +6,10 @@ from app.scenarios.loader import valid_steps
 
 @tool
 def update_conversation_state(
-    active_scenario: Literal["MAKE_BOOKING", "CANCEL_BOOKING", "RESCHEDULE_BOOKING", "LOYALTY_QUERY", "POLICY_QUERY", ""],
+    active_scenario: Literal[
+        "MAKE_BOOKING", "CANCEL_BOOKING", "RESCHEDULE_BOOKING", "LOYALTY_QUERY",
+        "MEMBER", "PAYMENT_QUERY", "ENQUIRY", "BOOKING_DOCUMENT", "POLICY_QUERY", ""
+    ],
     current_step: str = "",
     service_type: Literal["GROOMING", "DAYCARE", "BOARDING", ""] = "",
 ) -> dict:
@@ -17,8 +20,8 @@ def update_conversation_state(
     context and console observability. It is bookkeeping, not a prerequisite
     for a useful read/action tool, and it may be called alongside that next
     useful tool rather than consuming a turn by itself. Pass one of:
-    MAKE_BOOKING, CANCEL_BOOKING, RESCHEDULE_BOOKING, LOYALTY_QUERY,
-    POLICY_QUERY, or "" to clear it once the scenario's goal is complete
+    MAKE_BOOKING, CANCEL_BOOKING, RESCHEDULE_BOOKING, LOYALTY_QUERY, MEMBER,
+    PAYMENT_QUERY, ENQUIRY, BOOKING_DOCUMENT, POLICY_QUERY, or "" to clear it once the scenario's goal is complete
     (e.g. right after a booking is confirmed, cancelled, or rescheduled).
 
     During MAKE_BOOKING, pass service_type (GROOMING/DAYCARE/BOARDING) once

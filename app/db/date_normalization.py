@@ -78,6 +78,7 @@ _CHINESE_WEEKDAY_TO_INDEX = {
     for name in names
 }
 _CHINESE_NEXT_MODIFIERS = ("下个", "下")
+_CHINESE_THIS_MODIFIERS = ("这个", "这", "本")
 
 # Malay (Bahasa Malaysia) relative-day and weekday words — same reasoning as
 # the Chinese block above: this is a Malaysia-based business, and a Malay
@@ -94,6 +95,24 @@ _MALAY_WEEKDAY_TO_INDEX = {name: num - 1 for num, name in _MALAY_WEEKDAY_NAMES.i
 _MALAY_NEXT_MODIFIER = "depan"
 
 
+def _resolve_weekday_date(reference: date, weekday_index: int, modifier: str | None) -> date:
+    """Resolve a weekday with calendar-week semantics.
+
+    ``next`` means the named day in the next Monday-to-Sunday week, while
+    ``this`` means the named day in the current week.  An unmodified weekday
+    means its next occurrence and is always future (the same weekday today
+    rolls forward seven days).
+    """
+    this_monday = reference - timedelta(days=reference.weekday())
+    if modifier == "next":
+        return this_monday + timedelta(days=7 + weekday_index)
+    if modifier == "this":
+        return this_monday + timedelta(days=weekday_index)
+
+    days_ahead = (weekday_index - reference.weekday()) % 7
+    return reference + timedelta(days=days_ahead or 7)
+
+
 def _parse_malay_date(text: str, reference: date) -> date | None:
     """text: already stripped/lowercased/whitespace-collapsed."""
     if text in _MALAY_RELATIVE_DAYS:
@@ -105,12 +124,8 @@ def _parse_malay_date(text: str, reference: date) -> date | None:
         return None
     weekday_text, modifier = match.groups()
     weekday_index = _MALAY_WEEKDAY_TO_INDEX[weekday_text]
-    days_ahead = (weekday_index - reference.weekday()) % 7
-    if modifier == _MALAY_NEXT_MODIFIER:
-        days_ahead += 7
-    elif days_ahead == 0:
-        days_ahead = 7
-    return reference + timedelta(days=days_ahead)
+    canonical_modifier = "next" if modifier == _MALAY_NEXT_MODIFIER else "this" if modifier == "ini" else None
+    return _resolve_weekday_date(reference, weekday_index, canonical_modifier)
 
 
 def _parse_chinese_date(text: str, reference: date) -> date | None:
@@ -133,22 +148,24 @@ def _parse_chinese_date(text: str, reference: date) -> date | None:
             except ValueError:
                 return None
         return parsed
+    compact_text = re.sub(r"\s+", "", text)
     for weekday_text, weekday_index in _CHINESE_WEEKDAY_TO_INDEX.items():
-        is_next = False
-        core = text
+        modifier = None
+        core = compact_text
         for prefix in _CHINESE_NEXT_MODIFIERS:
             if core == f"{prefix}{weekday_text}":
-                is_next = True
+                modifier = "next"
                 core = weekday_text
                 break
+        if modifier is None:
+            for prefix in _CHINESE_THIS_MODIFIERS:
+                if core == f"{prefix}{weekday_text}":
+                    modifier = "this"
+                    core = weekday_text
+                    break
         if core != weekday_text:
             continue
-        days_ahead = (weekday_index - reference.weekday()) % 7
-        if is_next:
-            days_ahead += 7
-        elif days_ahead == 0:
-            days_ahead = 7
-        return reference + timedelta(days=days_ahead)
+        return _resolve_weekday_date(reference, weekday_index, modifier)
     return None
 
 
@@ -262,21 +279,7 @@ def parse_customer_date(value: str | None, *, today: date | None = None) -> date
             "saturday",
             "sunday",
         ).index(weekday_text.lower())
-        days_ahead = (weekday_index - reference.weekday()) % 7
-        # `days_ahead == 0 or modifier == "next" and days_ahead == 0` (the
-        # previous condition here) is, by operator precedence, exactly
-        # `days_ahead == 0` — the `modifier == "next"` clause never changes
-        # the result, since it's ANDed with a condition already covered by
-        # the first term. "next friday" said on any day but Friday itself
-        # silently returned THIS Friday, ignoring "next" — same bug class
-        # already fixed for Chinese/Malay (_parse_chinese_date,
-        # _parse_malay_date both correctly do `if modifier == next: +=7;
-        # elif days_ahead==0: =7`), just never applied to the English path.
-        if modifier == "next":
-            days_ahead += 7
-        elif days_ahead == 0:
-            days_ahead = 7
-        return reference + timedelta(days=days_ahead)
+        return _resolve_weekday_date(reference, weekday_index, modifier)
 
     for fmt in ("%Y-%m-%d", "%d/%m/%Y", "%m/%d/%Y", "%d/%m/%y", "%m/%d/%y"):
         try:
@@ -355,6 +358,7 @@ def extract_customer_date(value: str | None, *, today: date | None = None) -> da
     # Chinese day-words/weekdays have no spaces to anchor a \b-based regex
     # search on, so check every known alias as a plain substring instead —
     # same reasoning as extract_time_from_message's period-word handling.
+    compact_value = re.sub(r"\s+", "", str(value or ""))
     for alias in sorted(
         list(_CHINESE_RELATIVE_DAYS) + list(_CHINESE_WEEKDAY_TO_INDEX), key=len, reverse=True
     ):
@@ -364,9 +368,9 @@ def extract_customer_date(value: str | None, *, today: date | None = None) -> da
         # 星期五大概中午这样" on the unprefixed candidate and silently drop
         # the "next" modifier, returning this week's Friday instead of next
         # week's.
-        for prefix in _CHINESE_NEXT_MODIFIERS + ("",):
+        for prefix in _CHINESE_NEXT_MODIFIERS + _CHINESE_THIS_MODIFIERS + ("",):
             candidate = f"{prefix}{alias}"
-            if candidate in str(value or ""):
+            if candidate in compact_value:
                 parsed = _parse_chinese_date(candidate, reference)
                 if parsed is not None:
                     return parsed

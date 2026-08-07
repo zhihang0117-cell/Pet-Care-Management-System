@@ -16,6 +16,7 @@ from app.db.relational_provider import get_relational_repository
 from app.prompts.system_prompt import SYSTEM_PROMPT
 from app.scenarios.loader import load_scenario
 from app.tools.customer_tools import (
+    _extract_daycare_catalogue_options,
     create_customer,
     create_pet,
     find_pet_by_name,
@@ -111,7 +112,9 @@ MUTATING_TOOL_NAMES = {
     "send_booking_confirmation",
 }
 
-# Tools available in every scenario (and when no scenario is active yet).
+# Read-only tools available in every scenario (and when no scenario is active
+# yet).  This is the fail-closed capability baseline: no unknown or unset
+# scenario can create/update data or send a document.
 CORE_TOOL_NAMES = {
     "resolve_datetime",
     "retrieve_policy",
@@ -121,36 +124,25 @@ CORE_TOOL_NAMES = {
     "get_last_completed_booking",
     "get_payment_history",
     "get_redemption_history",
-    "send_booking_confirmation",
     "update_conversation_state",
-    # Identity/pet registration can be needed at any point in a conversation
-    # (a brand-new customer might be greeting, booking, or asking a loyalty
-    # question) — never scenario-gated, same reasoning as get_pets above.
-    "create_customer",
-    "create_pet",
-    "update_pet_vaccination",
-    # A customer can ask to cancel/reschedule the thing they JUST booked in
-    # the same conversation. Keep these reachable during every scenario so a
-    # side request never has to wait for bookkeeping to catch up.
-    "cancel_booking",
-    "reschedule_booking",
     "get_booking_by_id",
-    # Loyalty can be a side question or a useful pre-booking recommendation,
-    # so these remain reachable regardless of the active scenario.
     "get_loyalty_balance",
     "check_coupon_eligibility",
-    "redeem_reward",
-    "register_loyalty_member",
 }
 
-# Tools scoped to each scenario, on top of a broad cross-scenario core. The
-# scenario narrows only the few high-consequence actions; reads and common side
-# requests stay available. With no active scenario, every tool is available.
+# Every write/external side effect is explicitly granted by one scenario.
 SCENARIO_TOOL_NAMES = {
-    "MAKE_BOOKING": {"find_pet_by_name", "check_availability", "check_availability_range", "create_booking"},
+    "MAKE_BOOKING": {
+        "create_customer", "create_pet", "update_pet_vaccination",
+        "find_pet_by_name", "check_availability", "check_availability_range", "create_booking",
+    },
     "CANCEL_BOOKING": {"get_booking_by_id", "cancel_booking"},
     "RESCHEDULE_BOOKING": {"get_booking_by_id", "check_availability", "check_availability_range", "reschedule_booking"},
     "LOYALTY_QUERY": {"get_loyalty_balance", "check_coupon_eligibility", "redeem_reward"},
+    "MEMBER": {"create_customer", "register_loyalty_member"},
+    "PAYMENT_QUERY": set(),
+    "ENQUIRY": set(),
+    "BOOKING_DOCUMENT": {"send_booking_confirmation"},
     "POLICY_QUERY": set(),
 }
 
@@ -206,9 +198,7 @@ _TOOL_EXECUTOR = ThreadPoolExecutor(
 
 
 def _tools_for_scenario(active_scenario: str | None) -> list:
-    if not active_scenario or active_scenario not in SCENARIO_TOOL_NAMES:
-        return ALL_TOOLS
-    allowed = CORE_TOOL_NAMES | SCENARIO_TOOL_NAMES[active_scenario]
+    allowed = CORE_TOOL_NAMES | SCENARIO_TOOL_NAMES.get(active_scenario or "", set())
     return [t for t in ALL_TOOLS if t.name in allowed]
 
 
@@ -468,6 +458,63 @@ class PawfectOrchestrator:
             company_context, customer, state, resolved_selection, available_tools
         )
         return ("system", "RUNTIME_CONTEXT:\n" + json.dumps(context, ensure_ascii=False, default=str))
+
+    _DIRECT_DATE_WORD_RE = re.compile(
+        r"\b(?:today|tomorrow|week|monday|tuesday|wednesday|thursday|friday|saturday|sunday|"
+        r"hari\s+ini|esok|minggu|isnin|selasa|rabu|khamis|jumaat|sabtu|ahad)\b"
+        r"|今天|今日|明天|后天|後天|星期[一二三四五六日天1-7]|周[一二三四五六日天1-7]|週[一二三四五六日天1-7]",
+        re.IGNORECASE,
+    )
+    _OPERATIONAL_DATE_RE = re.compile(
+        r"\b(?:book|booking|reserve|appointment|available|availability|slot|cancel|reschedule)\b"
+        r"|预约|預約|订位|訂位|空位|取消|改期|安排|有位",
+        re.IGNORECASE,
+    )
+
+    @classmethod
+    def _ground_direct_datetime_response(cls, response, state, user_message: str, timezone_name: str):
+        """Use deterministic output for a short, non-operational date question.
+
+        Operational messages keep the model's natural response, but their
+        writes still use the same resolution through the date whitelist.
+        """
+        resolved = state.current_datetime_resolution
+        text = str(user_message or "").strip()
+        if (
+            not isinstance(resolved, dict)
+            or len(text) > 60
+            or not cls._DIRECT_DATE_WORD_RE.search(text)
+            or cls._OPERATIONAL_DATE_RE.search(text)
+            or cls._is_staff_handoff_request(text)
+        ):
+            return response
+        value = resolved.get("date")
+        date_range = resolved.get("date_range") or {}
+        chinese = bool(re.search(r"[\u3400-\u9fff]", text))
+        if value:
+            try:
+                weekday = datetime.fromisoformat(value).strftime("%A")
+            except ValueError:
+                weekday = ""
+            if chinese:
+                chinese_weekday = {
+                    "Monday": "星期一", "Tuesday": "星期二", "Wednesday": "星期三",
+                    "Thursday": "星期四", "Friday": "星期五", "Saturday": "星期六",
+                    "Sunday": "星期日",
+                }.get(weekday, weekday)
+                content = f"按商家时区（{timezone_name}），日期是 {value}（{chinese_weekday}）。"
+            else:
+                content = f"In the business timezone ({timezone_name}), that date is {value} ({weekday})."
+            return response.model_copy(update={"content": content})
+        if date_range.get("start") and date_range.get("end"):
+            content = (
+                f"按商家时区（{timezone_name}），日期范围是 {date_range['start']} 至 {date_range['end']}。"
+                if chinese else
+                f"In the business timezone ({timezone_name}), the date range is "
+                f"{date_range['start']} through {date_range['end']}."
+            )
+            return response.model_copy(update={"content": content})
+        return response
 
     def build_messages(
         self,
@@ -755,14 +802,26 @@ class PawfectOrchestrator:
         grooming session" has no number to check).
         """
         if not state.known_coupons:
-            return None
+            return {
+                "error": "NO_VERIFIED_COUPON",
+                "message": (
+                    "No eligible coupon has been observed from check_coupon_eligibility. "
+                    "Fetch eligibility and use the customer's exact selected coupon."
+                ),
+            }
         try:
             coupon_id = int(args.get("coupon_id"))
         except (TypeError, ValueError):
-            return None
+            return {
+                "error": "UNVERIFIED_COUPON_ID",
+                "message": "coupon_id must be an exact ID from the verified eligible coupon list.",
+            }
         chosen = next((c for c in state.known_coupons if c.get("coupon_id") == coupon_id), None)
         if chosen is None:
-            return None
+            return {
+                "error": "UNVERIFIED_COUPON_ID",
+                "message": f"coupon_id {coupon_id!r} is not in the verified eligible coupon list.",
+            }
         recent_human_text = " ".join(
             [user_message or ""]
             + [t["content"] for t in state.history[-8:] if t.get("role") == "human"]
@@ -810,7 +869,13 @@ class PawfectOrchestrator:
         for when that gets ignored anyway.
         """
         if state.last_created_payment_id is None:
-            return None
+            return {
+                "error": "NO_VERIFIED_PAYMENT_ID",
+                "message": (
+                    "No payment_id from a successful create_booking exists in this session. "
+                    "The AI may only redeem against the exact payment it just created; do not guess an older ID."
+                ),
+            }
         try:
             given = int(args.get("payment_id"))
         except (TypeError, ValueError):
@@ -928,6 +993,33 @@ class PawfectOrchestrator:
     def _is_data_deletion_request(cls, user_message: str) -> bool:
         return bool(cls._DATA_DELETION_RE.search(user_message or ""))
 
+    _STAFF_HANDOFF_RE = re.compile(
+        r"\b(?:talk|speak|chat|contact|connect|transfer|escalate|complain|complaint)\b.{0,35}"
+        r"\b(?:human|person|staff|agent|manager|vet|veterinarian)\b"
+        r"|\b(?:human|staff|agent|manager|vet|veterinarian)\b.{0,35}"
+        r"\b(?:talk|speak|contact|help|follow\s*up|call\s*me)\b"
+        r"|(?:我要|想找|请找|請找|转接|轉接|联系|聯繫|投诉|投訴).{0,10}(?:人工|员工|員工|客服|经理|經理|兽医|獸醫)"
+        r"|(?:人工|员工|員工|客服|经理|經理|兽医|獸醫).{0,10}(?:联系|聯繫|跟进|跟進|处理|處理|回复|回覆)"
+        r"|\b(?:nak|mahu|boleh)\b.{0,30}\b(?:cakap|hubungi|jumpa)\b.{0,20}\b(?:staf|pegawai|pengurus|doktor\s+haiwan)\b",
+        re.IGNORECASE,
+    )
+
+    @classmethod
+    def _is_staff_handoff_request(cls, user_message: str) -> bool:
+        return bool(cls._STAFF_HANDOFF_RE.search(user_message or ""))
+
+    _DOCUMENT_REQUEST_RE = re.compile(
+        r"\b(?:send|resend|share|download|where(?:'s|\s+is)|didn'?t\s+receive|not\s+received)\b.{0,35}"
+        r"\b(?:confirmation|slip|document|pdf)\b"
+        r"|(?:发送|發送|重发|重發|再发|再發|没收到|沒收到|在哪里|在哪裡).{0,12}(?:确认单|確認單|确认书|確認書|单据|單據|文件|PDF)"
+        r"|\b(?:hantar|hantar\s+semula|tak\s+terima|tidak\s+terima)\b.{0,30}\b(?:pengesahan|dokumen|slip|pdf)\b",
+        re.IGNORECASE,
+    )
+
+    @classmethod
+    def _is_document_request(cls, user_message: str) -> bool:
+        return bool(cls._DOCUMENT_REQUEST_RE.search(user_message or ""))
+
     @staticmethod
     def _capture_explicit_daycare_duration(state, user_message: str) -> None:
         """Cache an exact customer-stated DAYCARE duration across side flows."""
@@ -996,10 +1088,158 @@ class PawfectOrchestrator:
 
     @staticmethod
     def _mutation_signature(tool_name: str, args: dict) -> str:
+        if tool_name == "register_loyalty_member":
+            args = {k: v for k, v in args.items() if k != "confirmed"}
         normalized = {
             k: (round(v, 2) if isinstance(v, float) else v) for k, v in sorted(args.items())
         }
         return f"{tool_name}:{json.dumps(normalized, sort_keys=True, default=str)}"
+
+    _AFFIRMATIVE_RE = re.compile(
+        r"^(?:yes|y|confirm(?:ed)?|proceed|go\s+ahead|book\s+it|do\s+it|ok(?:ay)?|sure|"
+        r"ya|boleh|ya\s+boleh|teruskan|sahkan|可以|确认|確認|是的|好|好的|同意|继续|繼續|没问题|沒問題)$",
+        re.IGNORECASE,
+    )
+    _NEGATIVE_RE = re.compile(
+        r"^(?:no|n|cancel|stop|don't|do\s+not|tak|tidak|jangan|不要|取消|不用|不确认|不確認)$",
+        re.IGNORECASE,
+    )
+
+    @classmethod
+    def _confirmation_intent(cls, user_message: str) -> str | None:
+        compact = re.sub(r"[\s.!?,，。！？]+", " ", str(user_message or "").strip()).strip()
+        if cls._AFFIRMATIVE_RE.fullmatch(compact):
+            return "affirmative"
+        if cls._NEGATIVE_RE.fullmatch(compact):
+            return "negative"
+        return None
+
+    @classmethod
+    def _authorize_pending_action(cls, state, tool_name: str, args: dict, user_message: str) -> dict | None:
+        """Return None only when an exact preview was affirmatively confirmed
+        on a later customer turn. Otherwise store/retain the preview and return
+        a non-executing result for the model to explain."""
+        signature = cls._mutation_signature(tool_name, args)
+        pending = state.pending_actions.get(tool_name)
+        intent = cls._confirmation_intent(user_message)
+        if pending and pending.get("signature") == signature:
+            if intent == "negative":
+                state.pending_actions.pop(tool_name, None)
+                return {
+                    "status": "cancelled_by_customer",
+                    "error_code": "ACTION_DECLINED",
+                    "message": "The customer declined this pending action. Do not execute it.",
+                }
+            if (
+                intent == "affirmative"
+                and int(pending.get("preview_turn") or 0) < state.turn_counter
+            ):
+                return None
+            return {
+                "status": "confirmation_required",
+                "error_code": "EXPLICIT_CONFIRMATION_REQUIRED",
+                "data": {"action": tool_name, "preview": pending.get("args")},
+                "message": (
+                    "This exact action is only previewed. Execute it only after the customer "
+                    "replies with a standalone affirmative confirmation on a later turn."
+                ),
+            }
+
+        state.pending_actions[tool_name] = {
+            "signature": signature,
+            "args": cls._compact_evidence_result(args, max_chars=1200),
+            "preview_turn": state.turn_counter,
+        }
+        return {
+            "status": "confirmation_required",
+            "error_code": "ACTION_PREVIEW_CREATED",
+            "data": {"action": tool_name, "preview": state.pending_actions[tool_name]["args"]},
+            "message": (
+                "No write occurred. Present these exact details to the customer and ask for "
+                "a standalone confirmation. Retry with identical arguments only after their next reply."
+            ),
+        }
+
+    @staticmethod
+    def _normalize_clock(value) -> str:
+        text = str(value or "").strip()
+        match = re.fullmatch(r"(\d{1,2}):(\d{2})(?::\d{2})?", text)
+        return f"{int(match.group(1)):02d}:{match.group(2)}" if match else text.casefold()
+
+    @classmethod
+    def _reject_unverified_booking_payload(cls, state, args: dict) -> dict | None:
+        service_type = str(args.get("service_type") or "").strip().upper()
+        pet_id = args.get("pet_id")
+        package = str(args.get("package_name") or "").strip().casefold()
+        try:
+            price = round(float(args.get("price")), 2)
+        except (TypeError, ValueError):
+            price = None
+
+        candidates = [
+            option for option in state.verified_service_options
+            if str(option.get("service_type") or "").upper() == service_type
+            and (not option.get("pet_id") or str(option.get("pet_id")) == str(pet_id))
+            and str(option.get("service_name") or option.get("room_type") or "").strip().casefold() == package
+        ]
+        chosen = next(
+            (
+                option for option in candidates
+                if price is not None
+                and option.get("price") not in (None, "")
+                and abs(float(option["price"]) - price) <= 0.01
+            ),
+            None,
+        )
+        if chosen is None:
+            return {
+                "error": "UNVERIFIED_SERVICE_OPTION",
+                "message": (
+                    "package_name/price is not an exact option observed from "
+                    "get_booking_service_options for this service and pet. Fetch the catalogue, "
+                    "let the customer select an option, and reuse its exact name and price."
+                ),
+            }
+
+        if args.get("add_on"):
+            add_on_name = str(args.get("add_on") or "").strip().casefold()
+            try:
+                add_on_price = round(float(args.get("add_on_price")), 2)
+            except (TypeError, ValueError):
+                add_on_price = None
+            valid_add_on = any(
+                str(option.get("service_type") or "").upper() == service_type
+                and str(option.get("selection_kind") or "") == "add_on"
+                and str(option.get("service_name") or "").strip().casefold() == add_on_name
+                and add_on_price is not None
+                and option.get("price") not in (None, "")
+                and abs(float(option["price"]) - add_on_price) <= 0.01
+                for option in state.verified_service_options
+            )
+            if not valid_add_on:
+                return {
+                    "error": "UNVERIFIED_ADD_ON",
+                    "message": "The add-on name/price was not observed as an exact catalogue option.",
+                }
+
+        requested_date = str(args.get("date") or "")
+        requested_time = cls._normalize_clock(args.get("time"))
+        slot_verified = any(
+            str(slot.get("service_type") or "").upper() == service_type
+            and str(slot.get("date") or "") == requested_date
+            and cls._normalize_clock(slot.get("time")) == requested_time
+            and (not args.get("room_type") or str(slot.get("room_type") or "").casefold() == str(args.get("room_type") or "").casefold())
+            for slot in state.verified_availability_slots
+        )
+        if not slot_verified:
+            return {
+                "error": "UNVERIFIED_AVAILABILITY_SLOT",
+                "message": (
+                    "This exact service/date/time was not returned as available by "
+                    "check_availability. Verify it and let the customer select the observed slot."
+                ),
+            }
+        return None
 
     @staticmethod
     def _known_pet_by_id(state, pet_id) -> dict | None:
@@ -1035,6 +1275,18 @@ class PawfectOrchestrator:
         args = dict(tool_call.get("args") or {})
         try:
             if state is not None:
+                allowed_names = {candidate.name for candidate in _tools_for_scenario(state.active_scenario)}
+                if (
+                    tool_call["name"] in MUTATING_TOOL_NAMES
+                    and tool_call["name"] not in allowed_names
+                ):
+                    return {
+                        "error": "TOOL_NOT_ALLOWED_FOR_SCENARIO",
+                        "message": (
+                            f"{tool_call['name']} is not authorized while active_scenario is "
+                            f"{state.active_scenario!r}. Declare the customer's exact scenario first."
+                        ),
+                    }
                 if tool_call["name"] in COMPANY_SCOPED_TOOL_NAMES or "company_id" in args:
                     # Tenant scope is request/session authority, never a model
                     # choice. Every company-scoped tool receives the company
@@ -1223,6 +1475,17 @@ class PawfectOrchestrator:
                 species_rejection = self._reject_species_mismatch(state, args, user_message)
                 if species_rejection:
                     return species_rejection
+                if (
+                    tool_call["name"] == "send_booking_confirmation"
+                    and not self._is_document_request(user_message)
+                ):
+                    return {
+                        "error": "EXPLICIT_DOCUMENT_REQUEST_REQUIRED",
+                        "message": (
+                            "The current customer message does not explicitly request a booking "
+                            "confirmation document/slip. Do not send or resend one."
+                        ),
+                    }
                 if tool_call["name"] == "create_pet":
                     breed_rejection = self._reject_unconfirmed_breed(state, args, user_message)
                     if breed_rejection:
@@ -1281,17 +1544,27 @@ class PawfectOrchestrator:
                                 "forcing an extra turn. This check only blocks an unresolved offer."
                         ),
                     }
+                if tool_call["name"] == "create_booking":
+                    booking_rejection = self._reject_unverified_booking_payload(state, args)
+                    if booking_rejection:
+                        return booking_rejection
+                    confirmation_rejection = self._authorize_pending_action(
+                        state, tool_call["name"], args, user_message
+                    )
+                    if confirmation_rejection:
+                        return confirmation_rejection
+                if tool_call["name"] == "redeem_reward":
+                    confirmation_rejection = self._authorize_pending_action(
+                        state, tool_call["name"], args, user_message
+                    )
+                    if confirmation_rejection:
+                        return confirmation_rejection
                 if tool_call["name"] == "register_loyalty_member" and args.get("confirmed"):
-                    if not (
-                        state.register_preview_turn is not None and state.register_preview_turn < state.turn_counter
-                    ):
-                        # The model can fabricate confirmed=true in the same
-                        # reply as the preview instead of genuinely waiting for
-                        # the customer's next message to say yes (same bypass
-                        # class as confirm_pet_name) — force it back to a
-                        # preview unless the first confirmation_required
-                        # genuinely happened on an earlier turn.
-                        args = {**args, "confirmed": False}
+                    confirmation_rejection = self._authorize_pending_action(
+                        state, tool_call["name"], args, user_message
+                    )
+                    if confirmation_rejection:
+                        return confirmation_rejection
                 if tool_call["name"] in self._DEDUPED_MUTATION_TOOLS:
                     signature = self._mutation_signature(tool_call["name"], args)
                     last = state.last_mutation
@@ -1472,6 +1745,72 @@ class PawfectOrchestrator:
                 for day in days
                 for slot in (day.get("available_slots") or [])
             ]
+
+    @staticmethod
+    def _cache_booking_evidence(state, tool_name: str, result: dict, args: dict) -> None:
+        """Cache only catalogue/availability values returned by real tools."""
+        if not isinstance(result, dict):
+            return
+        service_type = str(
+            args.get("service_type") or (result.get("data") or {}).get("service_type")
+            or result.get("service_type") or ""
+        ).upper()
+        if tool_name == "get_booking_service_options" and result.get("status") == "success":
+            data = result.get("data") or {}
+            options = list(data.get("service_options") or []) + list(data.get("add_on_options") or [])
+            parsed_services, parsed_add_ons = _extract_daycare_catalogue_options(
+                result.get("detailed_pricing_by_size") or []
+            )
+            options += parsed_services + parsed_add_ons
+            state.verified_service_options = [
+                option for option in state.verified_service_options
+                if not (
+                    str(option.get("service_type") or "").upper() == service_type
+                    and str(option.get("pet_id") or "") == str(args.get("pet_id") or "")
+                )
+            ]
+            state.verified_service_options.extend(
+                {
+                    **option,
+                    "service_type": service_type,
+                    "pet_id": args.get("pet_id"),
+                }
+                for option in options
+                if isinstance(option, dict)
+            )
+            return
+
+        new_slots: list[dict] = []
+        if tool_name == "check_availability" and result.get("status") == "success":
+            for slot in (result.get("data") or {}).get("available_slots") or []:
+                new_slots.append({
+                    "service_type": service_type,
+                    "date": args.get("date"),
+                    "time": slot,
+                    "room_type": args.get("room_type") or "",
+                })
+        elif tool_name == "check_availability_range":
+            days = result.get("days") or (result.get("data") or {}).get("days") or []
+            for day in days:
+                for slot in day.get("available_slots") or []:
+                    new_slots.append({
+                        "service_type": service_type,
+                        "date": day.get("date"),
+                        "time": slot,
+                        "room_type": args.get("room_type") or "",
+                    })
+        if new_slots:
+            keys = {
+                (slot["service_type"], slot["date"], str(slot["time"]), str(slot["room_type"]))
+                for slot in new_slots
+            }
+            state.verified_availability_slots = [
+                slot for slot in state.verified_availability_slots
+                if (
+                    str(slot.get("service_type")), str(slot.get("date")),
+                    str(slot.get("time")), str(slot.get("room_type")),
+                ) not in keys
+            ] + new_slots
 
     @staticmethod
     def _cache_pending_booking_confirmation(state, tool_name: str, result: dict, args: dict) -> None:
@@ -1681,6 +2020,8 @@ class PawfectOrchestrator:
         "cancel_booking": "CANCEL_BOOKING",
         "reschedule_booking": "RESCHEDULE_BOOKING",
         "redeem_reward": "LOYALTY_QUERY",
+        "register_loyalty_member": "MEMBER",
+        "send_booking_confirmation": "BOOKING_DOCUMENT",
     }
 
     _LOYALTY_TOOL_NAMES = {
@@ -1695,10 +2036,16 @@ class PawfectOrchestrator:
         if tool_name in cls._LOYALTY_TOOL_NAMES:
             state.loyalty_offer_shown_turn = state.turn_counter
 
-    @staticmethod
-    def _cache_register_preview(state, tool_name: str, result: dict) -> None:
+    @classmethod
+    def _cache_register_preview(cls, state, tool_name: str, result: dict, args: dict) -> None:
         if tool_name == "register_loyalty_member" and isinstance(result, dict) and result.get("status") == "confirmation_required":
             state.register_preview_turn = state.turn_counter
+            executable_args = {**args, "confirmed": True}
+            state.pending_actions[tool_name] = {
+                "signature": cls._mutation_signature(tool_name, executable_args),
+                "args": cls._compact_evidence_result(executable_args, max_chars=1200),
+                "preview_turn": state.turn_counter,
+            }
 
     @classmethod
     def _cache_last_mutation(cls, state, tool_name: str, args: dict, result: dict) -> None:
@@ -2533,12 +2880,13 @@ class PawfectOrchestrator:
         self._cache_resolved_pet(state, tool_name, result, args)
         self._cache_latest_booking(state, tool_name, result)
         self._cache_offered_options(state, tool_name, result)
+        self._cache_booking_evidence(state, tool_name, result, args)
         self._cache_pending_booking_confirmation(state, tool_name, result, args)
         self._cache_resolved_date(state, tool_name, result)
         self._cache_known_coupons(state, tool_name, result)
         self._cache_last_mutation(state, tool_name, args, result)
         self._cache_loyalty_offer_shown(state, tool_name)
-        self._cache_register_preview(state, tool_name, result)
+        self._cache_register_preview(state, tool_name, result, args)
 
         if tool_name == "create_customer" and isinstance(result, dict) and result.get("status") == "success":
             state.customer_id = result.get("data", {}).get("customer_id")
@@ -2569,12 +2917,31 @@ class PawfectOrchestrator:
         elif tool_name == "redeem_reward" and isinstance(result, dict) and result.get("status") == "success":
             state.last_created_payment_id = None
 
+        if isinstance(result, dict) and result.get("status") == "success":
+            state.pending_actions.pop(tool_name, None)
+
         self._sync_scenario_from_tool_call(state, tool_name, result)
         self._update_agent_evidence(state, tool_name, result)
 
     def invoke_with_trace(self, company_context: dict, state, user_message: str):
         """Evidence-driven tool loop with flexible planning and full trace."""
         state.turn_counter += 1
+        try:
+            deterministic_datetime = resolve_datetime.invoke({"text": user_message})
+        except Exception as exc:
+            deterministic_datetime = {"ambiguous": True, "error": str(exc)}
+            logging.getLogger(__name__).exception("Deterministic datetime preprocessing failed: %s", exc)
+        if isinstance(deterministic_datetime, dict) and not deterministic_datetime.get("ambiguous"):
+            state.current_datetime_resolution = deterministic_datetime
+            self._cache_resolved_date(state, "resolve_datetime", deterministic_datetime)
+            state.verified_facts["current_datetime_resolution"] = {
+                "source": "deterministic_preprocessing",
+                "turn": state.turn_counter,
+                "result": self._compact_evidence_result(deterministic_datetime),
+            }
+        else:
+            state.current_datetime_resolution = None
+            state.verified_facts.pop("current_datetime_resolution", None)
         self._capture_explicit_loyalty_decision(state, user_message)
         self._capture_explicit_daycare_duration(state, user_message)
         is_first_message = not state.history
@@ -2626,7 +2993,7 @@ class PawfectOrchestrator:
         self._cache_daycare_duration_from_selection(state, resolved_selection)
         bound_scenario = state.active_scenario
         bound_tools = _tools_for_scenario(bound_scenario)
-        model = self._base_model.bind_tools(bound_tools)
+        model = self._base_model.bind_tools(bound_tools, strict=True)
         messages = self.build_messages(
             company_context,
             customer,
@@ -2683,6 +3050,32 @@ class PawfectOrchestrator:
                     exc,
                 )
 
+        if (
+            customer.get("found")
+            and not escalation_saved
+            and self._is_staff_handoff_request(user_message)
+        ):
+            try:
+                self._save_escalation_message(
+                    company_context.get("company_id"),
+                    state.customer_id,
+                    user_message,
+                    "CUSTOMER_REQUESTED_STAFF_HANDOFF",
+                )
+                escalation_saved = True
+                state.verified_facts["staff_enquiry"] = {
+                    "source": "deterministic_staff_handoff",
+                    "turn": state.turn_counter,
+                    "saved": True,
+                }
+            except Exception as exc:
+                escalation_failed = True
+                logging.getLogger(__name__).exception(
+                    "Could not persist explicit staff enquiry for customer_id=%s: %s",
+                    state.customer_id,
+                    exc,
+                )
+
         def apply_and_escalate(tool_call: dict, result) -> None:
             nonlocal escalation_saved, escalation_failed
             if isinstance(result, dict) and result.get("handoff_required") and not escalation_saved:
@@ -2709,10 +3102,17 @@ class PawfectOrchestrator:
                 # no evidence. Exclude the bookkeeping-only state tool so this
                 # forced call must observe or act on real business data.
                 repair_tools = [
-                    tool for tool in ALL_TOOLS if tool.name != "update_conversation_state"
+                    tool for tool in _tools_for_scenario(state.active_scenario)
+                    if tool.name != "update_conversation_state"
                 ]
+                if not repair_tools:
+                    repair_used = True
+                    force_tool_once = False
+                    continue
                 bound_tools = repair_tools
-                model = self._base_model.bind_tools(repair_tools, tool_choice="required")
+                model = self._base_model.bind_tools(
+                    repair_tools, tool_choice="required", strict=True
+                )
                 # Sentinel guarantees the following iteration returns to the
                 # normal auto tool-choice binding after this one repair call.
                 bound_scenario = "__FORCED_TOOL_REPAIR__"
@@ -2731,7 +3131,7 @@ class PawfectOrchestrator:
                 # Rebuilding here closes that gap within the same turn too.
                 bound_scenario = state.active_scenario
                 bound_tools = _tools_for_scenario(bound_scenario)
-                model = self._base_model.bind_tools(bound_tools)
+                model = self._base_model.bind_tools(bound_tools, strict=True)
 
             self._refresh_runtime_message(
                 messages,
@@ -2768,6 +3168,12 @@ class PawfectOrchestrator:
                     continue
 
                 final_customer = self._customer_context_for_state(customer, state)
+                response = self._ground_direct_datetime_response(
+                    response,
+                    state,
+                    user_message,
+                    str(company_context.get("timezone") or "Asia/Kuala_Lumpur"),
+                )
                 response = self._ground_document_delivery_response(
                     response, user_message, trace
                 )
