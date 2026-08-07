@@ -7,7 +7,12 @@ from typing import Literal
 from langchain_core.tools import tool
 
 from app.db.relational_provider import get_relational_repository
-from app.tools.booking_window import booking_window_error, max_bookable_date, resolve_date_string
+from app.tools.booking_window import (
+    DEFAULT_SUGGESTION_WINDOW_DAYS,
+    booking_window_error,
+    max_bookable_date,
+    resolve_date_string,
+)
 from app.tools.time_periods import filter_slots_by_period
 
 
@@ -282,7 +287,11 @@ def check_availability_range(
         return window_error
 
     repo = get_relational_repository()
-    end = min(requested_end, max_bookable_date())
+    end = min(
+        requested_end,
+        max_bookable_date(),
+        start + timedelta(days=DEFAULT_SUGGESTION_WINDOW_DAYS - 1),
+    )
 
     days = []
     failures = []

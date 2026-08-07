@@ -150,6 +150,7 @@ class SupabaseRelationalRepository:
             "preferred_staff": booking_command.preferred_staff,
             "add_on": booking_command.add_on,
             "add_on_price": booking_command.add_on_price,
+            "duration_minutes": booking_command.duration_minutes,
         }
         payload["_draft_booking"] = {
             "pet_id": booking_command.pet_id,
@@ -159,6 +160,7 @@ class SupabaseRelationalRepository:
             "selected_slot": booking_command.selected_slot,
             "preferred_time": booking_command.preferred_time,
             "price_quote": booking_command.price_quote,
+            "duration_minutes": booking_command.duration_minutes,
         }
         return create_booking(context, payload)
 

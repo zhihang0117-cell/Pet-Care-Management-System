@@ -9,15 +9,21 @@ create table if not exists booking_slot_hold (
   holder_key text not null,
   slot_date date,
   slot_time time,
+  end_time time,
+  staff_id int,
   room_type text,
   check_in_date date,
   check_out_date date,
   expires_at timestamptz not null
 );
 
+alter table booking_slot_hold add column if not exists end_time time;
+alter table booking_slot_hold add column if not exists staff_id int;
+
 create index if not exists booking_slot_hold_expiry_idx on booking_slot_hold(expires_at);
+drop index if exists booking_slot_hold_slot_idx;
 create index if not exists booking_slot_hold_slot_idx
-  on booking_slot_hold(company_id, service_type, slot_date, slot_time)
+  on booking_slot_hold(company_id, staff_id, slot_date, slot_time, end_time)
   where resource_kind = 'SLOT';
 create index if not exists booking_slot_hold_room_idx
   on booking_slot_hold(company_id, room_type, check_in_date, check_out_date)
@@ -26,6 +32,10 @@ create index if not exists booking_slot_hold_room_idx
 alter table booking_slot_hold enable row level security;
 revoke all on table booking_slot_hold from public, anon, authenticated;
 
+drop function if exists public.acquire_booking_hold(
+  int, text, text, text, date, time, text, date, date, int, int
+);
+
 create or replace function public.acquire_booking_hold(
   p_company_id int,
   p_resource_kind text,
@@ -33,6 +43,8 @@ create or replace function public.acquire_booking_hold(
   p_holder_key text,
   p_slot_date date default null,
   p_slot_time time default null,
+  p_end_time time default null,
+  p_staff_id int default null,
   p_room_type text default null,
   p_check_in_date date default null,
   p_check_out_date date default null,
@@ -54,28 +66,31 @@ begin
   delete from booking_slot_hold where expires_at <= now();
 
   if v_kind = 'SLOT' then
-    if p_slot_date is null or p_slot_time is null then
-      raise exception 'slot_date and slot_time are required' using errcode = 'P0001';
+    if p_slot_date is null or p_slot_time is null or p_end_time is null
+       or p_end_time <= p_slot_time or p_staff_id is null then
+      raise exception 'slot_date, staff_id, and a valid slot interval are required' using errcode = 'P0001';
     end if;
     perform pg_advisory_xact_lock(hashtextextended(
-      p_company_id::text || ':hold:slot:' || upper(p_service_type) || ':' || p_slot_date::text || ':' || p_slot_time::text, 0
+      p_company_id::text || ':hold:staff:' || p_staff_id::text, 0
     ));
     if exists (
       select 1 from booking_slot_hold
       where company_id = p_company_id and resource_kind = 'SLOT'
-        and service_type = upper(p_service_type)
-        and slot_date = p_slot_date and slot_time = p_slot_time
+        and staff_id = p_staff_id and slot_date = p_slot_date
+        and slot_time < p_end_time and p_slot_time < end_time
         and holder_key <> p_holder_key and expires_at > now()
     ) then
       return false;
     end if;
     delete from booking_slot_hold
       where company_id = p_company_id and resource_kind = 'SLOT'
-        and service_type = upper(p_service_type) and holder_key = p_holder_key;
+        and holder_key = p_holder_key;
     insert into booking_slot_hold(
-      company_id, resource_kind, service_type, holder_key, slot_date, slot_time, expires_at
+      company_id, resource_kind, service_type, holder_key,
+      slot_date, slot_time, end_time, staff_id, expires_at
     ) values (
-      p_company_id, 'SLOT', upper(p_service_type), p_holder_key, p_slot_date, p_slot_time,
+      p_company_id, 'SLOT', upper(p_service_type), p_holder_key,
+      p_slot_date, p_slot_time, p_end_time, p_staff_id,
       now() + interval '15 minutes'
     );
     return true;
@@ -119,9 +134,9 @@ begin
 end;
 $$;
 
-revoke all on function public.acquire_booking_hold(int, text, text, text, date, time, text, date, date, int, int)
+revoke all on function public.acquire_booking_hold(int, text, text, text, date, time, time, int, text, date, date, int, int)
   from public, anon, authenticated;
-grant execute on function public.acquire_booking_hold(int, text, text, text, date, time, text, date, date, int, int)
+grant execute on function public.acquire_booking_hold(int, text, text, text, date, time, time, int, text, date, date, int, int)
   to service_role;
 
 notify pgrst, 'reload schema';

@@ -485,6 +485,45 @@ def test_hourly_daycare_catalogue_accepts_verified_rate_times_duration():
     )["error"] == "UNVERIFIED_SERVICE_OPTION"
 
 
+def test_hourly_daycare_catalogue_rejects_visit_above_flat_tier_threshold():
+    state = ConversationState(phone_number="+60123456705", company_id="1")
+    state.verified_service_options = [
+        {
+            "service_type": "DAYCARE",
+            "pet_id": 9,
+            "service_name": "Hourly Care",
+            "price": 20,
+            "pricing_unit": "hour",
+            "max_duration_minutes": 180,
+            "max_duration_exclusive": False,
+        }
+    ]
+    state.verified_availability_slots = [
+        {
+            "service_type": "DAYCARE",
+            "verified_turn": 0,
+            "date": "2026-08-10",
+            "time": "09:00",
+            "duration_minutes": 480,
+            "check_out_time": "17:00",
+            "preferred_staff": "",
+        }
+    ]
+    args = {
+        "service_type": "DAYCARE",
+        "pet_id": 9,
+        "package_name": "Hourly Care",
+        "date": "2026-08-10",
+        "time": "09:00",
+        "check_out_time": "17:00",
+        "duration_minutes": 480,
+        "price": 160,
+    }
+
+    blocked = PawfectOrchestrator._reject_unverified_booking_payload(state, args)
+    assert blocked["error"] == "PACKAGE_NOT_APPLICABLE_FOR_DURATION"
+
+
 def test_reschedule_confirmation_is_bound_to_exact_new_details(monkeypatch):
     capturing = _CapturingTool({"status": "success", "data": {"booking_id": 91}})
     monkeypatch.setitem(TOOLS_BY_NAME, "reschedule_booking", capturing)
@@ -1393,3 +1432,40 @@ def test_outbound_notice_history_uses_request_tenant(monkeypatch):
 
     assert calls == [("+60123456705", "77")]
     assert state.history[-1]["content"] == "Your booking is ready"
+
+
+def test_stale_or_cross_scenario_confirmation_cannot_execute_pending_action():
+    state = ConversationState(
+        phone_number="+60123456705",
+        company_id="7",
+        active_scenario="MEMBER",
+        turn_counter=8,
+    )
+    state.pending_actions["register_loyalty_member"] = {
+        "signature": "old",
+        "args": {"company_id": "7", "customer_id": 22, "confirmed": True},
+        "preview_turn": 1,
+        "scenario": "MEMBER",
+    }
+    assert PawfectOrchestrator._pending_confirmation_tool(state, "yes") is None
+
+    state.turn_counter = 2
+    state.pending_actions["register_loyalty_member"]["preview_turn"] = 1
+    state.active_scenario = "ENQUIRY"
+    assert PawfectOrchestrator._pending_confirmation_tool(state, "yes") is None
+
+
+def test_conversation_memory_sweeps_expired_store_and_lock_entries():
+    from app.context.memory import ConversationMemory
+
+    memory = ConversationMemory(ttl_seconds=0)
+    for index in range(8):
+        phone = f"+601200000{index}"
+        with memory.session_lock(phone, "7"):
+            memory.save(memory.get(phone, "7"))
+
+    # The current key may remain until the next sweep; one-off expired
+    # sessions and their locks must not accumulate without bound.
+    assert len(memory._store) <= 1
+    assert len(memory._last_seen) <= 1
+    assert len(memory._locks) <= 1

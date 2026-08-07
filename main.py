@@ -565,9 +565,24 @@ def _seed_notice_into_history(company_id: int | str, phone_number: str, message:
     the No Show notice ("sorry, can we reschedule?") reads naturally in
     context instead of the model having no idea what's being responded to.
     """
-    state = _memory.get(phone_number, str(company_id))
-    state.history.append({"role": "ai", "content": message})
-    _memory.save(state)
+    from app.db.customer_context import canonical_phone_number
+
+    try:
+        canonical_phone = canonical_phone_number(phone_number)
+    except ValueError:
+        canonical_phone = phone_number.strip()
+    tenant = str(company_id)
+    from contextlib import nullcontext
+
+    lock_context = (
+        _memory.session_lock(canonical_phone, tenant)
+        if hasattr(_memory, "session_lock")
+        else nullcontext()
+    )
+    with lock_context:
+        state = _memory.get(canonical_phone, tenant)
+        state.history.append({"role": "ai", "content": message})
+        _memory.save(state)
 
 
 class BookingStatusNoticeRequest(BaseModel):

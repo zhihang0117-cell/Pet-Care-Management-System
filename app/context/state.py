@@ -35,6 +35,10 @@ class ConversationState:
     pet_name: str | None = None
     pet_size: str | None = None
     pet_breed: str | None = None
+    # Turn on which the customer explicitly identified this pet by name.
+    # A cached pet from an earlier completed booking is not permission to use
+    # that pet for a new multi-pet booking flow.
+    pet_selected_turn: int | None = None
 
     # Full pet roster, cached once per session (first message prefetch, or
     # any get_pets call) as
@@ -117,8 +121,9 @@ class ConversationState:
     verified_availability_slots: list[dict[str, Any]] = field(default_factory=list)
 
     # Consequential actions are always previewed on one customer turn and may
-    # execute only after an affirmative reply on a later turn. Each entry is
-    # {"signature", "args", "preview_turn"}; it is created and checked by the
+    # execute only after an affirmative reply on the immediately next turn.
+    # Each entry is
+    # {"signature", "args", "preview_turn", "scenario"}; it is created and checked by the
     # orchestrator, never by the model.
     pending_actions: dict[str, dict[str, Any]] = field(default_factory=dict)
 
@@ -183,8 +188,8 @@ class ConversationState:
 
     # Incremented once at the start of every /chat call (one customer
     # message = one turn). Used to enforce that a "confirmation" tool call
-    # actually happened on a LATER turn than the one that first asked for
-    # it — a same-turn retry doesn't count, which is what closes the
+    # actually happened on the immediately following turn. A same-turn retry
+    # doesn't count, which is what closes the
     # "model fills in the confirmation itself without truly waiting for the
     # customer's next message" loophole (confirmed live: this happened for
     # both the loyalty upsell and register_loyalty_member's consent check).

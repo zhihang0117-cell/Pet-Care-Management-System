@@ -576,6 +576,7 @@ def _serialize_grooming_booking(row: dict) -> dict:
         "service_type": "GROOMING",
         "booking_date": row.get("booking_date"),
         "booking_time": row.get("booking_time"),
+        "duration_minutes": row.get("duration_minutes") or 90,
         "booking_status": row.get("booking_status"),
         "service_name": "Grooming",
         "package_name": package_name,
@@ -1261,9 +1262,37 @@ def _cross_service_pet_bookings(client, company_id: int, pet_id: int | None) -> 
     return combined
 
 
+def _booking_row_id(row: dict, service_type: str):
+    return row.get({
+        "GROOMING": "grooming_booking_id",
+        "DAYCARE": "daycare_booking_id",
+        "BOARDING": "boarding_booking_id",
+    }.get(str(service_type or "").upper(), ""))
+
+
+def _without_excluded_booking(
+    rows: list[dict], service_type: str, booking_id: int | None
+) -> list[dict]:
+    """Exclude only the named row in the named service table.
+
+    Booking ids come from independent table sequences, so DAYCARE #7 must
+    never accidentally exclude GROOMING #7 during a reschedule probe.
+    """
+    if booking_id is None:
+        return rows
+    service = str(service_type or "").upper()
+    return [
+        row for row in rows
+        if not (
+            str(row.get("_service_type") or "").upper() == service
+            and _booking_row_id(row, service) == booking_id
+        )
+    ]
+
+
 def _pet_free_for_interval(
     pet_bookings: list[dict], date_str: str, start: int, end: int,
-    *, exclude_booking_id: int | None = None,
+    *, exclude_booking_id: int | None = None, exclude_service_type: str = "",
 ) -> bool:
     for row in pet_bookings:
         if not _booking_blocks_availability(row):
@@ -1276,7 +1305,11 @@ def _pet_free_for_interval(
                 "BOARDING": "boarding_booking_id",
             }.get(service_type, "")
         )
-        if exclude_booking_id is not None and row_id == exclude_booking_id:
+        if (
+            exclude_booking_id is not None
+            and service_type == str(exclude_service_type or "").upper()
+            and row_id == exclude_booking_id
+        ):
             continue
         if service_type == "BOARDING":
             check_in = str(row.get("check_in_date") or "")
@@ -1298,6 +1331,7 @@ def _pet_free_for_boarding_stay(
     check_in_time: object = None,
     check_out_time: object = None,
     exclude_booking_id: int | None = None,
+    exclude_service_type: str = "",
 ) -> bool:
     """Whether one pet is free for the exact half-open boarding stay.
 
@@ -1336,7 +1370,11 @@ def _pet_free_for_boarding_stay(
                 "BOARDING": "boarding_booking_id",
             }.get(service_type, "")
         )
-        if exclude_booking_id is not None and row_id == exclude_booking_id:
+        if (
+            exclude_booking_id is not None
+            and service_type == str(exclude_service_type or "").upper()
+            and row_id == exclude_booking_id
+        ):
             continue
         if service_type == "BOARDING":
             existing_in = _parse_date(row.get("check_in_date"))
@@ -1488,7 +1526,7 @@ def _shared_booking_holds(client, company_id: int) -> list[dict] | None:
         return (
             client.table("booking_slot_hold")
             .select(
-                "resource_kind,service_type,holder_key,slot_date,slot_time,"
+                "resource_kind,service_type,holder_key,slot_date,slot_time,end_time,staff_id,"
                 "room_type,check_in_date,check_out_date,expires_at"
             )
             .eq("company_id", company_id)
@@ -1504,18 +1542,49 @@ def _shared_booking_holds(client, company_id: int) -> list[dict] | None:
         raise
 
 
-def _shared_slot_held_by_other(
-    holds: list[dict], service_type: str, date_str: str, slot: str, holder: str | None
+def _staff_hold_blocks(
+    holds: list[dict] | None,
+    *, company_id: int, staff_id: int, date_str: str,
+    start: int, end: int, holder: str | None,
 ) -> bool:
-    normalized_slot = _normalize_time_value(slot)
-    return any(
-        str(row.get("resource_kind") or "").upper() == "SLOT"
-        and str(row.get("service_type") or "").upper() == service_type
-        and str(row.get("slot_date") or "") == date_str
-        and _normalize_time_value(str(row.get("slot_time") or "")) == normalized_slot
-        and str(row.get("holder_key") or "") != str(holder or "")
-        for row in holds
-    )
+    if holder and SLOT_HOLDS.staff_held_by_other(
+        company_id, staff_id, date_str, start, end, holder
+    ):
+        return True
+    if holds is None:
+        return False
+    for row in holds:
+        if (
+            str(row.get("resource_kind") or "").upper() != "SLOT"
+            or str(row.get("slot_date") or "") != date_str
+            or str(row.get("staff_id") or "") != str(staff_id)
+            or str(row.get("holder_key") or "") == str(holder or "")
+        ):
+            continue
+        held_start = _time_to_minutes(row.get("slot_time"))
+        held_end = _time_to_minutes(row.get("end_time"))
+        if held_start is not None and held_end is not None and start < held_end and held_start < end:
+            return True
+    return False
+
+
+def _staff_free_after_holds(
+    staff_rows: list[dict], holds: list[dict] | None,
+    *, company_id: int, date_str: str, start: int, end: int, holder: str | None,
+) -> list[dict]:
+    return [
+        row for row in staff_rows
+        if row.get("staff_id") is not None
+        and not _staff_hold_blocks(
+            holds,
+            company_id=company_id,
+            staff_id=int(row["staff_id"]),
+            date_str=date_str,
+            start=start,
+            end=end,
+            holder=holder,
+        )
+    ]
 
 
 def _acquire_shared_hold(client, payload: dict) -> bool | None:
@@ -1721,6 +1790,12 @@ def check_available_slots(context: CustomerContext, intent_json: dict) -> dict:
             if exclude_booking_id_raw.isdigit() and int(exclude_booking_id_raw) > 0
             else None
         )
+        bookings = _without_excluded_booking(bookings, service_type, exclude_booking_id)
+        holder = (
+            str(context.resolved_customer_id)
+            if context.resolved_customer_id is not None
+            else None
+        )
 
         from .availability_service import service_duration_minutes
 
@@ -1753,29 +1828,40 @@ def check_available_slots(context: CustomerContext, intent_json: dict) -> dict:
                 # member is free continuously from the fixed drop-off through
                 # that pickup. A 17:30 pickup can therefore be offered even
                 # when 17:30 would be too late to START a multi-hour visit.
-                check_out_choices = [
-                    candidate
-                    for candidate in _time_slots_for_day(
-                        open_time, close_time, include_close=True
+                checkout_staff_candidates: dict[str, list[dict]] = {}
+                check_out_choices = []
+                for candidate in _time_slots_for_day(
+                    open_time, close_time, include_close=True
+                ):
+                    candidate_minutes = _time_to_minutes(candidate)
+                    if candidate_minutes is None or candidate_minutes <= checkin_minutes:
+                        continue
+                    free_for_visit = _staff_free_for_interval(
+                        checkin_minutes,
+                        candidate_minutes,
+                        available_staff,
+                        bookings,
+                        date_str=date_str,
                     )
-                    if (
-                        (_time_to_minutes(candidate) or 0) > checkin_minutes
-                        and _staff_free_for_interval(
-                            checkin_minutes,
-                            _time_to_minutes(candidate) or 0,
-                            available_staff,
-                            bookings,
-                            date_str=date_str,
-                        )
-                        and _pet_free_for_interval(
-                            pet_bookings,
-                            date_str,
-                            checkin_minutes,
-                            _time_to_minutes(candidate) or 0,
-                            exclude_booking_id=exclude_booking_id,
-                        )
+                    free_for_visit = _staff_free_after_holds(
+                        free_for_visit,
+                        shared_holds,
+                        company_id=context.company_id,
+                        date_str=date_str,
+                        start=checkin_minutes,
+                        end=candidate_minutes,
+                        holder=holder,
                     )
-                ]
+                    if free_for_visit and _pet_free_for_interval(
+                        pet_bookings,
+                        date_str,
+                        checkin_minutes,
+                        candidate_minutes,
+                        exclude_booking_id=exclude_booking_id,
+                        exclude_service_type=service_type,
+                    ):
+                        check_out_choices.append(candidate)
+                        checkout_staff_candidates[candidate] = free_for_visit
                 checkout_date_value = date_str
             else:
                 checkout_date_value = parsed_check_out_date.isoformat()
@@ -1857,22 +1943,6 @@ def check_available_slots(context: CustomerContext, intent_json: dict) -> dict:
                     if exclude_booking_id_raw.isdigit()
                     else None
                 )
-                if (
-                    exclude_booking_id is None
-                    and context.resolved_customer_id is not None
-                ):
-                    own_active = [
-                        booking
-                        for booking in _active_bookings_for_customer(context)
-                        if booking.get("service_type") == "BOARDING"
-                        and str(
-                            booking.get("room_type")
-                            or booking.get("package_name")
-                            or ""
-                        ).strip().lower() == room_type.lower()
-                    ]
-                    if len(own_active) == 1:
-                        exclude_booking_id = own_active[0].get("booking_id")
                 capacity_status = _room_capacity_status(
                     context,
                     room_type,
@@ -1906,49 +1976,65 @@ def check_available_slots(context: CustomerContext, intent_json: dict) -> dict:
                         check_in_time=fixed_check_in_time,
                         check_out_time=candidate,
                         exclude_booking_id=exclude_booking_id,
+                        exclude_service_type=service_type,
                     )
                 ]
 
-            holder = (
-                str(context.resolved_customer_id)
-                if context.resolved_customer_id is not None
-                else None
-            )
-            if holder and SLOT_HOLDS.held_by_other(
-                (context.company_id, service_type, date_str, fixed_check_in_time), holder
-            ):
-                check_out_choices = []
-            if shared_holds is not None and _shared_slot_held_by_other(
-                shared_holds, service_type, date_str, fixed_check_in_time, holder
-            ):
-                check_out_choices = []
-
             # A CHECK_OUT request may be the first availability call for this
-            # interval.  Hold the already-selected start as soon as at least one
-            # valid endpoint is returned, just as the CHECK_IN path does.
-            if holder and check_out_choices:
-                key = (context.company_id, service_type, date_str, fixed_check_in_time)
-                SLOT_HOLDS.release_all_for(
-                    holder, prefix=(context.company_id, service_type)
-                )
-                shared_acquired = _acquire_shared_hold(
-                    client,
-                    {
-                        "p_company_id": context.company_id,
-                        "p_resource_kind": "SLOT",
-                        "p_service_type": service_type,
-                        "p_holder_key": holder,
-                        "p_slot_date": date_str,
-                        "p_slot_time": fixed_check_in_time,
-                        "p_room_type": None,
-                        "p_check_in_date": None,
-                        "p_check_out_date": None,
-                        "p_capacity": 1,
-                        "p_exclude_booking_id": exclude_booking_id,
-                    },
-                )
-                if shared_acquired is False or not SLOT_HOLDS.acquire(key, holder):
-                    check_out_choices = []
+            # interval. Hold only an exact pickup selection; a list of possible
+            # endpoints is not permission to reserve an arbitrary visit length.
+            requested_checkout_filter = _normalize_time_value(
+                str(entities.get("requested_check_out_filter") or "")
+            )
+            if (
+                service_type == "DAYCARE"
+                and holder
+                and requested_checkout_filter in check_out_choices
+            ):
+                SLOT_HOLDS.release_all_for(holder, prefix=(context.company_id, "STAFF"))
+                candidates = checkout_staff_candidates.get(requested_checkout_filter, [])
+                checkout_end = _time_to_minutes(requested_checkout_filter)
+                acquired = False
+                for staff in candidates:
+                    staff_id = int(staff["staff_id"])
+                    key = (
+                        context.company_id, "STAFF", staff_id, date_str,
+                        checkin_minutes, checkout_end, service_type,
+                    )
+                    if not SLOT_HOLDS.acquire(key, holder):
+                        continue
+                    try:
+                        shared_acquired = _acquire_shared_hold(
+                            client,
+                            {
+                                "p_company_id": context.company_id,
+                                "p_resource_kind": "SLOT",
+                                "p_service_type": service_type,
+                                "p_holder_key": holder,
+                                "p_slot_date": date_str,
+                                "p_slot_time": fixed_check_in_time,
+                                "p_end_time": requested_checkout_filter,
+                                "p_staff_id": staff_id,
+                                "p_room_type": None,
+                                "p_check_in_date": None,
+                                "p_check_out_date": None,
+                                "p_capacity": 1,
+                                "p_exclude_booking_id": exclude_booking_id,
+                            },
+                        )
+                    except Exception:
+                        SLOT_HOLDS.release(key)
+                        raise
+                    if shared_acquired is False:
+                        SLOT_HOLDS.release(key)
+                    else:
+                        acquired = True
+                        break
+                if not acquired:
+                    check_out_choices = [
+                        item for item in check_out_choices
+                        if item != requested_checkout_filter
+                    ]
 
             result_data = {
                 "service_type": service_type,
@@ -1970,6 +2056,26 @@ def check_available_slots(context: CustomerContext, intent_json: dict) -> dict:
             return _result("check_available_slots", "success", result_data)
 
         duration_minutes = service_duration_minutes(service_type)
+        parsed_requested_duration = None
+        if requested_duration not in (None, ""):
+            try:
+                parsed_requested_duration = int(requested_duration)
+            except (TypeError, ValueError):
+                return _result(
+                    "check_available_slots",
+                    "error",
+                    {"duration_minutes": requested_duration},
+                    "duration_minutes must be a positive number of minutes",
+                )
+            if not 0 < parsed_requested_duration <= 24 * 60:
+                return _result(
+                    "check_available_slots",
+                    "error",
+                    {"duration_minutes": requested_duration},
+                    "duration_minutes must be between 1 and 1440 minutes",
+                )
+            if service_type in {"GROOMING", "DAYCARE"}:
+                duration_minutes = parsed_requested_duration
         if service_type == "DAYCARE":
             requested_start = _time_to_minutes(entities.get("preferred_time"))
             requested_end = _time_to_minutes(entities.get("check_out_time"))
@@ -1992,24 +2098,6 @@ def check_available_slots(context: CustomerContext, intent_json: dict) -> dict:
                 )
             if requested_start is not None and requested_end is not None and requested_end > requested_start:
                 duration_minutes = requested_end - requested_start
-            elif requested_duration is not None:
-                try:
-                    parsed_duration = int(requested_duration)
-                except (TypeError, ValueError):
-                    return _result(
-                        "check_available_slots",
-                        "error",
-                        {"duration_minutes": requested_duration},
-                        "duration_minutes must be a positive number of minutes",
-                    )
-                if not 0 < parsed_duration <= 24 * 60:
-                    return _result(
-                        "check_available_slots",
-                        "error",
-                        {"duration_minutes": requested_duration},
-                        "duration_minutes must be between 1 and 1440 minutes",
-                    )
-                duration_minutes = parsed_duration
         close_minutes = _time_to_minutes(close_time)
         if close_minutes is None or not open_time or not close_time:
             return _result(
@@ -2025,25 +2113,35 @@ def check_available_slots(context: CustomerContext, intent_json: dict) -> dict:
             for slot in _time_slots_for_day(open_time, close_time)
             if (_time_to_minutes(slot) or 0) + duration_minutes <= close_minutes
         ]
-        free_slots = [
-            slot
-            for slot in all_slots
-            if _slot_has_available_staff(
-                slot,
-                duration_minutes=duration_minutes,
-                available_staff=available_staff,
-                bookings=bookings,
-                service_type=service_type,
-                date_str=date_str,
+        slot_staff_candidates: dict[str, list[dict]] = {}
+        free_slots = []
+        for slot in all_slots:
+            slot_start = _time_to_minutes(slot)
+            if slot_start is None:
+                continue
+            slot_end = slot_start + duration_minutes
+            staff_for_slot = _staff_free_for_interval(
+                slot_start, slot_end, available_staff, bookings, date_str=date_str
             )
-            and _pet_free_for_interval(
+            staff_for_slot = _staff_free_after_holds(
+                staff_for_slot,
+                shared_holds,
+                company_id=context.company_id,
+                date_str=date_str,
+                start=slot_start,
+                end=slot_end,
+                holder=holder,
+            )
+            if staff_for_slot and _pet_free_for_interval(
                 pet_bookings,
                 date_str,
-                _time_to_minutes(slot) or 0,
-                (_time_to_minutes(slot) or 0) + duration_minutes,
+                slot_start,
+                slot_end,
                 exclude_booking_id=exclude_booking_id,
-            )
-        ]
+                exclude_service_type=service_type,
+            ):
+                free_slots.append(slot)
+                slot_staff_candidates[slot] = staff_for_slot
 
         # A boarding slot is valid only when the SAME qualified staff member
         # can perform both events.  When checkout time has not been selected,
@@ -2128,6 +2226,7 @@ def check_available_slots(context: CustomerContext, intent_json: dict) -> dict:
                             check_in_time=slot,
                             check_out_time=checkout_candidate,
                             exclude_booking_id=exclude_booking_id,
+                            exclude_service_type=service_type,
                         ):
                             jointly_available_slots.append(slot)
                             break
@@ -2138,22 +2237,6 @@ def check_available_slots(context: CustomerContext, intent_json: dict) -> dict:
             # Validate room capacity before filtering/holding a staff slot.
             # Otherwise a full room can take a provisional staff hold even
             # though no time will ultimately be offered to that customer.
-            if exclude_booking_id is None and context.resolved_customer_id is not None:
-                # During rescheduling the model normally checks availability
-                # before it knows to pass exclude_booking_id. Exclude the
-                # customer's own stay only when exactly one active booking
-                # matches the selected room, which keeps this inference
-                # narrow and deterministic.
-                own_active = [
-                    booking
-                    for booking in _active_bookings_for_customer(context)
-                    if booking.get("service_type") == "BOARDING"
-                    and str(
-                        booking.get("room_type") or booking.get("package_name") or ""
-                    ).strip().lower() == room_type.lower()
-                ]
-                if len(own_active) == 1:
-                    exclude_booking_id = own_active[0].get("booking_id")
             capacity_status = _room_capacity_status(
                 context,
                 room_type,
@@ -2185,20 +2268,6 @@ def check_available_slots(context: CustomerContext, intent_json: dict) -> dict:
         # never resolves a phone (check_availability's CustomerContext is
         # built without one); entities.customer_id is threaded in from
         # state.customer_id by the orchestrator instead (see _run_tool).
-        holder = str(context.resolved_customer_id) if context.resolved_customer_id is not None else None
-        if holder:
-            free_slots = [
-                slot
-                for slot in free_slots
-                if not SLOT_HOLDS.held_by_other((context.company_id, service_type, date_str, slot), holder)
-                and not (
-                    shared_holds is not None
-                    and _shared_slot_held_by_other(
-                        shared_holds, service_type, date_str, slot, holder
-                    )
-                )
-            ]
-
         entities = intent_json.get("entities") or {}
         from .time_normalization import normalize_time
 
@@ -2212,30 +2281,50 @@ def check_available_slots(context: CustomerContext, intent_json: dict) -> dict:
             if requested_minutes is not None:
                 for slot in free_slots:
                     if _time_to_minutes(slot) == requested_minutes:
-                        key = (context.company_id, service_type, date_str, slot)
-                        # A customer can only be deciding on one slot at a time —
-                        # drop any earlier hold of theirs for this service before
-                        # taking a new one, so holds don't pile up indefinitely.
-                        SLOT_HOLDS.release_all_for(holder, prefix=(context.company_id, service_type))
-                        shared_acquired = _acquire_shared_hold(
-                            client,
-                            {
-                                "p_company_id": context.company_id,
-                                "p_resource_kind": "SLOT",
-                                "p_service_type": service_type,
-                                "p_holder_key": holder,
-                                "p_slot_date": date_str,
-                                "p_slot_time": slot,
-                                "p_room_type": None,
-                                "p_check_in_date": None,
-                                "p_check_out_date": None,
-                                "p_capacity": 1,
-                                "p_exclude_booking_id": exclude_booking_id,
-                            },
-                        )
-                        if shared_acquired is not False and SLOT_HOLDS.acquire(key, holder):
-                            hold_info = {"slot": slot, "hold_minutes": 15}
-                        elif shared_acquired is False:
+                        SLOT_HOLDS.release_all_for(holder, prefix=(context.company_id, "STAFF"))
+                        slot_end = requested_minutes + duration_minutes
+                        acquired = False
+                        for staff in slot_staff_candidates.get(slot, []):
+                            staff_id = int(staff["staff_id"])
+                            key = (
+                                context.company_id, "STAFF", staff_id, date_str,
+                                requested_minutes, slot_end, service_type,
+                            )
+                            if not SLOT_HOLDS.acquire(key, holder):
+                                continue
+                            try:
+                                shared_acquired = _acquire_shared_hold(
+                                    client,
+                                    {
+                                        "p_company_id": context.company_id,
+                                        "p_resource_kind": "SLOT",
+                                        "p_service_type": service_type,
+                                        "p_holder_key": holder,
+                                        "p_slot_date": date_str,
+                                        "p_slot_time": slot,
+                                        "p_end_time": f"{slot_end // 60:02d}:{slot_end % 60:02d}",
+                                        "p_staff_id": staff_id,
+                                        "p_room_type": None,
+                                        "p_check_in_date": None,
+                                        "p_check_out_date": None,
+                                        "p_capacity": 1,
+                                        "p_exclude_booking_id": exclude_booking_id,
+                                    },
+                                )
+                            except Exception:
+                                SLOT_HOLDS.release(key)
+                                raise
+                            if shared_acquired is False:
+                                SLOT_HOLDS.release(key)
+                            else:
+                                hold_info = {
+                                    "slot": slot,
+                                    "hold_minutes": 15,
+                                    "staff_id": staff_id,
+                                }
+                                acquired = True
+                                break
+                        if not acquired:
                             free_slots = [candidate for candidate in free_slots if candidate != slot]
                         break
 
@@ -2972,6 +3061,13 @@ def create_booking(context: CustomerContext, intent_json: dict) -> dict:
             checkout_minutes = _time_to_minutes(entities.get("check_out_time"))
             if checkout_minutes is not None and checkout_minutes > start_minutes:
                 duration_minutes = checkout_minutes - start_minutes
+        elif service_type == "GROOMING" and entities.get("duration_minutes") not in (None, ""):
+            try:
+                candidate_duration = int(entities["duration_minutes"])
+                if 0 < candidate_duration <= 24 * 60:
+                    duration_minutes = candidate_duration
+            except (TypeError, ValueError):
+                pass
         free_staff = _staff_free_for_interval(
             start_minutes, start_minutes + duration_minutes, roster, bookings_today, date_str=booking_date
         )
@@ -3058,6 +3154,7 @@ def create_booking(context: CustomerContext, intent_json: dict) -> dict:
                 "service_name": service_name,
                 "booking_date": booking_date,
                 "booking_time": booking_time,
+                "duration_minutes": duration_minutes,
                 "booking_status": status,
                 "price": numeric_price,
                 "add_on": str(entities.get("add_on") or "-"),
@@ -3304,6 +3401,7 @@ def update_booking(
         allowed = {
             "booking_date",
             "booking_time",
+            "duration_minutes",
             "check_in_date",
             "check_in_time",
             "check_out_date",
@@ -4018,6 +4116,13 @@ def register_loyalty_member(context: CustomerContext, confirmed: bool = False) -
             "success",
             {**(existing.get("data") or {}), "already_member": True},
         )
+    if existing.get("status") != "not_found":
+        return _result(
+            "register_loyalty_member",
+            "error",
+            existing.get("data") or {},
+            existing.get("error") or "Membership status could not be verified",
+        )
     if not confirmed:
         return _result(
             "register_loyalty_member",
@@ -4033,15 +4138,19 @@ def register_loyalty_member(context: CustomerContext, confirmed: bool = False) -
         )
     try:
         client = get_supabase_client()
-        row = {
-            "company_id": context.company_id,
-            "customer_id": context.resolved_customer_id,
-            "tier": "Bronze",
-            "points_balance": 0,
-            "redemption_made": 0,
-        }
-        inserted = client.table("loyaltymember").insert(row).execute().data or []
-        record = inserted[0] if inserted else row
+        payload = client.rpc(
+            "register_loyalty_member_atomic",
+            {
+                "p_company_id": context.company_id,
+                "p_customer_id": context.resolved_customer_id,
+                "p_points_balance": 0,
+            },
+        ).execute().data
+        if not isinstance(payload, dict) or not isinstance(payload.get("member"), dict):
+            raise RuntimeError(
+                "register_loyalty_member_atomic returned no persisted member; apply the required loyalty migration"
+            )
+        record = payload["member"]
         return _result(
             "register_loyalty_member",
             "success",
@@ -4049,7 +4158,7 @@ def register_loyalty_member(context: CustomerContext, confirmed: bool = False) -
                 "loyalty_id": record.get("loyalty_id"),
                 "points_balance": record.get("points_balance"),
                 "tier": record.get("tier"),
-                "already_member": False,
+                "already_member": bool(payload.get("already_member")),
             },
         )
     except Exception as exc:

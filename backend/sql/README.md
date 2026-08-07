@@ -17,11 +17,12 @@ For this repair, apply/re-run in this order:
 2. `booking_data_integrity_migration.sql`
 3. `booking_conflict_prevention_migration.sql`
 4. `booking_slot_holds_migration.sql`
-5. `leave_decision_atomic_migration.sql`
-6. `verify_payment_function.sql`
-7. `redemption_rejection_reason_migration.sql`
-8. `security_integrity_hardening_migration.sql`
-9. `cancel_booking_atomic_migration.sql`
+5. `loyalty_member_registration_migration.sql`
+6. `leave_decision_atomic_migration.sql`
+7. `verify_payment_function.sql`
+8. `redemption_rejection_reason_migration.sql`
+9. `security_integrity_hardening_migration.sql`
+10. `cancel_booking_atomic_migration.sql`
 
 RAG RPC ordering: apply `002_add_document_id_to_chunks_bge_large.sql` before
 `shared_knowledge_base_rag_fix.sql`. Both repository definitions now preserve
@@ -56,6 +57,7 @@ repair that was not visible in the live PostgREST schema cache.
 | `booking_conflict_prevention_migration.sql` | Atomic staff-overlap prevention, full-stay boarding room capacity/occupancy RPC, DAYCARE add-on persistence, boarding check-in/out event width (30 min) | ✅ conflict/occupancy base was verified live; **re-run after this release** — the DAYCARE add-on columns and the 10→30 minute boarding event width are new since the last verified apply |
 | `booking_data_integrity_migration.sql` | Decimal money columns, nonnegative amounts, valid active DAYCARE/BOARDING intervals | new — apply before re-running conflict prevention |
 | `booking_slot_holds_migration.sql` | Shared 15-minute slot/room holds across multiple API workers | new — apply after conflict prevention |
+| `loyalty_member_registration_migration.sql` | Unique customer membership plus atomic AI/dashboard registration RPC | new — resolve any reported legacy duplicates, then apply |
 | `leave_decision_atomic_migration.sql` | Atomic leave decision; blocks approval until assigned active bookings are moved | new — apply after conflict prevention |
 | `redemption_rejection_reason_migration.sql` | `redemption.rejection_reason`, `decide_redemption()` reason parameter | not yet applied — created this session, no live verification available here |
 | `chat_api_key_migration.sql` | Hash-only `company_chat_key` table (per-company `/chat` auth, see `app/db/customer_context.py`) | not applied live |

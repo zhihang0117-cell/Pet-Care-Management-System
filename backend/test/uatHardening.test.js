@@ -52,6 +52,26 @@ test("SQL migration index documents the live booking conflict migration", async 
   assert.match(readme, /\[check_in_date, check_out_date\)/);
 });
 
+test("member enrollment is unique and atomic across AI and dashboard writes", async () => {
+  const sql = await readFile(new URL("../sql/loyalty_member_registration_migration.sql", import.meta.url), "utf8");
+  const route = await readFile(new URL("../src/routes/memberInfo.js", import.meta.url), "utf8");
+
+  assert.match(sql, /unique \(company_id, customer_id\)/);
+  assert.match(sql, /create or replace function register_loyalty_member_atomic/);
+  assert.match(sql, /pg_advisory_xact_lock/);
+  assert.match(route, /rpc\("register_loyalty_member_atomic"/);
+});
+
+test("grooming conflicts persist and use the selected duration", async () => {
+  const sql = await readFile(new URL("../sql/booking_conflict_prevention_migration.sql", import.meta.url), "utf8");
+  const service = await readFile(new URL("../src/lib/bookingService.js", import.meta.url), "utf8");
+
+  assert.match(sql, /duration_minutes int not null default 90/);
+  assert.match(sql, /make_interval\(mins => coalesce\(b\.duration_minutes, 90\)\)/);
+  assert.match(service, /duration_minutes: body\.duration_minutes/);
+  assert.match(service, /endMinutes: Number\(booking\.duration_minutes\) \|\| 90/);
+});
+
 test("eval console has a persistent structured tool-call inspector", async () => {
   const consoleHtml = await readFile(new URL("../../frontend/eval_console.html", import.meta.url), "utf8");
   assert.match(consoleHtml, /id="traceHistory"/);

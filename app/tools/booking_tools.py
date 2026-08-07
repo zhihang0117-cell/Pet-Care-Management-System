@@ -55,6 +55,34 @@ def _price_mismatch_error(
     looks_hourly = pricing_unit == "hour" or bool(
         _RATE_MARKER_RE.search(str(match.get("service_name") or ""))
     )
+    if duration_minutes is not None:
+        exact = match.get("duration_minutes")
+        minimum = match.get("min_duration_minutes")
+        maximum = match.get("max_duration_minutes")
+        applicable = True
+        if exact not in (None, ""):
+            applicable = int(duration_minutes) == int(exact)
+        if minimum not in (None, ""):
+            applicable = applicable and (
+                duration_minutes > int(minimum)
+                if match.get("min_duration_exclusive")
+                else duration_minutes >= int(minimum)
+            )
+        if maximum not in (None, ""):
+            applicable = applicable and (
+                duration_minutes < int(maximum)
+                if match.get("max_duration_exclusive")
+                else duration_minutes <= int(maximum)
+            )
+        if not applicable:
+            return {
+                "error": "PACKAGE_NOT_APPLICABLE_FOR_DURATION",
+                "message": (
+                    f"{match['service_name']!r} is not applicable to a "
+                    f"{duration_minutes}-minute stay. Use the catalogue tier whose "
+                    "verified duration range contains the complete visit."
+                ),
+            }
     expected_price = catalogue_price
     if looks_hourly:
         if duration_minutes is None or duration_minutes <= 0:
@@ -161,16 +189,18 @@ def create_booking(
     duration_minutes: int | None = None,
 ) -> dict:
     """
-    Create a confirmed booking. Call this ONLY after: (1) get_booking_service_options
+    Preview and, after server-authorized confirmation, create a booking. Make
+    the first complete call after: (1) get_booking_service_options
     has been used to show the customer real package
     options with prices and the customer picked one — package_name must be
     the specific package they chose (e.g. "Standard Bath - Groomers
     Choice", or the specific room_type for BOARDING), never the bare
     service category, and price must be that package's real price, (2)
-    check_availability confirmed the slot is free, and (3) you have
-    restated the booking details (service, pet, date, time, price) and the
-    customer has explicitly confirmed in this conversation — never on a
-    guess or before an explicit "yes"/"confirm". Staff assignment is
+    check_availability confirmed the slot is free, and (3) there are enough
+    verified details to show the exact preview. That first call does not
+    write. The orchestrator permits the write only when the customer affirms
+    that exact preview on the immediately following turn; do not wait for
+    confirmation before creating the preview. Staff assignment is
     automatic unless the customer names a preferred staff member — pass
     their name or staff_id as preferred_staff, honored only if that person
     is actually free at the requested date/time; otherwise this returns a
@@ -408,6 +438,7 @@ def create_booking(
         preferred_staff=preferred_staff,
         add_on=add_on,
         add_on_price=add_on_price,
+        duration_minutes=int(verified_duration) if verified_duration else None,
     )
     return _repo().create_booking(int(company_id), command)
 

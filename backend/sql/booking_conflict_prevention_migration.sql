@@ -15,7 +15,8 @@
 -- Conflict windows mirror the duration model already used by that advisory
 -- check (app/db/availability_service.py's DEFAULT_SERVICE_DURATION_MINUTES),
 -- so the two entry points agree on what "conflicting" means:
---   - grooming: one continuous 90-minute appointment from booking_time
+--   - grooming: the selected catalogue duration from booking_time (90-minute
+--     fallback for older rows/services without explicit duration metadata)
 --   - daycare: the complete check-in-to-check-out visit
 --   - boarding: only the brief check-in and check-out windows (30 min each),
 --     not the full stay; full-stay occupancy belongs to room capacity below
@@ -33,6 +34,16 @@
 -- the migration safe for older projects that only had them on grooming.
 alter table daycare_booking add column if not exists add_on text;
 alter table daycare_booking add column if not exists add_on_price numeric default 0;
+alter table grooming_booking add column if not exists duration_minutes int not null default 90;
+
+do $$
+begin
+  if not exists (select 1 from pg_constraint where conname = 'grooming_duration_positive') then
+    alter table grooming_booking add constraint grooming_duration_positive
+      check (duration_minutes > 0 and duration_minutes <= 1440) not valid;
+  end if;
+end
+$$;
 
 create or replace function staff_has_conflicting_booking(
   p_company_id int,
@@ -62,7 +73,8 @@ begin
     where b.company_id = p_company_id and b.staff_id = p_staff_id
       and b.booking_status in ('Pending', 'Scheduled')
       and not (coalesce(p_exclude_type, '') = 'grooming' and b.grooming_booking_id = p_exclude_id)
-      and (b.booking_date + b.booking_time, (b.booking_date + b.booking_time) + interval '90 minutes')
+      and (b.booking_date + b.booking_time,
+           (b.booking_date + b.booking_time) + make_interval(mins => coalesce(b.duration_minutes, 90)))
           overlaps (p_start, p_end)
     union all
     select 1 from daycare_booking b
@@ -137,7 +149,8 @@ as $$
     where b.company_id = p_company_id and b.pet_id = p_pet_id
       and b.booking_status in ('Pending', 'Scheduled')
       and not (coalesce(p_exclude_type, '') = 'grooming' and b.grooming_booking_id = p_exclude_id)
-      and (b.booking_date + b.booking_time, (b.booking_date + b.booking_time) + interval '90 minutes')
+      and (b.booking_date + b.booking_time,
+           (b.booking_date + b.booking_time) + make_interval(mins => coalesce(b.duration_minutes, 90)))
           overlaps (p_start, p_end)
     union all
     select 1 from daycare_booking b
@@ -338,6 +351,7 @@ declare
   v_room_type text;
   v_check_in date;
   v_check_out date;
+  v_duration int;
 begin
   -- Serialize concurrent booking attempts for the same staff member so the
   -- conflict check below and the insert always see a consistent picture.
@@ -346,7 +360,11 @@ begin
 
   if p_booking_type = 'grooming' then
     v_start := (p_booking->>'booking_date')::date + (p_booking->>'booking_time')::time;
-    v_end := v_start + interval '90 minutes';
+    v_duration := coalesce((p_booking->>'duration_minutes')::int, 90);
+    if v_duration <= 0 or v_duration > 1440 then
+      raise exception 'Invalid grooming duration' using errcode = 'P0001';
+    end if;
+    v_end := v_start + make_interval(mins => v_duration);
   elsif p_booking_type = 'daycare' then
     v_start := (p_booking->>'booking_date')::date + (p_booking->>'check_in_time')::time;
     v_end := (p_booking->>'booking_date')::date + (p_booking->>'check_out_time')::time;
@@ -403,12 +421,12 @@ begin
   if p_booking_type = 'grooming' then
     insert into grooming_booking (
       company_id, pet_id, staff_id, service_name, booking_date,
-      booking_time, price, add_on, add_on_price, notes, booking_status,
+      booking_time, duration_minutes, price, add_on, add_on_price, notes, booking_status,
       created_date, created_time
     ) values (
       p_company_id, (p_booking->>'pet_id')::int, v_staff_id,
       p_booking->>'service_name', (p_booking->>'booking_date')::date,
-      (p_booking->>'booking_time')::time, (p_booking->>'price')::numeric,
+      (p_booking->>'booking_time')::time, v_duration, (p_booking->>'price')::numeric,
       p_booking->>'add_on', (p_booking->>'add_on_price')::numeric, p_booking->>'notes',
       p_booking->>'booking_status', (p_booking->>'created_date')::date,
       (p_booking->>'created_time')::time
@@ -518,6 +536,7 @@ declare
   v_room_type text;
   v_check_in date;
   v_check_out date;
+  v_duration int;
   v_needs_conflict_check boolean;
 begin
   if p_booking_type = 'grooming' then
@@ -535,7 +554,8 @@ begin
       end if;
     end if;
     v_needs_conflict_check := (p_booking_patch ? 'staff_id') or (p_booking_patch ? 'pet_id')
-      or (p_booking_patch ? 'booking_date') or (p_booking_patch ? 'booking_time');
+      or (p_booking_patch ? 'booking_date') or (p_booking_patch ? 'booking_time')
+      or (p_booking_patch ? 'duration_minutes');
     if v_needs_conflict_check then
       v_staff_id := coalesce((p_booking_patch->>'staff_id')::int, v_staff_id);
       v_pet_id := coalesce((p_booking_patch->>'pet_id')::int, v_pet_id);
@@ -543,7 +563,13 @@ begin
              + coalesce((p_booking_patch->>'booking_time')::time, booking_time)
         into v_start
         from grooming_booking where company_id = p_company_id and grooming_booking_id = p_booking_id;
-      v_end := v_start + interval '90 minutes';
+      select coalesce((p_booking_patch->>'duration_minutes')::int, duration_minutes, 90)
+        into v_duration from grooming_booking
+        where company_id = p_company_id and grooming_booking_id = p_booking_id;
+      if v_duration <= 0 or v_duration > 1440 then
+        raise exception 'Invalid grooming duration' using errcode = 'P0001';
+      end if;
+      v_end := v_start + make_interval(mins => v_duration);
       perform pg_advisory_xact_lock(hashtextextended(p_company_id::text || ':staff:' || v_staff_id::text, 0));
       perform pg_advisory_xact_lock(hashtextextended(p_company_id::text || ':pet:' || v_pet_id::text, 0));
       if not staff_can_book_service(p_company_id, v_staff_id, 'grooming', v_start::date)
@@ -564,6 +590,7 @@ begin
       service_name = coalesce(p_booking_patch->>'service_name', b.service_name),
       booking_date = coalesce((p_booking_patch->>'booking_date')::date, b.booking_date),
       booking_time = coalesce((p_booking_patch->>'booking_time')::time, b.booking_time),
+      duration_minutes = coalesce((p_booking_patch->>'duration_minutes')::int, b.duration_minutes),
       price = coalesce((p_booking_patch->>'price')::numeric, b.price),
       add_on = coalesce(p_booking_patch->>'add_on', b.add_on),
       add_on_price = coalesce((p_booking_patch->>'add_on_price')::numeric, b.add_on_price),

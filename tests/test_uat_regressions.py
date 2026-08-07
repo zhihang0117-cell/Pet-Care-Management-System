@@ -14,6 +14,7 @@ from app.db.relational_actions import (
     _serialize_daycare_booking,
     check_available_slots,
     create_pet,
+    register_loyalty_member,
 )
 from app.context.slot_holds import SlotHoldRegistry
 from app.db.customer_context import CustomerContext
@@ -258,6 +259,226 @@ def test_overlapping_room_holds_conflict_even_when_date_ranges_differ():
     assert holds.count_overlapping_room_holds(
         1, "Mars Room", "2026-08-03", "2026-08-04", "11"
     ) == 0
+
+
+def test_staff_holds_block_only_the_overlapping_employee_interval():
+    holds = SlotHoldRegistry(ttl_seconds=60)
+    holds.acquire((1, "STAFF", 7, "2026-08-10", 600, 690, "GROOMING"), "10")
+
+    assert holds.staff_held_by_other(1, 7, "2026-08-10", 630, 720, "11")
+    assert not holds.staff_held_by_other(1, 8, "2026-08-10", 630, 720, "11")
+    assert not holds.staff_held_by_other(1, 7, "2026-08-10", 690, 720, "11")
+
+
+def test_one_held_employee_does_not_hide_another_available_employee(monkeypatch):
+    holds = SlotHoldRegistry(ttl_seconds=60)
+    holds.acquire((1, "STAFF", 7, "2026-08-10", 540, 630, "DAYCARE"), "10")
+    monkeypatch.setattr(relational_actions, "SLOT_HOLDS", holds)
+    monkeypatch.setattr(
+        relational_actions,
+        "_business_hours_for_date",
+        lambda company_id, target_date: ("09:00", "12:00", None),
+    )
+    monkeypatch.setattr(relational_actions, "get_supabase_client", lambda: object())
+    monkeypatch.setattr(relational_actions, "_shared_booking_holds", lambda client, company_id: None)
+    monkeypatch.setattr(relational_actions, "_acquire_shared_hold", lambda client, payload: None)
+    monkeypatch.setattr(
+        relational_actions,
+        "_staff_day_roster",
+        lambda client, company_id, target_date, service_type=None: [
+            {"staff_id": 7, "staff_name": "Ari"},
+            {"staff_id": 8, "staff_name": "Bea"},
+        ],
+    )
+    monkeypatch.setattr(
+        relational_actions,
+        "_cross_service_staff_bookings",
+        lambda client, company_id, staff_ids, date_str: [],
+    )
+
+    result = check_available_slots(
+        CustomerContext(company_id=1, resolved_customer_id=11),
+        {
+            "service_type": "GROOMING",
+            "entities": {
+                "preferred_date": "2026-08-10",
+                "preferred_time": "09:00",
+                "duration_minutes": 90,
+            },
+        },
+    )
+
+    assert "09:00:00" in result["data"]["available_slots"]
+    assert result["data"]["slot_held"]["staff_id"] == 8
+
+
+def test_reschedule_exclusion_is_scoped_to_the_booking_service():
+    rows = [
+        {"_service_type": "GROOMING", "grooming_booking_id": 5},
+        {"_service_type": "DAYCARE", "daycare_booking_id": 5},
+    ]
+
+    remaining = relational_actions._without_excluded_booking(rows, "GROOMING", 5)
+
+    assert remaining == [{"_service_type": "DAYCARE", "daycare_booking_id": 5}]
+
+
+def test_fresh_boarding_check_never_excludes_an_existing_booking_implicitly(monkeypatch):
+    exclusions = []
+    monkeypatch.setattr(
+        relational_actions,
+        "_business_hours_for_date",
+        lambda company_id, target_date: ("09:00", "12:00", None),
+    )
+    monkeypatch.setattr(relational_actions, "get_supabase_client", lambda: object())
+    monkeypatch.setattr(relational_actions, "_shared_booking_holds", lambda client, company_id: None)
+    monkeypatch.setattr(
+        relational_actions,
+        "_staff_day_roster",
+        lambda client, company_id, target_date, service_type=None: [
+            {"staff_id": 7, "staff_name": "Ari"}
+        ],
+    )
+    monkeypatch.setattr(
+        relational_actions,
+        "_cross_service_staff_bookings",
+        lambda client, company_id, staff_ids, date_str: [],
+    )
+
+    def room_status(context, room_type, check_in_date, check_out_date, exclude_booking_id=None):
+        exclusions.append(exclude_booking_id)
+        return {"capacity": 1, "booked_count": 0, "available": True, "held_for_minutes": None}
+
+    monkeypatch.setattr(relational_actions, "_room_capacity_status", room_status)
+
+    result = check_available_slots(
+        CustomerContext(company_id=1),
+        {
+            "service_type": "BOARDING",
+            "entities": {
+                "preferred_date": "2026-08-10",
+                "check_out_date": "2026-08-11",
+                "room_type": "Mars Room",
+            },
+        },
+    )
+
+    assert result["status"] == "success"
+    assert exclusions == [None]
+
+
+def test_grooming_availability_uses_the_selected_service_duration(monkeypatch):
+    monkeypatch.setattr(
+        relational_actions,
+        "_business_hours_for_date",
+        lambda company_id, target_date: ("09:00", "12:00", None),
+    )
+    monkeypatch.setattr(relational_actions, "get_supabase_client", lambda: object())
+    monkeypatch.setattr(relational_actions, "_shared_booking_holds", lambda client, company_id: None)
+    monkeypatch.setattr(
+        relational_actions,
+        "_staff_day_roster",
+        lambda client, company_id, target_date, service_type=None: [
+            {"staff_id": 7, "staff_name": "Ari"}
+        ],
+    )
+    monkeypatch.setattr(
+        relational_actions,
+        "_cross_service_staff_bookings",
+        lambda client, company_id, staff_ids, date_str: [
+            {
+                "_service_type": "DAYCARE",
+                "staff_id": 7,
+                "booking_date": date_str,
+                "check_in_time": "10:30",
+                "check_out_time": "11:30",
+                "booking_status": "Scheduled",
+            }
+        ],
+    )
+
+    one_hour = check_available_slots(
+        CustomerContext(company_id=1),
+        {
+            "service_type": "GROOMING",
+            "entities": {"preferred_date": "2026-08-10", "duration_minutes": 60},
+        },
+    )
+    ninety_minutes = check_available_slots(
+        CustomerContext(company_id=1),
+        {
+            "service_type": "GROOMING",
+            "entities": {"preferred_date": "2026-08-10", "duration_minutes": 90},
+        },
+    )
+
+    assert "09:30:00" in one_hour["data"]["available_slots"]
+    assert "09:30:00" not in ninety_minutes["data"]["available_slots"]
+
+
+def test_member_registration_fails_closed_and_uses_atomic_rpc(monkeypatch):
+    context = CustomerContext(company_id=1, resolved_customer_id=9)
+    monkeypatch.setattr(
+        relational_actions,
+        "check_loyalty_points",
+        lambda _context: {"status": "error", "data": {}, "error": "database offline"},
+    )
+    assert register_loyalty_member(context, confirmed=True)["status"] == "error"
+
+    calls = []
+
+    class Rpc:
+        def execute(self):
+            return SimpleNamespace(
+                data={
+                    "member": {"loyalty_id": 3, "points_balance": 0, "tier": "Bronze"},
+                    "already_member": False,
+                }
+            )
+
+    class Client:
+        def rpc(self, name, payload):
+            calls.append((name, payload))
+            return Rpc()
+
+    monkeypatch.setattr(
+        relational_actions,
+        "check_loyalty_points",
+        lambda _context: {"status": "not_found", "data": {}},
+    )
+    monkeypatch.setattr(relational_actions, "get_supabase_client", lambda: Client())
+
+    result = register_loyalty_member(context, confirmed=True)
+
+    assert result["status"] == "success"
+    assert result["data"]["loyalty_id"] == 3
+    assert calls[0][0] == "register_loyalty_member_atomic"
+
+
+def test_availability_range_is_capped_to_fourteen_days(monkeypatch):
+    calls = []
+
+    class Repo:
+        def check_availability(self, company_id, *, service, date, time, intent_json=None):
+            calls.append(date)
+            return {"status": "success", "data": {"available_slots": []}}
+
+    monkeypatch.setattr(availability_tools, "get_relational_repository", lambda: Repo())
+    monkeypatch.setattr(availability_tools, "booking_window_error", lambda _date: None)
+    monkeypatch.setattr(availability_tools, "max_bookable_date", lambda: date(2026, 8, 31))
+
+    result = availability_tools.check_availability_range.invoke(
+        {
+            "company_id": 1,
+            "service_type": "GROOMING",
+            "start_date": "2026-08-01",
+            "end_date": "2026-08-31",
+        }
+    )
+
+    assert result["status"] == "success"
+    assert len(calls) == 14
+    assert calls[-1] == "2026-08-14"
 
 
 def test_unknown_booking_status_is_not_treated_as_valid_history():

@@ -56,6 +56,27 @@ class SlotHoldRegistry:
             self._holds[key] = (phone_number, time.monotonic() + self._ttl_seconds)
             return True
 
+    def staff_held_by_other(
+        self, company_id: int, staff_id: int, slot_date: str,
+        start_minutes: int, end_minutes: int, holder: str,
+    ) -> bool:
+        """Whether another local hold overlaps this staff interval."""
+        with self._lock:
+            for key, (held_by, _expires_at) in list(self._holds.items()):
+                if not self._is_live(key) or held_by == holder:
+                    continue
+                if len(key) != 7 or key[0] != company_id or key[1] != "STAFF":
+                    continue
+                _company, _kind, held_staff, held_date, held_start, held_end, _service = key
+                if (
+                    int(held_staff) == int(staff_id)
+                    and str(held_date) == str(slot_date)
+                    and start_minutes < int(held_end)
+                    and int(held_start) < end_minutes
+                ):
+                    return True
+            return False
+
     def release(self, key: tuple) -> None:
         with self._lock:
             self._holds.pop(key, None)

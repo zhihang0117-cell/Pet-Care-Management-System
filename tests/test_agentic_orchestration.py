@@ -268,6 +268,21 @@ def test_daycare_duration_survives_side_flow_and_is_injected_into_checks_and_wri
     assert booking["duration_minutes"] == 180
 
 
+def test_daycare_time_range_is_cached_as_exact_duration():
+    state = ConversationState(
+        phone_number="+60123456705",
+        company_id="1",
+        active_scenario="MAKE_BOOKING",
+        service_type="DAYCARE",
+    )
+
+    PawfectOrchestrator._capture_explicit_daycare_duration(
+        state, "早上9点到下午5点"
+    )
+
+    assert state.daycare_duration_minutes == 480
+
+
 def test_exact_pickup_wins_over_cached_daycare_duration():
     state = ConversationState(
         phone_number="+60123456705",
@@ -324,6 +339,21 @@ def test_daycare_catalogue_marks_hourly_rates_for_total_price_validation():
     ]
 
 
+def test_daycare_hourly_rate_ends_when_above_three_hour_flat_tier_begins():
+    services, _ = _extract_daycare_catalogue_options([
+        {
+            "content": (
+                "Hourly Care - RM20/hour\n"
+                "Daycare Above 3 Hours - RM55"
+            )
+        }
+    ])
+
+    hourly = next(option for option in services if option["pricing_unit"] == "hour")
+    assert hourly["max_duration_minutes"] == 180
+    assert hourly["max_duration_exclusive"] is False
+
+
 def test_daycare_recommendation_uses_duration_ranges_and_calculated_hourly_total():
     state = ConversationState(
         phone_number="+60123456705",
@@ -355,6 +385,8 @@ def test_daycare_recommendation_uses_duration_ranges_and_calculated_hourly_total
                         "service_name": "Hourly Care",
                         "price": 15,
                         "pricing_unit": "hour",
+                        "max_duration_minutes": 180,
+                        "max_duration_exclusive": False,
                     },
                 ]
             },
@@ -369,7 +401,7 @@ def test_daycare_recommendation_uses_duration_ranges_and_calculated_hourly_total
     )
 
     assert "Daycare Above 3 Hours — RM55" in grounded.content
-    assert "Hourly Care — RM60" in grounded.content
+    assert "Hourly Care" not in grounded.content
     assert "Daycare 3 Hours" not in grounded.content
 
 
@@ -840,6 +872,115 @@ def test_successful_action_releases_scenario_but_keeps_booking_evidence():
     assert state.verified_facts["created_booking"]["status"] == "success"
     assert state.loyalty_decision is None
     assert state.loyalty_offer_shown_turn is None
+
+
+def test_created_booking_immediately_becomes_available_runtime_context():
+    orchestrator = object.__new__(PawfectOrchestrator)
+    state = ConversationState(
+        phone_number="+60123456705",
+        company_id="1",
+        active_scenario="MAKE_BOOKING",
+        booking_context_status="not_found",
+    )
+    result = {
+        "status": "success",
+        "data": {
+            "booking_id": 92,
+            "service_type": "GROOMING",
+            "pet_id": 3,
+            "pet_name": "Milo",
+            "booking_date": "2026-08-09",
+            "booking_time": "11:00",
+        },
+    }
+
+    orchestrator._apply_tool_result_state(state, _call("create_booking", "create"), result)
+    customer = orchestrator._customer_context_for_state({"found": True}, state)
+
+    assert state.booking_context_status == "available"
+    assert customer["latest_booking"]["booking_id"] == 92
+
+
+def test_new_multi_pet_booking_clears_stale_pet_unless_named_this_turn():
+    orchestrator = object.__new__(PawfectOrchestrator)
+    pets = [
+        {"pet_id": 1, "pet_name": "Milo", "pet_type": "cat"},
+        {"pet_id": 2, "pet_name": "Luna", "pet_type": "dog"},
+    ]
+    state = ConversationState(
+        phone_number="+60123456705", company_id="1", pet_id=1, pet_name="Milo"
+    )
+    state.known_pets = pets
+    state.turn_counter = 4
+    orchestrator._apply_tool_result_state(
+        state,
+        _call("update_conversation_state", "state"),
+        {"active_scenario": "MAKE_BOOKING", "service_type": "GROOMING"},
+    )
+    assert state.pet_id is None
+
+    state.active_scenario = None
+    state.pet_id = 2
+    state.pet_name = "Luna"
+    state.pet_selected_turn = 4
+    orchestrator._apply_tool_result_state(
+        state,
+        _call("update_conversation_state", "state-2"),
+        {"active_scenario": "MAKE_BOOKING", "service_type": "GROOMING"},
+    )
+    assert state.pet_id == 2
+
+
+def test_membership_success_does_not_end_active_booking_side_flow():
+    state = ConversationState(
+        phone_number="+60123456705",
+        company_id="1",
+        active_scenario="MAKE_BOOKING",
+        service_type="GROOMING",
+    )
+    PawfectOrchestrator._sync_scenario_from_tool_call(
+        state, "register_loyalty_member", {"status": "success"}
+    )
+    assert state.active_scenario == "MAKE_BOOKING"
+
+
+def test_cancelled_booking_forces_latest_active_booking_refresh():
+    orchestrator = object.__new__(PawfectOrchestrator)
+    state = ConversationState(
+        phone_number="+60123456705",
+        company_id="1",
+        active_scenario="CANCEL_BOOKING",
+        latest_booking={"booking_id": 10},
+        booking_context_status="available",
+    )
+    orchestrator._apply_tool_result_state(
+        state,
+        _call("cancel_booking", "cancel"),
+        {"status": "success", "data": {"booking_id": 10, "service_type": "GROOMING"}},
+    )
+    assert state.latest_booking is None
+    assert state.booking_context_status == "unavailable"
+
+
+def test_runtime_context_recursively_removes_internal_tool_fields():
+    orchestrator = object.__new__(PawfectOrchestrator)
+    state = ConversationState(phone_number="+60123456705", company_id="1")
+    state.last_mutation = {
+        "tool": "create_booking",
+        "result": {
+            "data": {"booking_id": 1},
+            "_internal_payment_id": 99,
+            "nested": {"_internal_confirmation_url": "private"},
+        },
+    }
+    context = orchestrator._runtime_context(
+        {"company_id": "1", "timezone": "Asia/Kuala_Lumpur"},
+        {"found": True},
+        state,
+    )
+    serialized = json.dumps(context)
+    assert "_internal_payment_id" not in serialized
+    assert "_internal_confirmation_url" not in serialized
 
 
 def test_tool_repair_is_narrow_and_reuses_existing_evidence():

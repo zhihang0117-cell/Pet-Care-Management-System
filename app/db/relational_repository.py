@@ -48,6 +48,10 @@ class BookingCommand:
     # instead of silently folding it into the base package price.
     add_on: str = ""
     add_on_price: float | None = None
+    # Exact package/visit duration when the catalogue or customer provides
+    # one. Grooming falls back to 90 minutes only when no verified duration
+    # exists; daycare normally derives this from its pickup endpoint.
+    duration_minutes: int | None = None
 
 
 class RelationalRepository(Protocol):

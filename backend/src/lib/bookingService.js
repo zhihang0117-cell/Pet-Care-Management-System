@@ -49,6 +49,9 @@ function validateBookingInput(type, booking, { creating = false } = {}) {
       invalidBooking("Service name, booking date, and booking time are required.");
     }
     if (!Number.isFinite(Number(booking.price)) || Number(booking.price) < 0) invalidBooking("Price must be zero or greater.");
+    if (!Number.isInteger(Number(booking.duration_minutes)) || Number(booking.duration_minutes) <= 0 || Number(booking.duration_minutes) > 1440) {
+      invalidBooking("Grooming duration must be a whole number from 1 to 1440 minutes.");
+    }
     if (booking.add_on_price != null && (!Number.isFinite(Number(booking.add_on_price)) || Number(booking.add_on_price) < 0)) {
       invalidBooking("Add-on price must be zero or greater.");
     }
@@ -168,7 +171,7 @@ async function assertBookingOperationalRules(companyId, type, booking) {
   }
 
   const events = type === "grooming"
-    ? [{ date: booking.booking_date, start: booking.booking_time, endMinutes: 90 }]
+    ? [{ date: booking.booking_date, start: booking.booking_time, endMinutes: Number(booking.duration_minutes) || 90 }]
     : type === "daycare"
     ? [{ date: booking.booking_date, start: booking.check_in_time, end: booking.check_out_time }]
     : [
@@ -347,6 +350,9 @@ export async function createBooking(type, companyId, body) {
       service_name: body.service_name,
       booking_date: body.booking_date,
       booking_time: body.booking_time,
+      duration_minutes: body.duration_minutes == null || body.duration_minutes === ""
+        ? 90
+        : Number(body.duration_minutes),
       price: basePriceForPayment,
       add_on: body.add_on || "-",
       add_on_price: addOnPrice,

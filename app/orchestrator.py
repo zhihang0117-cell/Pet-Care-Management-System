@@ -42,7 +42,7 @@ from app.tools.history_tools import get_payment_history, get_redemption_history
 from app.tools.document_tools import send_booking_confirmation
 from app.tools.state_tools import update_conversation_state
 from app.tools.text_formatting import first_name, format_pet_names
-from app.db.time_normalization import extract_duration_minutes
+from app.db.time_normalization import extract_duration_minutes, extract_time_range
 
 # get_customer_by_phone is intentionally NOT in the bindable tool list: identity
 # resolution happens deterministically in PawfectOrchestrator.invoke_with_trace
@@ -74,6 +74,21 @@ ALL_TOOLS = [
     update_conversation_state,
 ]
 TOOLS_BY_NAME = {t.name: t for t in ALL_TOOLS}
+
+
+def _sanitize_model_value(value):
+    """Remove server-only fields before state/tool data reaches the model."""
+    if isinstance(value, dict):
+        return {
+            key: _sanitize_model_value(item)
+            for key, item in value.items()
+            if not str(key).startswith("_internal_")
+        }
+    if isinstance(value, list):
+        return [_sanitize_model_value(item) for item in value]
+    if isinstance(value, tuple):
+        return tuple(_sanitize_model_value(item) for item in value)
+    return value
 
 # Authority is determined by the request/session, not by whether the model
 # happened to include an ID argument. Inject these fields even when omitted;
@@ -424,6 +439,7 @@ class PawfectOrchestrator:
             state.pet_name = matches[0].get("pet_name")
             state.pet_size = matches[0].get("pet_size")
             state.pet_breed = matches[0].get("pet_breed")
+            state.pet_selected_turn = state.turn_counter
 
     @staticmethod
     def _customer_context_for_state(customer: dict, state) -> dict:
@@ -487,7 +503,9 @@ class PawfectOrchestrator:
         # JSON. Everything else is refreshed after each tool result, so the
         # next model decision observes newly-created customers/pets, resolved
         # dates, evidence, scenario changes, and completion state immediately.
-        state_dict = {k: v for k, v in state.__dict__.items() if k != "history"}
+        state_dict = _sanitize_model_value(
+            {k: v for k, v in state.__dict__.items() if k != "history"}
+        )
         runtime_context = {
             "company": runtime_company,
             "customer": self._customer_context_for_state(customer, state),
@@ -1584,7 +1602,7 @@ class PawfectOrchestrator:
             not pending
             or pending.get("tool") != tool_name
             or pending.get("preview_turn") is None
-            or int(pending.get("preview_turn") or 0) >= state.turn_counter
+            or int(pending.get("preview_turn") or 0) != state.turn_counter - 1
         ):
             return {**args, "confirm_pet_name": ""}
         # Word-boundary match, not bare substring — a short/common pet name
@@ -1713,6 +1731,9 @@ class PawfectOrchestrator:
             return
         duration = extract_duration_minutes(text)
         if not duration:
+            time_range = extract_time_range(text)
+            duration = time_range[2] if time_range else None
+        if not duration:
             return
         state.daycare_duration_minutes = duration
         state.verified_facts["daycare_duration_minutes"] = {
@@ -1805,6 +1826,15 @@ class PawfectOrchestrator:
         return None
 
     @classmethod
+    def _pending_scenario_matches(cls, state, tool_name: str, pending: dict) -> bool:
+        scenario = pending.get("scenario")
+        if scenario is not None:
+            return scenario == state.active_scenario
+        # Compatibility for previews created by the previous deployment.
+        # Still fail closed unless the active scenario owns this exact tool.
+        return cls._SCENARIO_CONFIRMING_TOOLS.get(tool_name) == state.active_scenario
+
+    @classmethod
     def _pending_confirmation_tool(cls, state, user_message: str) -> str | None:
         """Return the exact pending write that a standalone ``yes`` confirms.
 
@@ -1829,7 +1859,8 @@ class PawfectOrchestrator:
             if (
                 isinstance(args, dict)
                 and not args.get("truncated")
-                and int(pending.get("preview_turn") or 0) < state.turn_counter
+                and int(pending.get("preview_turn") or 0) == state.turn_counter - 1
+                and cls._pending_scenario_matches(state, tool_name, pending)
             ):
                 candidates.append(tool_name)
 
@@ -1870,16 +1901,27 @@ class PawfectOrchestrator:
                 }
             if (
                 intent == "affirmative"
-                and int(pending.get("preview_turn") or 0) < state.turn_counter
+                and int(pending.get("preview_turn") or 0) == state.turn_counter - 1
+                and cls._pending_scenario_matches(state, tool_name, pending)
             ):
                 return None
+            if int(pending.get("preview_turn") or 0) != state.turn_counter:
+                # The old preview is not executable, but this tool result will
+                # show the exact payload again now. Renew it for one turn.
+                state.pending_actions[tool_name] = {
+                    "signature": signature,
+                    "args": cls._compact_evidence_result(args, max_chars=1200),
+                    "preview_turn": state.turn_counter,
+                    "scenario": state.active_scenario,
+                }
+                pending = state.pending_actions[tool_name]
             return {
                 "status": "confirmation_required",
                 "error_code": "EXPLICIT_CONFIRMATION_REQUIRED",
                 "data": {"action": tool_name, "preview": pending.get("args")},
                 "message": (
                     "This exact action is only previewed. Execute it only after the customer "
-                    "replies with a standalone affirmative confirmation on a later turn."
+                    "replies with a standalone affirmative confirmation on the immediately following turn."
                 ),
             }
 
@@ -1887,6 +1929,7 @@ class PawfectOrchestrator:
             "signature": signature,
             "args": cls._compact_evidence_result(args, max_chars=1200),
             "preview_turn": state.turn_counter,
+            "scenario": state.active_scenario,
         }
         return {
             "status": "confirmation_required",
@@ -1894,7 +1937,7 @@ class PawfectOrchestrator:
             "data": {"action": tool_name, "preview": state.pending_actions[tool_name]["args"]},
             "message": (
                 "No write occurred. Present these exact details to the customer and ask for "
-                "a standalone confirmation. Retry with identical arguments only after their next reply."
+                "a standalone confirmation. Retry with identical arguments only after their immediately following reply."
             ),
         }
 
@@ -1963,6 +2006,34 @@ class PawfectOrchestrator:
                     "let the customer select an option, and reuse its exact name and price."
                 ),
             }
+
+        if service_type == "DAYCARE" and requested_duration is not None:
+            exact = chosen.get("duration_minutes")
+            minimum = chosen.get("min_duration_minutes")
+            maximum = chosen.get("max_duration_minutes")
+            applicable = True
+            if exact not in (None, ""):
+                applicable = requested_duration == int(exact)
+            if minimum not in (None, ""):
+                applicable = applicable and (
+                    requested_duration > int(minimum)
+                    if chosen.get("min_duration_exclusive")
+                    else requested_duration >= int(minimum)
+                )
+            if maximum not in (None, ""):
+                applicable = applicable and (
+                    requested_duration < int(maximum)
+                    if chosen.get("max_duration_exclusive")
+                    else requested_duration <= int(maximum)
+                )
+            if not applicable:
+                return {
+                    "error": "PACKAGE_NOT_APPLICABLE_FOR_DURATION",
+                    "message": (
+                        "The selected daycare package does not cover the complete visit "
+                        "duration. Fetch the catalogue and use the applicable duration tier."
+                    ),
+                }
 
         if args.get("add_on"):
             add_on_name = str(args.get("add_on") or "").strip().casefold()
@@ -2176,6 +2247,7 @@ class PawfectOrchestrator:
                     ),
                     "args": dict(args),
                     "preview_turn": state.loyalty_offer_shown_turn,
+                    "scenario": state.active_scenario,
                 }
 
         tool = TOOLS_BY_NAME.get(tool_call["name"])
@@ -2293,7 +2365,10 @@ class PawfectOrchestrator:
                         self._confirmation_intent(user_message) == "affirmative"
                         and isinstance(pending_args, dict)
                         and not pending_args.get("truncated")
-                        and int(pending_action.get("preview_turn") or 0) < state.turn_counter
+                        and int(pending_action.get("preview_turn") or 0) == state.turn_counter - 1
+                        and self._pending_scenario_matches(
+                            state, tool_call["name"], pending_action
+                        )
                     ):
                         # A confirmation authorizes the exact payload shown to
                         # the customer. Never let the model rebuild, omit, or
@@ -2336,10 +2411,27 @@ class PawfectOrchestrator:
                     # own pet_id is missing or isn't actually one of this
                     # customer's real pets (still guards the original case: a
                     # hallucinated/mismatched pet_id) — otherwise trust it.
-                    known = self._known_pet_by_id(state, args.get("pet_id"))
-                    if known is None and state.pet_id is not None:
-                        args = {**args, "pet_id": state.pet_id}
+                    if len(state.known_pets) > 1:
+                        # For multi-pet customers, only the pet selected in
+                        # application state is authoritative. A valid ID that
+                        # the model guessed from the roster is still not a
+                        # customer selection for this booking flow.
                         known = self._known_pet_by_id(state, state.pet_id)
+                        if known is None:
+                            return {
+                                "status": "missing_information",
+                                "error_code": "PET_SELECTION_REQUIRED",
+                                "message": (
+                                    "Several pets are registered and none was selected for this "
+                                    "booking. Ask which pet; do not choose a pet_id yourself."
+                                ),
+                            }
+                        args = {**args, "pet_id": known.get("pet_id")}
+                    else:
+                        known = self._known_pet_by_id(state, args.get("pet_id"))
+                        if known is None and state.pet_id is not None:
+                            args = {**args, "pet_id": state.pet_id}
+                            known = self._known_pet_by_id(state, state.pet_id)
                     if tool_call["name"] == "create_booking" and known is not None:
                         # pet_name is display data, but allowing the model to
                         # mismatch it with a real pet_id produces false
@@ -2357,14 +2449,24 @@ class PawfectOrchestrator:
                         )
                         if repeat_service:
                             args = {**args, "service_type": repeat_service}
-                if (
-                    tool_call["name"] in {"check_availability", "check_availability_range"}
-                    and state.pet_id is not None
-                ):
+                if tool_call["name"] in {"check_availability", "check_availability_range"}:
                     # Availability must include the selected pet so a second
                     # service cannot be offered over that pet's active booking.
-                    known = self._known_pet_by_id(state, args.get("pet_id"))
-                    args = {**args, "pet_id": (known or {}).get("pet_id") or state.pet_id}
+                    if len(state.known_pets) > 1:
+                        known = self._known_pet_by_id(state, state.pet_id)
+                        if known is None:
+                            return {
+                                "status": "missing_information",
+                                "error_code": "PET_SELECTION_REQUIRED",
+                                "message": (
+                                    "Several pets are registered and none was selected for this "
+                                    "booking. Ask which pet before checking availability."
+                                ),
+                            }
+                        args = {**args, "pet_id": known.get("pet_id")}
+                    elif state.pet_id is not None:
+                        known = self._known_pet_by_id(state, args.get("pet_id"))
+                        args = {**args, "pet_id": (known or {}).get("pet_id") or state.pet_id}
                 if (
                     tool_call["name"] in {"check_availability", "check_availability_range"}
                     and self._is_repeat_booking_request(user_message)
@@ -2747,6 +2849,7 @@ class PawfectOrchestrator:
                 state.pet_name = data.get("pet_name")
                 state.pet_size = data.get("size")
                 state.pet_breed = data.get("breed")
+                state.pet_selected_turn = state.turn_counter
         elif tool_name == "get_pets":
             if result.get("status") == "success":
                 pets = (result.get("data") or {}).get("pets") or []
@@ -2780,6 +2883,7 @@ class PawfectOrchestrator:
                 state.pet_name = pet.get("pet_name")
                 state.pet_size = pet.get("size")
                 state.pet_breed = pet.get("breed")
+                state.pet_selected_turn = state.turn_counter
                 state.known_pets = state.known_pets + [
                     {
                         "pet_id": pet.get("pet_id"),
@@ -3335,6 +3439,7 @@ class PawfectOrchestrator:
                 "signature": cls._mutation_signature(tool_name, executable_args),
                 "args": cls._compact_evidence_result(executable_args, max_chars=1200),
                 "preview_turn": state.turn_counter,
+                "scenario": state.active_scenario,
             }
 
     @classmethod
@@ -3349,7 +3454,7 @@ class PawfectOrchestrator:
             state.last_mutation = {
                 "tool": tool_name,
                 "signature": cls._mutation_signature(tool_name, args),
-                "result": result,
+                "result": _sanitize_model_value(result),
             }
         elif isinstance(result, dict) and result.get("status") not in ("success",):
             state.last_mutation = None
@@ -3362,7 +3467,12 @@ class PawfectOrchestrator:
         without being trapped in the completed scenario.
         """
         confirmed = cls._SCENARIO_CONFIRMING_TOOLS.get(tool_name)
-        if confirmed and isinstance(result, dict) and result.get("status") == "success":
+        if (
+            confirmed
+            and confirmed == state.active_scenario
+            and isinstance(result, dict)
+            and result.get("status") == "success"
+        ):
             state.active_scenario = None
             state.current_step = None
             state.service_type = None
@@ -3994,6 +4104,7 @@ class PawfectOrchestrator:
             "booking_status": data.get("booking_status"),
         }
         state.latest_booking = dict(state.last_created_booking)
+        state.booking_context_status = "available"
 
     _GREETING_LEAD_WORDS = (
         "hi", "hello", "hey", "welcome", "good morning", "good afternoon",
@@ -4141,6 +4252,7 @@ class PawfectOrchestrator:
         cleaned = "\n".join(
             line for line in content.split("\n")
             if "/storage/v1/object/sign/" not in line
+            and not re.search(r"\b_internal_[A-Za-z0-9_]+\b", line)
             and not dangling_link_line.search(line)
         )
         cleaned = re.sub(r"\n{3,}", "\n\n", cleaned).strip()
@@ -4191,7 +4303,7 @@ class PawfectOrchestrator:
         return response.model_copy(update={"content": truthful})
 
     @staticmethod
-    def _ground_membership_response(response, user_message: str, trace: list[dict]):
+    def _ground_membership_response(response, user_message: str, trace: list[dict], state=None):
         """Make the customer-facing result match the observed membership write.
 
         A successful registration must not be replaced by a model-generated
@@ -4225,6 +4337,10 @@ class PawfectOrchestrator:
                 if chinese else
                 f"Your loyalty membership is now active. Your tier is {tier}, with {points} points."
             )
+        if state is not None and state.active_scenario == "MAKE_BOOKING":
+            existing = str(response.content or "").strip()
+            combined = "\n\n".join(part for part in (truthful, existing) if part)
+            return response.model_copy(update={"content": combined})
         return response.model_copy(update={"content": truthful})
 
     @staticmethod
@@ -4327,10 +4443,22 @@ class PawfectOrchestrator:
                     state.daycare_duration_minutes = None
                     state.verified_facts.pop("daycare_duration_minutes", None)
                 if previous_scenario != state.active_scenario:
+                    state.pending_actions = {}
+                    state.pending_booking_confirmation = None
                     state.offered_options = []
                     state.offered_add_on_options = []
                     state.missing_information = []
                     state.missing_information_by_tool = {}
+                    if (
+                        state.active_scenario == "MAKE_BOOKING"
+                        and len(state.known_pets) > 1
+                        and state.pet_selected_turn != state.turn_counter
+                    ):
+                        state.pet_id = None
+                        state.pet_type = None
+                        state.pet_name = None
+                        state.pet_size = None
+                        state.pet_breed = None
                 if previous_scenario == "MAKE_BOOKING" and state.active_scenario != "MAKE_BOOKING":
                     state.preferred_staff = None
                     state.loyalty_decision = None
@@ -4360,9 +4488,11 @@ class PawfectOrchestrator:
         if tool_name == "cancel_booking" and isinstance(result, dict):
             self._cache_cancelled_booking(state, result)
             if result.get("status") == "success":
-                cancelled = dict(result.get("data") or {})
-                if cancelled:
-                    state.latest_booking = cancelled
+                # A cancelled row is not the customer's latest active booking.
+                # Force a fresh lookup next turn so another active booking can
+                # become latest instead of exposing stale cancelled context.
+                state.latest_booking = None
+                state.booking_context_status = "unavailable"
             if (
                 state.last_created_booking
                 and result.get("status") == "success"
@@ -4381,6 +4511,13 @@ class PawfectOrchestrator:
             payment_id = (result.get("data") or {}).get("payment_id")
             if payment_id is not None:
                 state.last_created_payment_id = payment_id
+            if len(state.known_pets) > 1:
+                state.pet_id = None
+                state.pet_type = None
+                state.pet_name = None
+                state.pet_size = None
+                state.pet_breed = None
+                state.pet_selected_turn = None
         elif tool_name == "redeem_reward" and isinstance(result, dict) and result.get("status") == "success":
             state.last_created_payment_id = None
 
@@ -4393,6 +4530,21 @@ class PawfectOrchestrator:
     def invoke_with_trace(self, company_context: dict, state, user_message: str):
         """Evidence-driven tool loop with flexible planning and full trace."""
         state.turn_counter += 1
+        # A confirmation only authorizes the preview from the immediately
+        # preceding customer turn. Drop anything older before routing a bare
+        # "yes" so an unrelated later reply cannot execute stale work.
+        state.pending_actions = {
+            name: pending
+            for name, pending in state.pending_actions.items()
+            if int((pending or {}).get("preview_turn") or 0) >= state.turn_counter - 1
+        }
+        pending_booking = state.pending_booking_confirmation
+        if (
+            isinstance(pending_booking, dict)
+            and pending_booking.get("preview_turn") is not None
+            and int(pending_booking.get("preview_turn") or 0) < state.turn_counter - 1
+        ):
+            state.pending_booking_confirmation = None
         if self._is_repeat_booking_request(user_message):
             state.repeat_booking_template = None
             explicit_service = self._explicit_service_type(user_message)
@@ -4770,7 +4922,7 @@ class PawfectOrchestrator:
                     response, user_message, trace
                 )
                 response = self._ground_membership_response(
-                    response, user_message, trace
+                    response, user_message, trace, state
                 )
                 response = self._ground_booking_preview_response(
                     response, user_message, trace
@@ -4986,6 +5138,9 @@ class PawfectOrchestrator:
                 record = records_by_id[tool_call["id"]]
                 result = record["result"]
                 content = json.dumps(result, ensure_ascii=False, default=str)
+                model_content = json.dumps(
+                    _sanitize_model_value(result), ensure_ascii=False, default=str
+                )
                 trace.append({
                     "iteration": iteration_index + 1,
                     "tool_call_id": tool_call["id"],
@@ -5004,7 +5159,7 @@ class PawfectOrchestrator:
                     "duration_ms": record["duration_ms"],
                     "result": content,
                 })
-                messages.append(ToolMessage(content=content, tool_call_id=tool_call["id"]))
+                messages.append(ToolMessage(content=model_content, tool_call_id=tool_call["id"]))
 
             # A customer naturally selects a slot on the turn after it was
             # shown. The old guard required availability evidence from this

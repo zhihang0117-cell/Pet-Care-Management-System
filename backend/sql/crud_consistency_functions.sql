@@ -38,6 +38,7 @@ grant execute on function delete_customer_with_pets(int, int)
 -- prevents an out-of-order rerun from removing concurrency protection.
 alter table daycare_booking add column if not exists add_on text;
 alter table daycare_booking add column if not exists add_on_price numeric default 0;
+alter table grooming_booking add column if not exists duration_minutes int not null default 90;
 
 create or replace function create_booking_atomic_base(
   p_company_id int,
@@ -60,12 +61,13 @@ begin
   if p_booking_type = 'grooming' then
     insert into grooming_booking (
       company_id, pet_id, staff_id, service_name, booking_date,
-      booking_time, price, add_on, add_on_price, notes, booking_status,
+      booking_time, duration_minutes, price, add_on, add_on_price, notes, booking_status,
       created_date, created_time
     ) values (
       p_company_id, (p_booking->>'pet_id')::int, (p_booking->>'staff_id')::int,
       p_booking->>'service_name', (p_booking->>'booking_date')::date,
-      (p_booking->>'booking_time')::time, (p_booking->>'price')::numeric,
+      (p_booking->>'booking_time')::time,
+      coalesce((p_booking->>'duration_minutes')::int, 90), (p_booking->>'price')::numeric,
       p_booking->>'add_on', (p_booking->>'add_on_price')::numeric, p_booking->>'notes',
       p_booking->>'booking_status', (p_booking->>'created_date')::date,
       (p_booking->>'created_time')::time
@@ -172,6 +174,7 @@ begin
       service_name = coalesce(p_booking_patch->>'service_name', b.service_name),
       booking_date = coalesce((p_booking_patch->>'booking_date')::date, b.booking_date),
       booking_time = coalesce((p_booking_patch->>'booking_time')::time, b.booking_time),
+      duration_minutes = coalesce((p_booking_patch->>'duration_minutes')::int, b.duration_minutes),
       price = coalesce((p_booking_patch->>'price')::numeric, b.price),
       add_on = coalesce(p_booking_patch->>'add_on', b.add_on),
       add_on_price = coalesce((p_booking_patch->>'add_on_price')::numeric, b.add_on_price),

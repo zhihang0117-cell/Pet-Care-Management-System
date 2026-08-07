@@ -202,6 +202,34 @@ def _extract_daycare_catalogue_options(
                 option["duration_minutes"] = duration
             (add_ons if is_add_on else services).append(option)
 
+    # A catalogue that offers both an hourly rate and an open-ended flat tier
+    # such as "Above 3 Hours" describes a threshold tariff, not two prices
+    # that remain interchangeable forever.  Give otherwise-unbounded hourly
+    # options the complementary upper bound so an eight-hour stay cannot be
+    # quoted at both RM20/hour and the over-three-hours flat price.
+    flat_lower_bounds = [
+        (
+            int(option["min_duration_minutes"]),
+            bool(option.get("min_duration_exclusive")),
+        )
+        for option in services
+        if str(option.get("pricing_unit") or "flat").casefold() == "flat"
+        and option.get("min_duration_minutes") not in (None, "")
+    ]
+    if flat_lower_bounds:
+        boundary, flat_excludes_boundary = min(flat_lower_bounds, key=lambda item: item[0])
+        for option in services:
+            if (
+                str(option.get("pricing_unit") or "").casefold() == "hour"
+                and option.get("duration_minutes") in (None, "")
+                and option.get("min_duration_minutes") in (None, "")
+                and option.get("max_duration_minutes") in (None, "")
+            ):
+                option["max_duration_minutes"] = boundary
+                # "Above 3 hours" excludes 3:00, so hourly care includes it.
+                # "3 hours and above" includes 3:00, so hourly care does not.
+                option["max_duration_exclusive"] = not flat_excludes_boundary
+
     return services, add_ons
 
 

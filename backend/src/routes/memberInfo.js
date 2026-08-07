@@ -1,7 +1,6 @@
 import { Router } from "express";
 import { supabase } from "../supabaseClient.js";
 import { asyncHandler } from "../middleware/auth.js";
-import { getLoyaltyTier } from "../lib/pricing.js";
 import { requireManager } from "../middleware/authUser.js";
 import { assertAllowedQueryKeys, parsePagination } from "../lib/queryValidation.js";
 
@@ -69,34 +68,24 @@ memberInfoRouter.post(
     if (customerError) return res.status(400).json({ error: customerError.message });
     if (!companyCustomer) return res.status(404).json({ error: "Customer not found for this company." });
 
-    const { data: existing } = await supabase
-      .from("loyaltymember")
-      .select("loyalty_id")
-      .eq("company_id", req.companyId)
-      .eq("customer_id", numericCustomerId)
-      .maybeSingle();
-    if (existing) {
-      return res.status(400).json({ error: "This customer is already a loyalty member." });
-    }
-
     const balance = pointsBalance === undefined ? 0 : Number(pointsBalance);
     if (!Number.isInteger(balance) || balance < 0) {
       return res.status(400).json({ error: "points_balance must be a non-negative integer." });
     }
-    const { data, error } = await supabase
-      .from("loyaltymember")
-      .insert({
-        company_id: req.companyId,
-        customer_id: numericCustomerId,
-        points_balance: balance,
-        tier: getLoyaltyTier(balance),
-        redemption_made: 0,
-      })
-      .select()
-      .single();
+    const { data: registration, error } = await supabase.rpc("register_loyalty_member_atomic", {
+      p_company_id: req.companyId,
+      p_customer_id: numericCustomerId,
+      p_points_balance: balance,
+    });
 
     if (error) return res.status(400).json({ error: error.message });
-    res.status(201).json(data);
+    if (!registration?.member) {
+      return res.status(500).json({ error: "Membership registration returned no persisted member." });
+    }
+    if (registration.already_member) {
+      return res.status(400).json({ error: "This customer is already a loyalty member." });
+    }
+    res.status(201).json(registration.member);
   })
 );
 
