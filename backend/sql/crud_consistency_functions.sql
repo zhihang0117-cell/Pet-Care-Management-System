@@ -32,12 +32,14 @@ revoke all on function delete_customer_with_pets(int, int)
 grant execute on function delete_customer_with_pets(int, int)
   to service_role;
 
--- Create the booking first, then its pending payment, and finally link the
--- payment back to the booking. Any failure rolls back all three steps.
+-- Legacy base implementations retained only as reference/upgrade helpers.
+-- The callable create_booking_atomic/update_booking_atomic functions live in
+-- booking_conflict_prevention_migration.sql. Keeping distinct names here
+-- prevents an out-of-order rerun from removing concurrency protection.
 alter table daycare_booking add column if not exists add_on text;
 alter table daycare_booking add column if not exists add_on_price numeric default 0;
 
-create or replace function create_booking_atomic(
+create or replace function create_booking_atomic_base(
   p_company_id int,
   p_booking_type text,
   p_booking jsonb,
@@ -144,7 +146,7 @@ begin
 end;
 $$;
 
-create or replace function update_booking_atomic(
+create or replace function update_booking_atomic_base(
   p_company_id int,
   p_booking_type text,
   p_booking_id int,
@@ -284,9 +286,7 @@ begin
 end;
 $$;
 
-revoke all on function create_booking_atomic(int, text, jsonb, jsonb) from public, anon, authenticated;
-revoke all on function update_booking_atomic(int, text, int, jsonb, jsonb) from public, anon, authenticated;
+revoke all on function create_booking_atomic_base(int, text, jsonb, jsonb) from public, anon, authenticated;
+revoke all on function update_booking_atomic_base(int, text, int, jsonb, jsonb) from public, anon, authenticated;
 revoke all on function delete_booking_atomic(int, text, int) from public, anon, authenticated;
-grant execute on function create_booking_atomic(int, text, jsonb, jsonb) to service_role;
-grant execute on function update_booking_atomic(int, text, int, jsonb, jsonb) to service_role;
 grant execute on function delete_booking_atomic(int, text, int) to service_role;

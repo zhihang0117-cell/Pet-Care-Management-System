@@ -223,8 +223,10 @@ let listingSearchKeyword = "";
 let calendarAnchorDate = getToday();
 
 const CALENDAR_HOURS = [
-  "08:00", "09:00", "10:00", "11:00", "12:00",
-  "13:00", "14:00", "15:00", "16:00", "17:00"
+  "08:00", "08:30", "09:00", "09:30", "10:00", "10:30",
+  "11:00", "11:30", "12:00", "12:30", "13:00", "13:30",
+  "14:00", "14:30", "15:00", "15:30", "16:00", "16:30",
+  "17:00", "17:30"
 ];
 
 // Real backend data for booking.html (separate from the mock `bookings`/
@@ -628,28 +630,29 @@ function setupCalendarSlotEvents() {
 
       const newDate = cell.dataset.date;
       const newTime = cell.dataset.time || booking.time;
-      if (getSlotBookings(newDate, newTime, booking.id).length >= 3) {
-        showToast("This slot is not available. Maximum 3 bookings are allowed per timeslot.");
-        return;
-      }
-      // bookingDateTimePayload only overrides date/start-time (check_out_time
-      // is left as-is server-side, and check_out_date shifts to preserve the
-      // stay length) — mirror that here too, so the drag-drop pre-check
+      // bookingDateTimePayload shifts DAYCARE pickup by the same duration and
+      // shifts BOARDING checkout by the same stay length, so the pre-check
       // models the SAME real interval the server will actually validate,
       // not just the new start time.
       const movedPayload = bookingDateTimePayload(booking, newDate, newTime);
-      const existingCheckOutTime = booking.raw && booking.raw.check_out_time
-        ? String(booking.raw.check_out_time).slice(0, 5)
-        : undefined;
+      if (!movedPayload) {
+        showToast("This move would place pickup outside the same day. Choose an earlier start time.");
+        return;
+      }
+      const movedCheckOutTime = movedPayload.check_out_time || (
+        booking.raw && booking.raw.check_out_time
+          ? String(booking.raw.check_out_time).slice(0, 5)
+          : undefined
+      );
       const conflictFields = booking.type === "grooming"
         ? { date: newDate, time: newTime }
         : booking.type === "daycare"
-        ? { date: newDate, checkInTime: newTime, checkOutTime: existingCheckOutTime }
+        ? { date: newDate, checkInTime: newTime, checkOutTime: movedCheckOutTime }
         : {
             checkInDate: movedPayload.check_in_date,
             checkInTime: movedPayload.check_in_time,
             checkOutDate: movedPayload.check_out_date,
-            checkOutTime: existingCheckOutTime,
+            checkOutTime: movedCheckOutTime,
           };
       if (staffHasConflictingBooking(booking.type, conflictFields, booking.staffId, booking.id)) {
         showToast("This staff member already has a booking that overlaps this time.");
@@ -662,7 +665,12 @@ function setupCalendarSlotEvents() {
 
 async function rescheduleBooking(booking, newDate, newTime) {
   try {
-    await api.updateBooking(booking.type, booking.rawId, bookingDateTimePayload(booking, newDate, newTime));
+    const payload = bookingDateTimePayload(booking, newDate, newTime);
+    if (!payload) {
+      showToast("This move would place pickup outside the same day. Choose an earlier start time.");
+      return;
+    }
+    await api.updateBooking(booking.type, booking.rawId, payload);
     await refreshBookingPageData();
   } catch (error) {
     showToast(error.message || "Failed to reschedule booking.");
@@ -671,7 +679,17 @@ async function rescheduleBooking(booking, newDate, newTime) {
 
 function bookingDateTimePayload(booking, date, time) {
   if (booking.type === "grooming") return { booking_date: date, booking_time: time };
-  if (booking.type === "daycare") return { booking_date: date, check_in_time: time };
+  if (booking.type === "daycare") {
+    const oldStart = bookingIntervalStartMs("2000-01-01", booking.raw?.check_in_time);
+    const oldEnd = bookingIntervalStartMs("2000-01-01", booking.raw?.check_out_time);
+    const newStart = bookingIntervalStartMs("2000-01-01", time);
+    if (oldStart == null || oldEnd == null || newStart == null || oldEnd <= oldStart) return null;
+    const newEndMinutes = Math.round((newStart - bookingIntervalStartMs("2000-01-01", "00:00")) / 60000)
+      + Math.round((oldEnd - oldStart) / 60000);
+    if (newEndMinutes >= 24 * 60) return null;
+    const checkOutTime = `${String(Math.floor(newEndMinutes / 60)).padStart(2, "0")}:${String(newEndMinutes % 60).padStart(2, "0")}`;
+    return { booking_date: date, check_in_time: time, check_out_time: checkOutTime };
+  }
   if (booking.type === "boarding") {
     // Shift check_out_date by the same number of nights so dragging to a new
     // date can't leave check_out_date behind check_in_date (a stay's length
@@ -1240,8 +1258,8 @@ function createBookingFromSlot(date, time) {
   const type = currentServiceFilter === "all" ? getEnabledServices()[0] : currentServiceFilter;
   const availableStaff = getAvailableStaffForSlot(date, time, "", type);
 
-  if (getSlotBookings(date, time).length >= 3 || availableStaff.length === 0) {
-    showToast("This timeslot is fully booked. Maximum 3 bookings are allowed, and each booking must use a different staff.");
+  if (availableStaff.length === 0) {
+    showToast("This timeslot has no available qualified staff.");
     return;
   }
 
@@ -1520,10 +1538,6 @@ async function saveBooking() {
 
   const leavingActiveSchedule = statusInternal === "cancelled" || statusInternal === "no_show";
   if (!leavingActiveSchedule && slotDate && slotTime) {
-    if (getSlotBookings(slotDate, slotTime, bookingId).length >= 3) {
-      showToast("This booking cannot be saved. The selected timeslot already has 3 bookings.");
-      return false;
-    }
     const conflictFields = type === "grooming"
       ? { date: payload.booking_date, time: payload.booking_time }
       : type === "daycare"
@@ -1777,7 +1791,7 @@ function isStaffAlreadyBooked(date, time, staffId, excludeBookingId = "") {
 // backend/sql/booking_conflict_prevention_migration.sql's
 // staff_has_conflicting_booking exactly (grooming: 90 continuous minutes
 // from booking_time; daycare: the full check-in-to-check-out visit;
-// boarding: two brief 10-minute check-in/check-out windows, not the whole
+// boarding: two brief 30-minute check-in/check-out windows, not the whole
 // stay) — isStaffAlreadyBooked above only catches an EXACT time-string
 // match, so two nearby-but-different slots that the server would actually
 // reject as overlapping (e.g. 09:00 and 09:30 for a 90-minute grooming
@@ -1858,7 +1872,7 @@ function renderAddSlotArea(date, time) {
   const slotBookings = getSlotBookings(date, time);
   const availableStaff = getAvailableStaffForSlot(date, time);
 
-  if (slotBookings.length >= 3 || availableStaff.length === 0) {
+  if (availableStaff.length === 0) {
     return `<div class="slot-full-note">Fully booked</div>`;
   }
 
@@ -1876,10 +1890,9 @@ function renderAddSlotArea(date, time) {
 
 function findFirstAvailableTime(date) {
   return CALENDAR_HOURS.find(hour => {
-    const slotBookings = getSlotBookings(date, hour);
     const availableStaff = getAvailableStaffForSlot(date, hour);
 
-    return slotBookings.length < 3 && availableStaff.length > 0;
+    return availableStaff.length > 0;
   });
 }
 
@@ -6403,10 +6416,7 @@ function isBoardingActiveOnDate(checkInDate, checkOutDate, date) {
 // reasoning as staffHasConflictingBooking's own pre-submit check.
 function roomHasCapacity(roomType, checkInDate, checkOutDate, excludeBookingId = "") {
   const room = rooms.find(r => r.id === roomType);
-  // No room record configured for this room_type: nothing real to enforce
-  // against — matches room_has_capacity's own "return true" for that case
-  // rather than blocking on an incomplete/unrecognized room_type here.
-  if (!room) return true;
+  if (!room) return false;
   const capacity = room.capacity || 1;
   const overlapping = bookingRecords.filter(b =>
     b.type === "boarding" &&

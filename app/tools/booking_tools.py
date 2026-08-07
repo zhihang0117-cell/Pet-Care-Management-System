@@ -22,7 +22,7 @@ ServiceType = Literal["GROOMING", "DAYCARE", "BOARDING"]
 # catalogue line in _verify_flat_price_against_catalogue below, never to
 # reject on its own.
 _RATE_MARKER_RE = re.compile(
-    r"/\s*hour\b|per\s+hour\b|/\s*hr\b|each\s+hour\b|/\s*day\b|per\s+day\b", re.IGNORECASE
+    r"/\s*hour\b|per\s+hour\b|/\s*hr\b|each\s+hour\b", re.IGNORECASE
 )
 
 
@@ -37,21 +37,39 @@ def _find_catalogue_match(catalogue: list[dict], name: str) -> dict | None:
     )
 
 
-def _price_mismatch_error(field_label: str, submitted_price, match: dict) -> dict | None:
-    if match is None or _RATE_MARKER_RE.search(str(match.get("service_name") or "")):
-        return None
+def _price_mismatch_error(
+    field_label: str, submitted_price, match: dict,
+    *, duration_minutes: int | None = None,
+) -> dict | None:
+    if match is None:
+        return {
+            "error": "UNVERIFIED_SERVICE_OPTION",
+            "message": f"{field_label} could not be matched to an exact catalogue option.",
+        }
     try:
         catalogue_price = float(match["price"])
         submitted = float(submitted_price)
     except (TypeError, ValueError):
-        return None
-    if abs(submitted - catalogue_price) <= 0.01:
+        return {"error": "INVALID_PRICE", "message": f"{field_label} must be a valid amount."}
+    pricing_unit = str(match.get("pricing_unit") or "").casefold()
+    looks_hourly = pricing_unit == "hour" or bool(
+        _RATE_MARKER_RE.search(str(match.get("service_name") or ""))
+    )
+    expected_price = catalogue_price
+    if looks_hourly:
+        if duration_minutes is None or duration_minutes <= 0:
+            return {
+                "error": "MISSING_DURATION_FOR_PRICE",
+                "message": "An hourly package requires a verified visit duration before its total can be checked.",
+            }
+        expected_price = catalogue_price * duration_minutes / 60
+    if abs(submitted - expected_price) <= 0.01:
         return None
     return {
         "error": "INVALID_PRICE",
         "message": (
-            f"{field_label} ({submitted_price}) does not match {match['service_name']!r}'s real "
-            f"catalogue price (RM{catalogue_price:g}) from get_booking_service_options. "
+            f"{field_label} ({submitted_price}) does not match {match['service_name']!r}'s verified "
+            f"total (RM{expected_price:g}) from get_booking_service_options. "
             "Use its exact price, not a recalled, rounded, or guessed number."
         ),
     }
@@ -61,9 +79,10 @@ def _verify_flat_price_against_catalogue(
     company_id, service_type: str, package_name: str, price,
     pet_type: str = "", pet_size: str = "",
     add_on: str = "", add_on_price=None,
+    duration_minutes: int | None = None,
 ) -> dict | None:
     """
-    Best-effort, FAIL-OPEN cross-check of a GROOMING/DAYCARE package (and, if
+    Fail-closed cross-check of a GROOMING/DAYCARE package (and, if
     given, add-on) price against the same RAG catalogue
     get_booking_service_options already parses for the model
     (app.tools.customer_tools._extract_daycare_catalogue_options — genuinely
@@ -74,18 +93,10 @@ def _verify_flat_price_against_catalogue(
 
     Unlike BOARDING (a real per-night rate in the structured `room` table),
     GROOMING/DAYCARE prices only ever exist as unstructured document text,
-    so this can only ever be a soft check: returns None (never blocks the
-    write) whenever there is no confident EXACT label match, the RAG
-    service errors, or the matched catalogue line looks like a per-hour/
-    per-day RATE rather than a flat total (an hourly package's real total is
-    rate x hours, which legitimately differs from the bare rate). Only
-    returns a rejection when a package_name/add_on — which the model is
-    already required to copy verbatim from get_booking_service_options — has
-    a submitted price that does not match that exact catalogue entry's real
-    price. The add_on check reuses the exact same catalogue lookup as the
-    base package (previously the parsed add_ons list was fetched and
-    discarded here, leaving add-on prices as the one line item type never
-    checked against anything real).
+    this path blocks the write when the catalogue cannot be retrieved or an
+    exact label cannot be matched. Hourly options are verified as rate times
+    the customer-approved duration; flat options and add-ons must match their
+    exact catalogue amount.
     """
     normalized_service = str(service_type or "").strip().upper()
     if normalized_service not in {"GROOMING", "DAYCARE"}:
@@ -105,12 +116,19 @@ def _verify_flat_price_against_catalogue(
                 company_id, "daycare packages and prices", service_type="daycare",
             )
         services, add_ons = _extract_daycare_catalogue_options(rag_rows)
-    except Exception:
-        return None  # RAG unavailable/erroring must never block a booking write
+    except Exception as exc:
+        return {
+            "error": "PRICE_VERIFICATION_UNAVAILABLE",
+            "message": (
+                "The catalogue price could not be verified, so no booking was written. "
+                f"Retry get_booking_service_options before creating the booking ({exc})."
+            ),
+        }
 
     catalogue = services + add_ons
     package_mismatch = _price_mismatch_error(
-        "price", price, _find_catalogue_match(catalogue, package_name)
+        "price", price, _find_catalogue_match(catalogue, package_name),
+        duration_minutes=duration_minutes,
     )
     if package_mismatch:
         return package_mismatch
@@ -257,6 +275,14 @@ def create_booking(
                 "message": f"Could not resolve a date from check_out_date {check_out_date!r}.",
             }
         check_out_date = resolved_check_out
+        if not str(check_out_time or "").strip():
+            return {
+                "error": "MISSING_CHECK_OUT_TIME",
+                "message": (
+                    "check_out_time is required for BOARDING. Offer only pickup/check-out "
+                    "times returned by check_availability, then use the customer's exact choice."
+                ),
+            }
         if date_cls.fromisoformat(check_out_date) <= date_cls.fromisoformat(date):
             return {
                 "error": "INVALID_CHECK_OUT_DATE",
@@ -338,6 +364,16 @@ def create_booking(
                 ),
             }
     if normalized_service in {"GROOMING", "DAYCARE"}:
+        verified_duration = duration_minutes
+        if normalized_service == "DAYCARE" and verified_duration in (None, ""):
+            from app.db.time_normalization import normalize_time
+
+            try:
+                start_hour, start_minute = (int(part) for part in normalize_time(time).split(":"))
+                end_hour, end_minute = (int(part) for part in normalize_time(check_out_time).split(":"))
+                verified_duration = (end_hour * 60 + end_minute) - (start_hour * 60 + start_minute)
+            except (TypeError, ValueError):
+                verified_duration = None
         catalogue_pet_type = ""
         catalogue_pet_size = ""
         if normalized_service == "GROOMING" and pet_id:
@@ -351,6 +387,7 @@ def create_booking(
             company_id, normalized_service, package_name, price,
             pet_type=catalogue_pet_type, pet_size=catalogue_pet_size,
             add_on=add_on, add_on_price=add_on_price,
+            duration_minutes=int(verified_duration) if verified_duration else None,
         )
         if price_mismatch:
             return price_mismatch

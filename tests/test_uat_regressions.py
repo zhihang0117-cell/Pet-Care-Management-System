@@ -3,13 +3,17 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from app.context.state import ConversationState
+from app.db import relational_actions
 from app.db.customer_context import canonical_phone_number, phones_match, validate_phone_number
 from app.db.date_normalization import extract_customer_date, parse_week_range
 from app.db.relational_actions import (
+    _time_slots_for_day,
     _room_capacity_status,
     _serialize_daycare_booking,
+    check_available_slots,
     create_pet,
 )
+from app.context.slot_holds import SlotHoldRegistry
 from app.db.customer_context import CustomerContext
 from app.db.time_normalization import extract_duration_minutes, extract_time_from_message, extract_time_range
 from app.documents import service as document_service
@@ -38,6 +42,101 @@ def test_create_pet_database_boundary_refuses_missing_or_species_as_breed():
     assert missing["data"]["missing_fields"] == ["breed"]
     assert species["status"] == "missing_information"
     assert species["data"]["missing_fields"] == ["breed"]
+
+
+def test_partial_stay_details_never_produce_final_slot_choices():
+    context = CustomerContext(company_id=1)
+
+    boarding = check_available_slots(
+        context,
+        {"service_type": "BOARDING", "entities": {"preferred_date": "2026-08-10"}},
+    )
+    daycare = check_available_slots(
+        context,
+        {"service_type": "DAYCARE", "entities": {"preferred_date": "2026-08-10"}},
+    )
+
+    assert boarding["status"] == "missing_information"
+    assert boarding["data"]["available_slots"] == []
+    assert boarding["data"]["missing_fields"] == ["room_type", "check_out_date"]
+    assert daycare["status"] == "missing_information"
+    assert daycare["data"]["available_slots"] == []
+    assert daycare["data"]["missing_fields"] == ["check_out_time_or_duration_minutes"]
+
+
+def test_1730_can_be_a_daycare_pickup_without_being_a_late_start(monkeypatch):
+    monkeypatch.setattr(
+        relational_actions,
+        "_business_hours_for_date",
+        lambda company_id, target_date: ("09:30", "18:30", None),
+    )
+    monkeypatch.setattr(relational_actions, "get_supabase_client", lambda: object())
+    monkeypatch.setattr(relational_actions, "_shared_booking_holds", lambda client, company_id: None)
+    monkeypatch.setattr(
+        relational_actions,
+        "_staff_day_roster",
+        lambda client, company_id, target_date, service_type=None: [
+            {"staff_id": 7, "staff_name": "Ari"}
+        ],
+    )
+    monkeypatch.setattr(
+        relational_actions,
+        "_cross_service_staff_bookings",
+        lambda client, company_id, staff_ids, date_str: [],
+    )
+    context = CustomerContext(company_id=1)
+
+    pickup_choices = check_available_slots(
+        context,
+        {
+            "service_type": "DAYCARE",
+            "entities": {
+                "preferred_date": "2026-08-10",
+                "preferred_time": "14:30",
+                "check_in_time": "14:30",
+                "selection_target": "CHECK_OUT",
+            },
+        },
+    )
+    late_starts = check_available_slots(
+        context,
+        {
+            "service_type": "DAYCARE",
+            "entities": {
+                "preferred_date": "2026-08-10",
+                "preferred_time": "17:30",
+                "duration_minutes": 180,
+            },
+        },
+    )
+
+    assert "17:30:00" in pickup_choices["data"]["available_check_out_times"]
+    assert pickup_choices["data"]["available_slots"] == []
+    assert "17:30:00" not in late_starts["data"]["available_slots"]
+
+
+def test_half_hour_slots_are_available_even_when_business_opens_on_the_hour():
+    slots = _time_slots_for_day("09:00", "18:30")
+
+    assert "09:30:00" in slots
+    assert "17:30:00" in slots
+
+
+def test_overlapping_room_holds_conflict_even_when_date_ranges_differ():
+    holds = SlotHoldRegistry(ttl_seconds=60)
+    holds.acquire((1, "BOARDING_ROOM", "Mars Room", "2026-08-01", "2026-08-03"), "10")
+
+    assert holds.count_overlapping_room_holds(
+        1, "Mars Room", "2026-08-02", "2026-08-04", "11"
+    ) == 1
+    assert holds.count_overlapping_room_holds(
+        1, "Mars Room", "2026-08-03", "2026-08-04", "11"
+    ) == 0
+
+
+def test_unknown_booking_status_is_not_treated_as_valid_history():
+    assert relational_actions.is_qualifying_previous_booking_status("Scheduled")
+    assert not relational_actions.is_qualifying_previous_booking_status("mystery-status")
 
 
 def test_chinese_date_time_and_duration_are_deterministic():
@@ -236,6 +335,7 @@ def test_boarding_room_is_occupied_on_every_intermediate_date(monkeypatch):
         }
     )
     monkeypatch.setattr("app.db.relational_actions.get_supabase_client", lambda: client)
+    monkeypatch.setattr("app.db.relational_actions._shared_booking_holds", lambda _client, _company: None)
     context = CustomerContext(company_id=1)
     middle = _room_capacity_status(context, "Mars", "2026-08-05", "2026-08-06")
     after_checkout = _room_capacity_status(context, "Mars", "2026-08-10", "2026-08-11")

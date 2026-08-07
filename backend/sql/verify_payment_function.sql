@@ -281,6 +281,9 @@ begin
   end if;
 
   v_payment.final_amount := coalesce(p_final_amount, v_payment.final_amount);
+  if v_payment.final_amount is null or v_payment.final_amount <= 0 then
+    raise exception 'Final payment amount must be greater than zero' using errcode = 'P0001';
+  end if;
 
   -- A payment with a linked redemption cannot be verified until that exact
   -- request has been approved. Points were already deducted at approval.

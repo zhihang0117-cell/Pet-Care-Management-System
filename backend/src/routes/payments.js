@@ -8,12 +8,20 @@ import {
   requestRedemption,
   verifyPayment,
   refundPayment,
+  getEarnRateForCompany,
 } from "../lib/paymentService.js";
 import { requireManager } from "../middleware/authUser.js";
 import { callAiBackend } from "../lib/aiBackend.js";
 
 export const paymentsRouter = Router();
 const PAYMENT_METHODS = new Set(["Cash", "Card", "E-Wallet", "Bank Transfer", "Online"]);
+const PAYMENT_METHOD_SETTING_KEYS = Object.freeze({
+  Cash: "cash",
+  Card: "card",
+  "E-Wallet": "qr",
+  "Bank Transfer": "online",
+  Online: "online",
+});
 
 async function enrichPaymentsWithCustomer(payments, companyId) {
   const paymentIds = [...new Set((payments || []).map(row => row.payment_id).filter(Boolean))];
@@ -254,6 +262,17 @@ paymentsRouter.post(
         error: "payment_method must be Cash, Card, E-Wallet, Bank Transfer, or Online.",
       });
     }
+    const { data: company, error: companyError } = await supabase
+      .from("companies")
+      .select("settings_json")
+      .eq("company_id", req.companyId)
+      .single();
+    if (companyError) return res.status(400).json({ error: companyError.message });
+    const selectedMethod = String(req.body.payment_method);
+    const settingKey = PAYMENT_METHOD_SETTING_KEYS[selectedMethod];
+    if (company?.settings_json?.payment_methods?.[settingKey] === false) {
+      return res.status(400).json({ error: `${selectedMethod} is disabled in business settings.` });
+    }
 
     // verify_payment() requires p_loyalty_id/p_coupon_id to exactly match an
     // Approved redemption already linked to this payment (see decide_redemption
@@ -306,12 +325,13 @@ paymentsRouter.post(
       .ilike("email", String(req.authUser?.email || "").trim())
       .maybeSingle();
 
+    const earnRate = await getEarnRateForCompany(req.companyId);
     const { data: verified, error: verifyError } = await supabase.rpc("verify_payment", {
       p_company_id: req.companyId,
       p_payment_id: paymentId,
       p_loyalty_id: loyaltyId,
       p_coupon_id: couponId,
-      p_earn_rate: Number(process.env.LOYALTY_EARN_RATE || 1),
+      p_earn_rate: earnRate,
       p_verified_by: reviewer?.staff_id || null,
       p_payment_method: req.body?.payment_method || null,
       p_final_amount: req.body?.final_amount ?? null,

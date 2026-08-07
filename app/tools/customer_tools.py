@@ -35,6 +35,8 @@ _DAYCARE_COMPARATIVE_DURATION_RE = re.compile(
 )
 _DAYCARE_ADD_ON_RE = re.compile(r"\badd[\s-]?on\b|附加|加购|加購", re.IGNORECASE)
 _RINGGIT_RE = re.compile(r"\bRM\s*(\d+(?:\.\d{1,2})?)\b", re.IGNORECASE)
+_HOURLY_RATE_RE = re.compile(r"/\s*(?:hour|hr)\b|\bper\s+(?:hour|hr)\b", re.IGNORECASE)
+_DAILY_RATE_RE = re.compile(r"/\s*day\b|\bper\s+day\b", re.IGNORECASE)
 
 
 def _clean_catalogue_label(value: str) -> str:
@@ -96,6 +98,12 @@ def _extract_daycare_catalogue_options(rag_rows: list[dict]) -> tuple[list[dict]
                 "selection_kind": kind,
                 "source": "company_rag",
             }
+            if _HOURLY_RATE_RE.search(segment):
+                option["pricing_unit"] = "hour"
+            elif _DAILY_RATE_RE.search(segment):
+                option["pricing_unit"] = "day"
+            else:
+                option["pricing_unit"] = "flat"
             if duration:
                 option["duration_minutes"] = duration
             (add_ons if is_add_on else services).append(option)

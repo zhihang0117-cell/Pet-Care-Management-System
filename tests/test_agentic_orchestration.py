@@ -1,6 +1,8 @@
 import json
 from pathlib import Path
 
+from langchain_core.messages import AIMessage
+
 from app.context.company import get_company_config
 from app.context.state import ConversationState
 from app.orchestrator import PawfectOrchestrator, TOOLS_BY_NAME, ToolLoopError
@@ -67,6 +69,7 @@ def test_runtime_context_refreshes_scenario_and_business_clock():
     )
 
     assert before["scenario_definition"] is None
+    assert "timezone" not in before["company"]
     assert after["scenario_definition"]["scenario"] == "MAKE_BOOKING"
     assert after["conversation_state"]["service_type"] == "DAYCARE"
     assert after["company"]["business_date"]
@@ -239,6 +242,23 @@ def test_daycare_catalogue_separates_add_ons_and_only_exposes_exact_duration():
     assert [option["service_name"] for option in add_ons] == ["Splash Pool Session Add-on"]
 
 
+def test_daycare_catalogue_marks_hourly_rates_for_total_price_validation():
+    services, _ = _extract_daycare_catalogue_options([
+        {"content": "Hourly Care - RM15/hour"}
+    ])
+
+    assert services == [
+        {
+            "service_name": "Hourly Care",
+            "price": 15.0,
+            "price_display": "RM15",
+            "selection_kind": "service",
+            "source": "company_rag",
+            "pricing_unit": "hour",
+        }
+    ]
+
+
 def test_evidence_is_bounded_and_internal_delivery_fields_are_removed():
     compact = PawfectOrchestrator._compact_evidence_result(
         {
@@ -294,6 +314,53 @@ def test_range_availability_becomes_reusable_offered_options():
     ]
 
 
+def test_checkout_availability_becomes_the_only_reusable_offered_options():
+    state = ConversationState(phone_number="+60123456705", company_id="1")
+    PawfectOrchestrator._cache_offered_options(
+        state,
+        "check_availability",
+        {
+            "status": "success",
+            "data": {
+                "selection_target": "CHECK_OUT",
+                "check_in_time": "14:30",
+                "available_slots": [],
+                "available_check_out_times": ["16:30:00", "17:30:00"],
+            },
+        },
+    )
+
+    assert [option["slot"] for option in state.offered_options] == ["16:30:00", "17:30:00"]
+    assert all(option["selection_target"] == "CHECK_OUT" for option in state.offered_options)
+
+
+def test_latest_availability_result_deterministically_replaces_unverified_times():
+    response = AIMessage(content="5:30 and 6:30 are both available.")
+    trace = [
+        {
+            "tool": "check_availability",
+            "result": json.dumps(
+                {
+                    "status": "success",
+                    "data": {
+                        "selection_target": "CHECK_OUT",
+                        "available_slots": [],
+                        "available_check_out_times": ["17:30:00"],
+                    },
+                }
+            ),
+        }
+    ]
+
+    grounded = PawfectOrchestrator._ground_latest_availability_response(
+        response, "我可以几点接？", trace
+    )
+
+    assert "17:30" in grounded.content
+    assert "18:30" not in grounded.content
+    assert "只有" in grounded.content
+
+
 def test_successful_action_releases_scenario_but_keeps_booking_evidence():
     orchestrator = object.__new__(PawfectOrchestrator)
     state = ConversationState(
@@ -342,6 +409,26 @@ def test_tool_repair_is_narrow_and_reuses_existing_evidence():
         "Is 10 AM available?",
         "10 AM is available.",
         unrelated_trace,
+    )
+    stale_availability = ConversationState(phone_number="+60123456705", company_id="1")
+    stale_availability.verified_facts["availability"] = {"status": "success", "turn": 1}
+    assert PawfectOrchestrator._needs_tool_repair(
+        stale_availability,
+        "Is 10 AM still available?",
+        "10 AM is available.",
+        [],
+    )
+    assert not PawfectOrchestrator._needs_tool_repair(
+        stale_availability,
+        "Is 10 AM still available?",
+        "10 AM is available.",
+        [{"tool": "check_availability", "result": '{"status":"success"}'}],
+    )
+    assert PawfectOrchestrator._needs_tool_repair(
+        stale_availability,
+        "Is 10 AM still available?",
+        "10 AM is available.",
+        [{"tool": "check_availability", "result": '{"status":"error"}'}],
     )
     assert PawfectOrchestrator._needs_tool_repair(
         ConversationState(phone_number="+60123456705", company_id="1"),

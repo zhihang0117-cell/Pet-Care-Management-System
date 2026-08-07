@@ -99,21 +99,16 @@ leaveRequestsRouter.post(
       .ilike("email", String(req.authUser?.email || "").trim())
       .maybeSingle();
 
-    const { data, error } = await supabase
-      .from("leave")
-      .update({
-        status,
-        reviewed_by_staff_id: reviewer?.staff_id ?? null,
-        reviewed_date: date,
-        reviewed_time: time,
-      })
-      .eq("company_id", req.companyId)
-      .eq("leave_id", req.params.id)
-      .eq("status", "Pending")
-      .select()
-      .single();
+    const { data, error } = await supabase.rpc("decide_leave_request", {
+      p_company_id: req.companyId,
+      p_leave_id: Number(req.params.id),
+      p_status: status,
+      p_reviewed_by: reviewer?.staff_id ?? null,
+      p_reviewed_date: date,
+      p_reviewed_time: time,
+    });
 
-    if (error) return res.status(400).json({ error: "Only a pending leave request can be approved or rejected." });
+    if (error) return res.status(400).json({ error: error.message });
     res.json(data);
   })
 );

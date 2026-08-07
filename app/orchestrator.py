@@ -425,8 +425,15 @@ class PawfectOrchestrator:
         except Exception:
             business_now = datetime.now(ZoneInfo("Asia/Kuala_Lumpur"))
 
+        # The clock configuration is an internal implementation detail. Give
+        # the model the resolved business date/time it needs, without inviting
+        # it to repeat configuration details in customer-facing answers.
         runtime_company = {
-            **(company_context or {}),
+            **{
+                key: value
+                for key, value in (company_context or {}).items()
+                if key != "timezone"
+            },
             "business_date": business_now.date().isoformat(),
             "business_datetime": business_now.isoformat(timespec="seconds"),
         }
@@ -472,7 +479,7 @@ class PawfectOrchestrator:
     )
 
     @classmethod
-    def _ground_direct_datetime_response(cls, response, state, user_message: str, timezone_name: str):
+    def _ground_direct_datetime_response(cls, response, state, user_message: str):
         """Use deterministic output for a short, non-operational date question.
 
         Operational messages keep the model's natural response, but their
@@ -502,19 +509,141 @@ class PawfectOrchestrator:
                     "Thursday": "星期四", "Friday": "星期五", "Saturday": "星期六",
                     "Sunday": "星期日",
                 }.get(weekday, weekday)
-                content = f"按商家时区（{timezone_name}），日期是 {value}（{chinese_weekday}）。"
+                content = f"日期是 {value}（{chinese_weekday}）。"
             else:
-                content = f"In the business timezone ({timezone_name}), that date is {value} ({weekday})."
+                content = f"The date is {value} ({weekday})."
             return response.model_copy(update={"content": content})
         if date_range.get("start") and date_range.get("end"):
             content = (
-                f"按商家时区（{timezone_name}），日期范围是 {date_range['start']} 至 {date_range['end']}。"
+                f"日期范围是 {date_range['start']} 至 {date_range['end']}。"
                 if chinese else
-                f"In the business timezone ({timezone_name}), the date range is "
-                f"{date_range['start']} through {date_range['end']}."
+                f"The date range is {date_range['start']} through {date_range['end']}."
             )
             return response.model_copy(update={"content": content})
         return response
+
+    @staticmethod
+    def _ground_latest_availability_response(response, user_message: str, trace: list[dict]):
+        """Render choices from the latest availability result, never model prose.
+
+        This is intentionally limited to turns whose last substantive tool is
+        an availability read. A later booking/price/policy action keeps its own
+        response, while a slot-selection turn gets a deterministic allow-list
+        so an unavailable time cannot leak into customer-facing text.
+        """
+        latest = None
+        for item in reversed(trace):
+            tool_name = item.get("tool")
+            if tool_name in {"resolve_datetime", "update_conversation_state"}:
+                continue
+            if tool_name not in {"check_availability", "check_availability_range"}:
+                return response
+            latest = item
+            break
+        if latest is None:
+            return response
+
+        raw_result = latest.get("result")
+        try:
+            result = json.loads(raw_result) if isinstance(raw_result, str) else raw_result
+        except (TypeError, ValueError, json.JSONDecodeError):
+            return response
+        if not isinstance(result, dict):
+            return response
+
+        chinese = bool(re.search(r"[\u3400-\u9fff]", str(user_message or "")))
+        malay = bool(re.search(
+            r"\b(?:saya|boleh|pukul|masa|tempah|ambil|hantar)\b",
+            str(user_message or ""),
+            re.IGNORECASE,
+        ))
+
+        def display_time(value: object) -> str:
+            text = str(value or "")
+            return text[:5] if re.fullmatch(r"\d{2}:\d{2}(?::\d{2})?", text) else text
+
+        status = str(result.get("status") or "").lower()
+        is_range_success = (
+            latest.get("tool") == "check_availability_range"
+            and isinstance(result.get("days"), list)
+        )
+        if status == "missing_information":
+            missing = (result.get("data") or {}).get("missing_fields") or []
+            field_labels = {
+                "room_type": "房型",
+                "check_out_date": "退房日期",
+                "check_in_time": "check-in/drop-off 时间",
+                "duration_minutes": "服务时长",
+                "check_out_time_or_duration_minutes": "pickup 时间或服务时长",
+            }
+            readable = "、".join(field_labels.get(str(field), str(field)) for field in missing)
+            if chinese:
+                content = f"还需要确认{readable or '完整预约条件'}后才能可靠提供时间；目前不会显示任何未经验证的时段。"
+            elif malay:
+                content = "Maklumat tempahan belum lengkap, jadi saya tidak akan menawarkan sebarang masa yang belum disahkan. Sila lengkapkan butiran yang diminta dahulu."
+            else:
+                content = "The booking details are incomplete, so I won’t offer any unverified times. Please provide the missing booking details first."
+            return response.model_copy(update={"content": content})
+        if status != "success" and not is_range_success:
+            if chinese:
+                content = "目前无法可靠确认可用时段，因此不会提供任何时间选择。请更换预约条件后让我重新检查，或请员工协助确认。"
+            elif malay:
+                content = "Saya tidak dapat mengesahkan masa yang tersedia dengan yakin sekarang, jadi tiada pilihan masa akan ditawarkan. Cuba syarat lain atau minta staf menyemak."
+            else:
+                content = "I can’t reliably verify availability right now, so I won’t offer any time choices. Change a booking condition so I can check again, or ask staff to verify."
+            return response.model_copy(update={"content": content})
+
+        if latest.get("tool") == "check_availability_range":
+            days = result.get("days") or (result.get("data") or {}).get("days") or []
+            verified_days = [
+                (
+                    str(day.get("date") or ""),
+                    [display_time(slot) for slot in day.get("available_slots") or []],
+                )
+                for day in days
+                if day.get("available_slots")
+            ]
+            if verified_days:
+                lines = [f"- {date_value}: {', '.join(slots)}" for date_value, slots in verified_days]
+                if chinese:
+                    content = "完整校验后，目前可选择的时段只有：\n" + "\n".join(lines) + "\n请从以上时段中选择。"
+                elif malay:
+                    content = "Selepas semakan penuh, hanya masa berikut tersedia:\n" + "\n".join(lines) + "\nSila pilih daripada masa di atas."
+                else:
+                    content = "After a complete availability check, these are the available times:\n" + "\n".join(lines) + "\nPlease choose only from the times above."
+            elif chinese:
+                content = "完整校验后，这个日期范围目前没有能满足全部条件的可用时段。你可以更换日期或其他预约条件，我会重新检查。"
+            elif malay:
+                content = "Selepas semakan penuh, tiada masa dalam julat tarikh ini yang memenuhi semua syarat. Beri tarikh atau syarat lain untuk saya semak semula."
+            else:
+                content = "After a complete availability check, no times in this date range satisfy all booking conditions. Give me another date or condition and I’ll check again."
+            return response.model_copy(update={"content": content})
+
+        data = result.get("data") or {}
+        check_out_mode = str(data.get("selection_target") or "").upper() == "CHECK_OUT"
+        key = "available_check_out_times" if check_out_mode else "available_slots"
+        choices = [display_time(slot) for slot in data.get(key) or []]
+        if choices:
+            joined = ", ".join(choices)
+            if chinese:
+                target = "pickup/check-out" if check_out_mode else "check-in/drop-off"
+                content = f"完整校验后，目前可选择的 {target} 时间只有：{joined}。请从这些时间中选择。"
+            elif malay:
+                target = "pickup/check-out" if check_out_mode else "check-in/drop-off"
+                content = f"Selepas semakan penuh, hanya masa {target} ini tersedia: {joined}. Sila pilih daripada masa ini."
+            else:
+                target = "pickup/check-out" if check_out_mode else "check-in/drop-off"
+                content = f"After a complete availability check, the only available {target} times are: {joined}. Please choose from these times."
+        elif chinese:
+            target = "pickup/check-out" if check_out_mode else "check-in/drop-off"
+            content = f"完整校验后，目前没有能满足全部条件的 {target} 时间。你可以更换日期、服务时长、房型或员工偏好，我会重新检查。"
+        elif malay:
+            target = "pickup/check-out" if check_out_mode else "check-in/drop-off"
+            content = f"Selepas semakan penuh, tiada masa {target} yang memenuhi semua syarat. Beri tarikh atau syarat lain untuk saya semak semula."
+        else:
+            target = "pickup/check-out" if check_out_mode else "check-in/drop-off"
+            content = f"After a complete availability check, no {target} time satisfies all booking conditions. Give me another date or condition and I’ll check again."
+        return response.model_copy(update={"content": content})
 
     def build_messages(
         self,
@@ -1090,6 +1219,10 @@ class PawfectOrchestrator:
     def _mutation_signature(tool_name: str, args: dict) -> str:
         if tool_name == "register_loyalty_member":
             args = {k: v for k, v in args.items() if k != "confirmed"}
+        if tool_name in {"cancel_booking", "reschedule_booking"}:
+            # The typed pet name authorizes an already-previewed change; it is
+            # not itself part of the target booking/date/time payload.
+            args = {k: v for k, v in args.items() if k != "confirm_pet_name"}
         normalized = {
             k: (round(v, 2) if isinstance(v, float) else v) for k, v in sorted(args.items())
         }
@@ -1176,21 +1309,44 @@ class PawfectOrchestrator:
         except (TypeError, ValueError):
             price = None
 
+        requested_time = cls._normalize_clock(args.get("time"))
+        requested_check_out_time = cls._normalize_clock(args.get("check_out_time"))
+        try:
+            requested_duration = int(args.get("duration_minutes"))
+        except (TypeError, ValueError):
+            requested_duration = None
+        if service_type == "DAYCARE" and requested_duration is None:
+            def clock_minutes(value: str) -> int | None:
+                match = re.fullmatch(r"(\d{2}):(\d{2})", value)
+                if not match:
+                    return None
+                return int(match.group(1)) * 60 + int(match.group(2))
+
+            start_minutes = clock_minutes(requested_time)
+            end_minutes = clock_minutes(requested_check_out_time)
+            if start_minutes is not None and end_minutes is not None and end_minutes > start_minutes:
+                requested_duration = end_minutes - start_minutes
+
         candidates = [
             option for option in state.verified_service_options
             if str(option.get("service_type") or "").upper() == service_type
             and (not option.get("pet_id") or str(option.get("pet_id")) == str(pet_id))
             and str(option.get("service_name") or option.get("room_type") or "").strip().casefold() == package
         ]
-        chosen = next(
-            (
-                option for option in candidates
-                if price is not None
-                and option.get("price") not in (None, "")
-                and abs(float(option["price"]) - price) <= 0.01
-            ),
-            None,
-        )
+        def option_price_matches(option: dict) -> bool:
+            if price is None or option.get("price") in (None, ""):
+                return False
+            expected = float(option["price"])
+            if (
+                service_type == "DAYCARE"
+                and str(option.get("pricing_unit") or "").casefold() == "hour"
+            ):
+                if requested_duration is None or requested_duration <= 0:
+                    return False
+                expected *= requested_duration / 60
+            return abs(expected - price) <= 0.01
+
+        chosen = next((option for option in candidates if option_price_matches(option)), None)
         if chosen is None:
             return {
                 "error": "UNVERIFIED_SERVICE_OPTION",
@@ -1223,12 +1379,51 @@ class PawfectOrchestrator:
                 }
 
         requested_date = str(args.get("date") or "")
-        requested_time = cls._normalize_clock(args.get("time"))
+        requested_room = str(
+            args.get("package_name") if service_type == "BOARDING" else args.get("room_type") or ""
+        ).strip().casefold()
+        requested_check_out_date = str(args.get("check_out_date") or "").strip()
+        requested_preferred_staff = str(args.get("preferred_staff") or "").strip().casefold()
+
+        def slot_matches_constraints(slot: dict) -> bool:
+            try:
+                verified_this_turn = int(slot.get("verified_turn")) == int(state.turn_counter)
+            except (TypeError, ValueError):
+                verified_this_turn = False
+            if (
+                not verified_this_turn
+                or str(slot.get("service_type") or "").upper() != service_type
+                or str(slot.get("date") or "") != requested_date
+                or cls._normalize_clock(slot.get("time")) != requested_time
+            ):
+                return False
+            if requested_preferred_staff != str(slot.get("preferred_staff") or "").strip().casefold():
+                return False
+            if service_type == "BOARDING":
+                return (
+                    bool(requested_room)
+                    and str(slot.get("room_type") or "").strip().casefold() == requested_room
+                    and bool(requested_check_out_date)
+                    and str(slot.get("check_out_date") or "") == requested_check_out_date
+                    and cls._normalize_clock(slot.get("check_out_time")) == requested_check_out_time
+                )
+            if service_type == "DAYCARE":
+                try:
+                    checked_duration = int(slot.get("duration_minutes"))
+                except (TypeError, ValueError):
+                    return False
+                return (
+                    requested_duration is not None
+                    and checked_duration == requested_duration
+                    and (
+                        not requested_check_out_time
+                        or cls._normalize_clock(slot.get("check_out_time")) == requested_check_out_time
+                    )
+                )
+            return True
+
         slot_verified = any(
-            str(slot.get("service_type") or "").upper() == service_type
-            and str(slot.get("date") or "") == requested_date
-            and cls._normalize_clock(slot.get("time")) == requested_time
-            and (not args.get("room_type") or str(slot.get("room_type") or "").casefold() == str(args.get("room_type") or "").casefold())
+            slot_matches_constraints(slot)
             for slot in state.verified_availability_slots
         )
         if not slot_verified:
@@ -1236,7 +1431,8 @@ class PawfectOrchestrator:
                 "error": "UNVERIFIED_AVAILABILITY_SLOT",
                 "message": (
                     "This exact service/date/time was not returned as available by "
-                    "check_availability. Verify it and let the customer select the observed slot."
+                    "check_availability with the same room/stay, duration, and staff constraints. "
+                    "Verify the complete request and let the customer select the observed slot."
                 ),
             }
         return None
@@ -1351,6 +1547,11 @@ class PawfectOrchestrator:
                     known = self._known_pet_by_id(state, args.get("pet_id"))
                     if known is None and state.pet_id is not None:
                         args = {**args, "pet_id": state.pet_id}
+                if tool_call["name"] == "check_availability" and state.pet_id is not None:
+                    # Availability must include the selected pet so a second
+                    # service cannot be offered over that pet's active booking.
+                    known = self._known_pet_by_id(state, args.get("pet_id"))
+                    args = {**args, "pet_id": (known or {}).get("pet_id") or state.pet_id}
                 if tool_call["name"] == "create_booking":
                     if args.get("preferred_staff"):
                         state.preferred_staff = str(args["preferred_staff"])
@@ -1435,6 +1636,26 @@ class PawfectOrchestrator:
                         )
                         if match is not None:
                             args = {**args, "service_type": match["service_type"]}
+                if (
+                    tool_call["name"] == "reschedule_booking"
+                    and args.get("confirm_pet_name")
+                    and state.pending_booking_confirmation
+                    and state.pending_booking_confirmation.get("tool") == "reschedule_booking"
+                ):
+                    expected_signature = state.pending_booking_confirmation.get("change_signature")
+                    if (
+                        expected_signature
+                        and self._mutation_signature("reschedule_booking", args)
+                        != expected_signature
+                    ):
+                        return {
+                            "error": "RESCHEDULE_DETAILS_CHANGED",
+                            "message": (
+                                "The booking/date/time details differ from the change the customer "
+                                "was shown. No write occurred. Preview the new exact details and "
+                                "ask for confirmation again."
+                            ),
+                        }
                 if tool_call["name"] == "retrieve_policy":
                     # Same problem, one layer up: the model can call retrieve_policy
                     # directly (bypassing the pet_id-aware bundling inside
@@ -1731,8 +1952,20 @@ class PawfectOrchestrator:
                 {"label": opt.get("service_name") or opt.get("room_type"), **opt} for opt in options
             ]
         elif tool_name == "check_availability":
-            slots = data.get("available_slots") or []
-            state.offered_options = [{"label": slot, "slot": slot} for slot in slots]
+            if str(data.get("selection_target") or "").upper() == "CHECK_OUT":
+                slots = data.get("available_check_out_times") or []
+                state.offered_options = [
+                    {
+                        "label": slot,
+                        "slot": slot,
+                        "selection_target": "CHECK_OUT",
+                        "check_in_time": data.get("check_in_time"),
+                    }
+                    for slot in slots
+                ]
+            else:
+                slots = data.get("available_slots") or []
+                state.offered_options = [{"label": slot, "slot": slot} for slot in slots]
         elif tool_name == "check_availability_range":
             days = result.get("days") or data.get("days") or []
             state.offered_options = [
@@ -1782,38 +2015,90 @@ class PawfectOrchestrator:
 
         new_slots: list[dict] = []
         if tool_name == "check_availability" and result.get("status") == "success":
-            for slot in (result.get("data") or {}).get("available_slots") or []:
-                new_slots.append({
-                    "service_type": service_type,
-                    "date": args.get("date"),
-                    "time": slot,
-                    "room_type": args.get("room_type") or "",
-                })
+            data = result.get("data") or {}
+            if str(data.get("selection_target") or "").upper() == "CHECK_OUT":
+                check_in_time = data.get("check_in_time") or args.get("check_in_time") or ""
+
+                def minutes(value: object) -> int | None:
+                    normalized = PawfectOrchestrator._normalize_clock(value)
+                    match = re.fullmatch(r"(\d{2}):(\d{2})", normalized)
+                    if not match:
+                        return None
+                    return int(match.group(1)) * 60 + int(match.group(2))
+
+                checkin_minutes = minutes(check_in_time)
+                for pickup in data.get("available_check_out_times") or []:
+                    pickup_minutes = minutes(pickup)
+                    duration = None
+                    if (
+                        service_type == "DAYCARE"
+                        and checkin_minutes is not None
+                        and pickup_minutes is not None
+                        and pickup_minutes > checkin_minutes
+                    ):
+                        duration = pickup_minutes - checkin_minutes
+                    new_slots.append({
+                        "service_type": service_type,
+                        "verified_turn": state.turn_counter,
+                        "date": data.get("booking_date") or args.get("date"),
+                        "time": check_in_time,
+                        "room_type": data.get("room_type") or args.get("room_type") or "",
+                        "check_out_date": data.get("check_out_date") or args.get("check_out_date") or "",
+                        "check_out_time": pickup,
+                        "duration_minutes": duration,
+                        "preferred_staff": data.get("preferred_staff") or args.get("preferred_staff") or "",
+                    })
+            else:
+                for slot in data.get("available_slots") or []:
+                    new_slots.append({
+                        "service_type": service_type,
+                        "verified_turn": state.turn_counter,
+                        "date": data.get("booking_date") or args.get("date"),
+                        "time": slot,
+                        "room_type": data.get("room_type") or args.get("room_type") or "",
+                        "check_out_date": data.get("check_out_date") or args.get("check_out_date") or "",
+                        "check_out_time": data.get("check_out_time") or args.get("check_out_time") or "",
+                        "duration_minutes": data.get("service_duration_minutes") or args.get("duration_minutes"),
+                        "preferred_staff": data.get("preferred_staff") or args.get("preferred_staff") or "",
+                    })
         elif tool_name == "check_availability_range":
             days = result.get("days") or (result.get("data") or {}).get("days") or []
             for day in days:
                 for slot in day.get("available_slots") or []:
                     new_slots.append({
                         "service_type": service_type,
+                        "verified_turn": state.turn_counter,
                         "date": day.get("date"),
                         "time": slot,
                         "room_type": args.get("room_type") or "",
+                        "check_out_date": "",
+                        "check_out_time": "",
+                        "duration_minutes": args.get("duration_minutes"),
+                        "preferred_staff": "",
                     })
         if new_slots:
             keys = {
-                (slot["service_type"], slot["date"], str(slot["time"]), str(slot["room_type"]))
+                (
+                    slot["service_type"], slot["date"], str(slot["time"]),
+                    str(slot["room_type"]), str(slot.get("check_out_date") or ""),
+                    str(slot.get("check_out_time") or ""),
+                    str(slot.get("duration_minutes") or ""),
+                    str(slot.get("preferred_staff") or ""),
+                )
                 for slot in new_slots
             }
             state.verified_availability_slots = [
                 slot for slot in state.verified_availability_slots
                 if (
-                    str(slot.get("service_type")), str(slot.get("date")),
-                    str(slot.get("time")), str(slot.get("room_type")),
+                    str(slot.get("service_type")), str(slot.get("date")), str(slot.get("time")),
+                    str(slot.get("room_type") or ""), str(slot.get("check_out_date") or ""),
+                    str(slot.get("check_out_time") or ""), str(slot.get("duration_minutes") or ""),
+                    str(slot.get("preferred_staff") or ""),
                 ) not in keys
             ] + new_slots
 
-    @staticmethod
-    def _cache_pending_booking_confirmation(state, tool_name: str, result: dict, args: dict) -> None:
+    @classmethod
+    def _cache_pending_booking_confirmation(cls, state, tool_name: str, result: dict, args: dict) -> None:
         """Remember which specific booking cancel_booking/reschedule_booking
         is currently targeting — see ConversationState.pending_booking_confirmation.
 
@@ -1847,6 +2132,15 @@ class PawfectOrchestrator:
                     "booking_id": data.get("booking_id"),
                     "service_type": data.get("service_type"),
                 }
+                if tool_name == "reschedule_booking":
+                    preview_args = {
+                        **args,
+                        "booking_id": data.get("booking_id"),
+                        "service_type": data.get("service_type") or args.get("service_type"),
+                    }
+                    state.pending_booking_confirmation["change_signature"] = cls._mutation_signature(
+                        tool_name, preview_args
+                    )
             return
         if status in ("success", "ambiguous", "not_found"):
             state.pending_booking_confirmation = None
@@ -1863,6 +2157,10 @@ class PawfectOrchestrator:
                     "booking_id": booking_id_int,
                     "service_type": args.get("service_type"),
                 }
+                if tool_name == "reschedule_booking":
+                    state.pending_booking_confirmation["change_signature"] = cls._mutation_signature(
+                        tool_name, {**args, "booking_id": booking_id_int}
+                    )
 
     @staticmethod
     def _cache_resolved_date(state, tool_name: str, result: dict) -> None:
@@ -2244,6 +2542,27 @@ class PawfectOrchestrator:
         )
 
     @classmethod
+    def _trace_has_successful_availability(cls, trace: list[dict]) -> bool:
+        """Only a successful current-turn read can support offered times."""
+        for item in trace:
+            if item.get("tool") not in {"check_availability", "check_availability_range"}:
+                continue
+            raw_result = item.get("result")
+            try:
+                result = json.loads(raw_result) if isinstance(raw_result, str) else raw_result
+            except (TypeError, ValueError, json.JSONDecodeError):
+                continue
+            if not isinstance(result, dict):
+                continue
+            if item.get("tool") == "check_availability_range" and isinstance(
+                result.get("days"), list
+            ):
+                return True
+            if cls._tool_result_status(result) == "success":
+                return True
+        return False
+
+    @classmethod
     def _needs_tool_repair(
         cls,
         state,
@@ -2358,11 +2677,7 @@ class PawfectOrchestrator:
             answer,
             re.IGNORECASE,
         ))
-        if availability_value_claim and not (
-            any(item.get("tool") in {"check_availability", "check_availability_range"} for item in trace)
-            or (state.verified_facts or {}).get("availability")
-            or (state.verified_facts or {}).get("availability_range")
-        ):
+        if availability_value_claim and not cls._trace_has_successful_availability(trace):
             return True
 
         # HEALTH BOUNDARY in the system prompt says "Only after success may
@@ -2495,11 +2810,7 @@ class PawfectOrchestrator:
             r"\b(?:availability|available|slot)\b|空位|时段|\bkekosongan\b",
             text,
         ))
-        if availability_intent and not (
-            facts.get("availability")
-            or facts.get("availability_range")
-            or called_tools & {"check_availability", "check_availability_range"}
-        ):
+        if availability_intent and not cls._trace_has_successful_availability(trace):
             return True
 
         catalogue_intent = bool(re.search(
@@ -3172,7 +3483,11 @@ class PawfectOrchestrator:
                     response,
                     state,
                     user_message,
-                    str(company_context.get("timezone") or "Asia/Kuala_Lumpur"),
+                )
+                response = self._ground_latest_availability_response(
+                    response,
+                    user_message,
+                    trace,
                 )
                 response = self._ground_document_delivery_response(
                     response, user_message, trace

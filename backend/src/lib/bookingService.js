@@ -22,6 +22,13 @@ export function nightsBetween(checkIn, checkOut) {
 }
 
 const BOOKING_STATUSES = new Set(["Pending", "Scheduled", "Done", "No Show", "Cancelled"]);
+const BOOKING_STATUS_TRANSITIONS = Object.freeze({
+  Pending: new Set(["Scheduled"]),
+  Scheduled: new Set(["Done", "No Show"]),
+  Done: new Set(),
+  "No Show": new Set(),
+  Cancelled: new Set(),
+});
 
 function invalidBooking(message) {
   const err = new Error(message);
@@ -100,10 +107,48 @@ async function assertBoardingRoomPriceMatches(companyId, roomType, pricePerNight
   }
 }
 
-async function assertBookingRelationsBelongToCompany(companyId, petId, staffId) {
+function clockMinutes(value) {
+  const match = String(value || "").match(/^(\d{1,2}):(\d{2})/);
+  if (!match) return null;
+  const total = Number(match[1]) * 60 + Number(match[2]);
+  return total >= 0 && total < 24 * 60 ? total : null;
+}
+
+function calendarDay(dateText) {
+  const date = new Date(`${dateText}T00:00:00Z`);
+  return Number.isNaN(date.getTime()) ? null : date.getUTCDay();
+}
+
+function weekdayName(dateText) {
+  const day = calendarDay(dateText);
+  return day == null
+    ? null
+    : ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"][day];
+}
+
+function parseStoredDate(value) {
+  const text = String(value || "").trim();
+  let match = text.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (match) return `${match[1]}-${match[2]}-${match[3]}`;
+  match = text.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+  if (match) return `${match[3]}-${String(Number(match[2])).padStart(2, "0")}-${String(Number(match[1])).padStart(2, "0")}`;
+  return null;
+}
+
+async function assertBookingOperationalRules(companyId, type, booking) {
   const [{ data: pet, error: petError }, { data: staff, error: staffError }] = await Promise.all([
-    supabase.from("pet").select("pet_id").eq("company_id", companyId).eq("pet_id", petId).maybeSingle(),
-    supabase.from("staff").select("staff_id").eq("company_id", companyId).eq("staff_id", staffId).maybeSingle(),
+    supabase
+      .from("pet")
+      .select("pet_id, vaccination_status, vaccination_expired_date")
+      .eq("company_id", companyId)
+      .eq("pet_id", booking.pet_id)
+      .maybeSingle(),
+    supabase
+      .from("staff")
+      .select("staff_id, status, off_days_json, provides_service, service_types_json")
+      .eq("company_id", companyId)
+      .eq("staff_id", booking.staff_id)
+      .maybeSingle(),
   ]);
   if (petError || staffError) {
     const err = petError || staffError;
@@ -112,6 +157,74 @@ async function assertBookingRelationsBelongToCompany(companyId, petId, staffId) 
   }
   if (!pet) invalidBooking("Selected pet does not belong to this company.");
   if (!staff) invalidBooking("Selected staff member does not belong to this company.");
+
+  const serviceType = type.toUpperCase();
+  if (String(staff.status || "").toLowerCase() !== "active") {
+    invalidBooking("Selected staff member is not active.");
+  }
+  if (staff.provides_service === false ||
+      (Array.isArray(staff.service_types_json) && !staff.service_types_json.includes(serviceType))) {
+    invalidBooking(`Selected staff member is not qualified for ${serviceType}.`);
+  }
+
+  const events = type === "grooming"
+    ? [{ date: booking.booking_date, start: booking.booking_time, endMinutes: 90 }]
+    : type === "daycare"
+    ? [{ date: booking.booking_date, start: booking.check_in_time, end: booking.check_out_time }]
+    : [
+        { date: booking.check_in_date, start: booking.check_in_time, endMinutes: 30 },
+        { date: booking.check_out_date, start: booking.check_out_time, endMinutes: 30 },
+      ];
+  const dates = [...new Set(events.map((event) => event.date))];
+  const dayNumbers = [...new Set(dates.map(calendarDay))];
+  const [{ data: hours, error: hoursError }, { data: closed, error: closedError }, { data: leave, error: leaveError }] = await Promise.all([
+    supabase.from("company_business_hours").select("day_of_week, open_time, close_time, is_closed")
+      .eq("company_id", companyId).in("day_of_week", dayNumbers),
+    supabase.from("company_closed_dates").select("closed_date, reason")
+      .eq("company_id", companyId).in("closed_date", dates),
+    supabase.from("leave").select("start_date, end_date, status")
+      .eq("company_id", companyId).eq("staff_id", booking.staff_id).eq("status", "Approved"),
+  ]);
+  if (hoursError || closedError || leaveError) {
+    const err = hoursError || closedError || leaveError;
+    err.status = 400;
+    throw err;
+  }
+
+  for (const event of events) {
+    if ((closed || []).some((row) => row.closed_date === event.date)) {
+      invalidBooking(`The business is closed on ${event.date}.`);
+    }
+    const weekday = weekdayName(event.date);
+    if ((staff.off_days_json || []).includes(weekday)) {
+      invalidBooking(`Selected staff member is off on ${weekday}.`);
+    }
+    if ((leave || []).some((row) => row.start_date <= event.date && event.date <= row.end_date)) {
+      invalidBooking(`Selected staff member is on approved leave on ${event.date}.`);
+    }
+    const businessHours = (hours || []).find((row) => Number(row.day_of_week) === calendarDay(event.date));
+    if (!businessHours || businessHours.is_closed) {
+      invalidBooking(`No open business hours are configured for ${event.date}.`);
+    }
+    const open = clockMinutes(businessHours.open_time);
+    const close = clockMinutes(businessHours.close_time);
+    const start = clockMinutes(event.start);
+    const end = event.end ? clockMinutes(event.end) : (start == null ? null : start + event.endMinutes);
+    if (open == null || close == null || start == null || end == null || start < open || end > close || end <= start) {
+      invalidBooking(`The selected interval is outside business hours on ${event.date}.`);
+    }
+  }
+
+  if (["daycare", "boarding"].includes(type)) {
+    if (String(pet.vaccination_status || "").trim().toLowerCase() !== "vaccinated") {
+      invalidBooking(`This pet must be marked Vaccinated before ${serviceType}.`);
+    }
+    const expiry = parseStoredDate(pet.vaccination_expired_date);
+    const serviceDate = type === "boarding" ? booking.check_in_date : booking.booking_date;
+    if (expiry && expiry <= serviceDate) {
+      invalidBooking(`This pet's vaccination is not valid on the ${serviceType} date.`);
+    }
+  }
 }
 
 /** Finds which of the 3 booking tables a payment_id belongs to. */
@@ -274,7 +387,7 @@ export async function createBooking(type, companyId, body) {
   }
 
   validateBookingInput(type, bookingRow, { creating: true });
-  await assertBookingRelationsBelongToCompany(companyId, bookingRow.pet_id, bookingRow.staff_id);
+  await assertBookingOperationalRules(companyId, type, bookingRow);
   if (type === "boarding") {
     await assertBoardingRoomPriceMatches(companyId, bookingRow.room_type, bookingRow.price_per_night);
   }
@@ -329,7 +442,7 @@ function paymentPayloadForBooking(type, booking) {
 }
 
 function isUnsettledPayment(status) {
-  return status === "Pending" || status === "Unpaid" || status === "Cancelled";
+  return status === "Pending" || status === "Unpaid";
 }
 
 /**
@@ -357,13 +470,47 @@ export async function updateBooking(type, companyId, bookingId, body) {
   delete payload.created_date;
   delete payload.created_time;
 
+  if (payload.booking_status && payload.booking_status !== existing.booking_status) {
+    if (payload.booking_status === "Cancelled") {
+      const extraFields = Object.keys(payload).filter((key) => key !== "booking_status");
+      if (extraFields.length) {
+        invalidBooking("Cancel a booking separately from editing its details.");
+      }
+      const { data: cancelled, error: cancelError } = await supabase.rpc("cancel_booking_atomic", {
+        p_company_id: companyId,
+        p_booking_type: type,
+        p_booking_id: Number(bookingId),
+      });
+      if (cancelError) {
+        cancelError.status = 400;
+        throw cancelError;
+      }
+      return cancelled;
+    }
+    const allowed = BOOKING_STATUS_TRANSITIONS[existing.booking_status];
+    if (!allowed || !allowed.has(payload.booking_status)) {
+      invalidBooking(
+        `Invalid booking status transition from ${existing.booking_status} to ${payload.booking_status}.`
+      );
+    }
+  }
+
+  if (["Done", "No Show", "Cancelled"].includes(existing.booking_status)) {
+    const nonAuditFields = Object.keys(payload).filter((key) =>
+      !["notes", "special_instruction", "feeding_instruction", "medical_instruction", "booking_status"].includes(key)
+    );
+    if (nonAuditFields.length) {
+      invalidBooking("A completed, no-show, or cancelled booking cannot be rescheduled or repriced.");
+    }
+  }
+
   const next = { ...existing, ...payload };
   if (type === "boarding") {
     next.total_price = (Number(next.price_per_night) || 0) * nightsBetween(next.check_in_date, next.check_out_date);
     payload.total_price = next.total_price;
   }
   validateBookingInput(type, next);
-  await assertBookingRelationsBelongToCompany(companyId, next.pet_id, next.staff_id);
+  await assertBookingOperationalRules(companyId, type, next);
   if (type === "boarding") {
     await assertBoardingRoomPriceMatches(companyId, next.room_type, next.price_per_night);
   }

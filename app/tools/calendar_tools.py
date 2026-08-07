@@ -16,8 +16,7 @@ from app.tools.booking_window import today_business
 def resolve_datetime(text: str) -> dict:
     """
     Resolve natural-language date/time text (e.g. "tomorrow", "this Saturday",
-    "3pm", "afternoon", "next week") using the business's own date/time
-    normalizers (business-local time, Asia/Kuala_Lumpur).
+    "3pm", "afternoon", "next week") using the configured business clock.
 
     Returns date (YYYY-MM-DD or None) for a single specific day, date_range
     ({"start":..., "end":...} or None) for vague week-level phrases like
@@ -39,14 +38,8 @@ def resolve_datetime(text: str) -> dict:
     yourself (e.g. treating "noon" as 12:00) — the customer must choose the
     actual slot.
     """
-    # The container runs in UTC (no TZ set) — without an explicit `today`,
-    # both normalizers default to date.today() (naive server/UTC date), not
-    # Asia/Kuala_Lumpur. Malaysia is UTC+8, so for 8 hours of every day
-    # (UTC 16:00-23:59, i.e. Malaysia's own 00:00-07:59) that silently
-    # resolved "today"/"tomorrow"/"next week" etc. a full calendar day
-    # behind the business's real local date — this docstring's own claim of
-    # "business-local time" wasn't actually true until this was threaded
-    # through.
+    # Always provide the configured business date explicitly so relative
+    # expressions never depend on the host machine's calendar date.
     reference_today = today_business()
     parsed_date = extract_customer_date(text, today=reference_today)
     date_range = None

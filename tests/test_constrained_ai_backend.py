@@ -79,7 +79,13 @@ def _booking_state():
         }
     ]
     state.verified_availability_slots = [
-        {"service_type": "GROOMING", "date": "2026-08-15", "time": "10:00", "room_type": ""}
+        {
+            "service_type": "GROOMING",
+            "verified_turn": 1,
+            "date": "2026-08-15",
+            "time": "10:00",
+            "room_type": "",
+        }
     ]
     return state
 
@@ -113,6 +119,7 @@ def test_booking_requires_exact_preview_then_standalone_confirmation(monkeypatch
     assert capturing.calls == []
 
     state.turn_counter = 3
+    state.verified_availability_slots[0]["verified_turn"] = 3
     unrelated = orchestrator._run_tool(
         _call("create_booking", **args), state, "what time do you close?"
     )
@@ -120,9 +127,234 @@ def test_booking_requires_exact_preview_then_standalone_confirmation(monkeypatch
     assert capturing.calls == []
 
     state.turn_counter = 4
+    state.verified_availability_slots[0]["verified_turn"] = 4
     completed = orchestrator._run_tool(_call("create_booking", **args), state, "确认")
     assert completed["status"] == "success"
     assert len(capturing.calls) == 1
+
+
+def test_boarding_slot_evidence_must_match_room_and_full_stay():
+    state = ConversationState(phone_number="+60123456705", company_id="1")
+    state.verified_service_options = [
+        {
+            "service_type": "BOARDING",
+            "pet_id": 9,
+            "room_type": "Mars Room",
+            "price": 78,
+        }
+    ]
+    args = {
+        "service_type": "BOARDING",
+        "pet_id": 9,
+        "package_name": "Mars Room",
+        "date": "2026-08-10",
+        "time": "17:30",
+        "check_out_date": "2026-08-11",
+        "price": 78,
+    }
+
+    # An earlier staff-only check with no room/stay must not authorize this write.
+    state.verified_availability_slots = [
+        {
+            "service_type": "BOARDING",
+            "verified_turn": 0,
+            "date": "2026-08-10",
+            "time": "17:30",
+            "room_type": "",
+        }
+    ]
+    blocked = PawfectOrchestrator._reject_unverified_booking_payload(state, args)
+    assert blocked["error"] == "UNVERIFIED_AVAILABILITY_SLOT"
+
+    state.verified_availability_slots = [
+        {
+            "service_type": "BOARDING",
+            "verified_turn": 0,
+            "date": "2026-08-10",
+            "time": "17:30",
+            "room_type": "Mars Room",
+            "check_out_date": "2026-08-11",
+            "check_out_time": "",
+            "duration_minutes": 30,
+            "preferred_staff": "",
+        }
+    ]
+    assert PawfectOrchestrator._reject_unverified_booking_payload(state, args) is None
+    state.turn_counter = 1
+    assert (
+        PawfectOrchestrator._reject_unverified_booking_payload(state, args)["error"]
+        == "UNVERIFIED_AVAILABILITY_SLOT"
+    )
+
+
+def test_daycare_slot_evidence_must_match_visit_duration():
+    state = ConversationState(phone_number="+60123456705", company_id="1")
+    state.verified_service_options = [
+        {
+            "service_type": "DAYCARE",
+            "pet_id": 9,
+            "service_name": "Hourly Care",
+            "price": 60,
+        }
+    ]
+    state.verified_availability_slots = [
+        {
+            "service_type": "DAYCARE",
+            "verified_turn": 0,
+            "date": "2026-08-10",
+            "time": "15:30",
+            "room_type": "",
+            "duration_minutes": 180,
+            "preferred_staff": "",
+        }
+    ]
+    args = {
+        "service_type": "DAYCARE",
+        "pet_id": 9,
+        "package_name": "Hourly Care",
+        "date": "2026-08-10",
+        "time": "15:30",
+        "duration_minutes": 240,
+        "price": 60,
+    }
+
+    blocked = PawfectOrchestrator._reject_unverified_booking_payload(state, args)
+    assert blocked["error"] == "UNVERIFIED_AVAILABILITY_SLOT"
+
+
+def test_hourly_daycare_catalogue_accepts_verified_rate_times_duration():
+    state = ConversationState(phone_number="+60123456705", company_id="1")
+    state.verified_service_options = [
+        {
+            "service_type": "DAYCARE",
+            "pet_id": 9,
+            "service_name": "Hourly Care",
+            "price": 15,
+            "pricing_unit": "hour",
+        }
+    ]
+    state.verified_availability_slots = [
+        {
+            "service_type": "DAYCARE",
+            "verified_turn": 0,
+            "date": "2026-08-10",
+            "time": "14:30",
+            "duration_minutes": 180,
+            "check_out_time": "17:30",
+            "preferred_staff": "",
+        }
+    ]
+    args = {
+        "service_type": "DAYCARE",
+        "pet_id": 9,
+        "package_name": "Hourly Care",
+        "date": "2026-08-10",
+        "time": "14:30",
+        "check_out_time": "17:30",
+        "duration_minutes": 180,
+        "price": 45,
+    }
+
+    assert PawfectOrchestrator._reject_unverified_booking_payload(state, args) is None
+    assert PawfectOrchestrator._reject_unverified_booking_payload(
+        state, {**args, "price": 15}
+    )["error"] == "UNVERIFIED_SERVICE_OPTION"
+
+
+def test_reschedule_confirmation_is_bound_to_exact_new_details(monkeypatch):
+    capturing = _CapturingTool({"status": "success", "data": {"booking_id": 91}})
+    monkeypatch.setitem(TOOLS_BY_NAME, "reschedule_booking", capturing)
+    orchestrator = object.__new__(PawfectOrchestrator)
+    state = ConversationState(
+        phone_number="+60123456705",
+        company_id="7",
+        active_scenario="RESCHEDULE_BOOKING",
+        customer_id=22,
+    )
+    state.resolved_dates = ["2026-08-15", "2026-08-16"]
+    preview_args = {
+        "company_id": "7",
+        "customer_id": 22,
+        "booking_id": 91,
+        "service_type": "GROOMING",
+        "new_date": "2026-08-15",
+        "new_time": "10:00",
+    }
+    state.pending_booking_confirmation = {
+        "tool": "reschedule_booking",
+        "booking_id": 91,
+        "service_type": "GROOMING",
+        "change_signature": PawfectOrchestrator._mutation_signature(
+            "reschedule_booking", preview_args
+        ),
+    }
+
+    changed = orchestrator._run_tool(
+        _call(
+            "reschedule_booking",
+            company_id="7",
+            customer_id=22,
+            booking_id=91,
+            service_type="GROOMING",
+            new_date="2026-08-16",
+            new_time="10:00",
+            confirm_pet_name="Milo",
+        ),
+        state,
+        "Milo",
+    )
+
+    assert changed["error"] == "RESCHEDULE_DETAILS_CHANGED"
+    assert capturing.calls == []
+
+
+def test_pickup_choice_evidence_binds_fixed_checkin_and_selected_pickup():
+    state = ConversationState(phone_number="+60123456705", company_id="1")
+    state.verified_service_options = [
+        {
+            "service_type": "DAYCARE",
+            "pet_id": 9,
+            "service_name": "Hourly Care",
+            "price": 60,
+        }
+    ]
+    PawfectOrchestrator._cache_booking_evidence(
+        state,
+        "check_availability",
+        {
+            "status": "success",
+            "data": {
+                "service_type": "DAYCARE",
+                "selection_target": "CHECK_OUT",
+                "booking_date": "2026-08-10",
+                "check_in_time": "14:30",
+                "check_out_date": "2026-08-10",
+                "available_check_out_times": ["17:30:00"],
+            },
+        },
+        {
+            "service_type": "DAYCARE",
+            "date": "2026-08-10",
+            "selection_target": "CHECK_OUT",
+            "check_in_time": "14:30",
+        },
+    )
+    exact = {
+        "service_type": "DAYCARE",
+        "pet_id": 9,
+        "package_name": "Hourly Care",
+        "date": "2026-08-10",
+        "time": "14:30",
+        "check_out_time": "17:30",
+        "price": 60,
+    }
+
+    assert PawfectOrchestrator._reject_unverified_booking_payload(state, exact) is None
+    changed_pickup = {**exact, "check_out_time": "16:30"}
+    assert (
+        PawfectOrchestrator._reject_unverified_booking_payload(state, changed_pickup)["error"]
+        == "UNVERIFIED_AVAILABILITY_SLOT"
+    )
 
 
 def test_membership_confirmation_cannot_be_inferred_from_unrelated_turn(monkeypatch):
@@ -232,7 +464,7 @@ def test_datetime_is_pre_resolved_and_explicit_staff_handoff_is_saved(monkeypatc
         state,
         "下个星期六呢？",
     )
-    assert response.content == "按商家时区（Asia/Kuala_Lumpur），日期是 2026-08-15（星期六）。"
+    assert response.content == "日期是 2026-08-15（星期六）。"
 
 
 def test_invoice_boundary_rejects_unpaid_and_accepts_paid(monkeypatch):
