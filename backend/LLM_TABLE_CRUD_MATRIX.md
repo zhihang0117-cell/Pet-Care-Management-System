@@ -39,6 +39,28 @@
 5. 付款核销、退款、兑换审批、人工积分调整、员工/账号/公司设置属于管理后台动作，不开放给客户对话 LLM。
 6. 对话 LLM 永远不删除业务记录。取消是状态转换，并保留 booking/payment/redemption 审计链。
 
+## Hybrid constraint 覆盖（Prompt + Orchestrator + DB）
+
+这里的规则不能只存在于 system prompt。Prompt 说明业务语义；orchestrator
+绑定身份、顺序、证据和确认；tool/SQL 在最终边界再次重验。只要后两层没有
+对应门禁，就不算已落实。
+
+| Flow | Prompt 语义 | Orchestrator 硬约束 | Tool / DB 最终约束 |
+|---|---|---|---|
+| 新客户 / 新宠物 | 收集客户原话，不猜姓名、品种、身高 | 手机号、company/customer scope 由会话覆盖；姓名、宠物名、species、breed、height 必须能在客户消息中找到 | 防重复客户/宠物；身高转 cm 后才算 size；租户/客户关联校验 |
+| 普通预约 | 先选真实套餐、日期、时间，再确认 | scenario 才开放写工具；pet/name/service 绑定；价格、add-on、staff preference、日期、当前回合 availability、loyalty 决定和 exact preview 全部验证 | 原子建立 booking + payment；营业时间、疫苗、staff/pet 冲突、价格与房量重验 |
+| 照上次预约 | 使用同一宠物、同一服务的最后一次已完成记录 | `pet_id + service_type + Done/Completed` 精确历史；当前目录重新匹配；然后强制 availability；MAKE_BOOKING 不开放重复的 policy/latest 工具 | 历史查询限定当前租户/客户拥有的宠物；写入仍走普通预约全部边界 |
+| 取消预约 | 先 preview，下一回合输入宠物名 | 第一次调用即使原消息含宠物名也会清空确认值；只有 prior `preview_turn` 后的新客户消息才接受；候选 booking/service 绑定 | 仅当前客户 active booking；取消、付款/兑换逆转走事务；不 DELETE |
+| 改期 | preview 精确目标和变更，再输入宠物名 | 同取消的跨回合门槛；新日期必须来自 resolver；确认签名绑定 booking + 新日期/时间，改变任一字段需重新 preview | active booking、营业时间、冲突、daycare 时长、boarding 两日期/容量重新校验 |
+| Loyalty / 兑换 | 只用真实余额、真实 eligible coupon 和真实 payment | customer scope 覆盖；空 eligibility 会清除旧券；coupon/payment ID 绑定；booking 与 redemption 不可同批；exact preview 两回合确认；新 booking 清除旧 loyalty 决定 | 只允许未付款 payment；积分/有效期再验；提交 Pending，审批和实际扣分仅后台事务 |
+| Membership | 说明后取得同意 | MEMBER scenario 才可写；preview payload 与后续独立肯定回复绑定 | 已是会员时幂等返回；否则建立同租户 loyalty account |
+| Payment 查询 | 只回答真实付款记录 | 只读工具；company/customer scope 由会话覆盖；失败结果不能当证据 | 查询限定当前客户关联 booking/payment；LLM 无收款、退款、mark-paid 工具 |
+| Policy / Enquiry | 只用公司上下文或 RAG | company/species/size scope 注入；失败的 RAG/tool call 不算 evidence；明确人工请求由代码写 enquiry | pgvector RPC 限 tenant；浏览器角色不能直接读 chunks；staff enquiry 写后核验 |
+| 确认单 | 仅在当前消息明确要求时发送 | BOOKING_DOCUMENT scenario；当前消息 intent gate；非成功结果会被确定性渲染为“未发送”，私有 URL 从模型 evidence 移除 | booking ownership 重验；只有真实 delivery status 为 sent/sent_console 才算成功 |
+
+相应回归测试必须包含“故意让模型传错参数/提前确认/在失败后声称成功”的
+adversarial case；正常 happy-path 测试本身不能证明 hybrid constraint 生效。
+
 ## 仍然不能用普通外键表达的关联
 
 - `messages.sender_id` 是多态字段：目标表取决于 `sender_type`，必须由应用层验证。

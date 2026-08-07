@@ -42,7 +42,12 @@ _DAILY_RATE_RE = re.compile(r"/\s*day\b|\bper\s+day\b", re.IGNORECASE)
 def _clean_catalogue_label(value: str) -> str:
     label = re.sub(r"[*_`#]", "", str(value or ""))
     label = re.sub(r"^\s*(?:[-•]|\d+[.)])\s*", "", label)
-    label = re.sub(r"\s*(?:[-–—:]|\bis|\bcosts?)\s*$", "", label, flags=re.IGNORECASE)
+    label = re.sub(
+        r"\s*(?:[-–—:]|\bis\s+priced\s+at|\bpriced\s+at|\bis|\bcosts?)\s*$",
+        "",
+        label,
+        flags=re.IGNORECASE,
+    )
     # A chunk often prefixes the first option with a section heading, e.g.
     # "Daycare Packages: 3 Hours - RM55". The part after the final colon is
     # the actual option label; preserve other natural punctuation.
@@ -50,16 +55,29 @@ def _clean_catalogue_label(value: str) -> str:
         tail = label.rsplit(":", 1)[-1].strip()
         if tail:
             label = tail
+    # Narrative DOCX exports commonly phrase a row as "The Standard Bath -
+    # Groomers Choice package is priced at RM80". Booking rows store only
+    # the actual product name, so remove this sentence furniture.
+    label = re.sub(r"^the\s+", "", label, flags=re.IGNORECASE)
+    label = re.sub(r"\s+package$", "", label, flags=re.IGNORECASE)
     return " ".join(label.split()).strip(" -–—:,.()")
 
 
-def _extract_daycare_catalogue_options(rag_rows: list[dict]) -> tuple[list[dict], list[dict]]:
-    """Conservatively expose priced DAYCARE lines as structured choices.
+def _extract_daycare_catalogue_options(
+    rag_rows: list[dict], pet_size: str = ""
+) -> tuple[list[dict], list[dict]]:
+    """Conservatively expose priced GROOMING/DAYCARE lines as choices.
 
     RAG remains the source of truth. This only structures a line when it has
     exactly one explicit ``RM`` amount, so ordinal replies can be mapped to
     the real list without asking the model to reconstruct it from prose. Lines
     with multiple prices are left as raw RAG evidence rather than guessed.
+
+    Grooming price chunks contain every size tier in one document row. When a
+    pet size is known, parse only that tier; otherwise a valid S price could be
+    confused with the same package's XS price. Add-on chunks mark the section
+    in metadata/header rather than repeating "add-on" on every priced line, so
+    the section classification is inherited by each extracted option.
     """
     services: list[dict] = []
     add_ons: list[dict] = []
@@ -69,6 +87,61 @@ def _extract_daycare_catalogue_options(rag_rows: list[dict]) -> tuple[list[dict]
         if not isinstance(row, dict) or row.get("error"):
             continue
         content = str(row.get("content") or "")
+        metadata = row.get("metadata") if isinstance(row.get("metadata"), dict) else {}
+        section_context = " ".join(
+            str(metadata.get(key) or "")
+            for key in (
+                "main_header", "sub_header", "section_title", "section_path", "service_info"
+            )
+        )
+        first_heading = next(
+            (line.strip() for line in content.splitlines() if line.strip()), ""
+        )
+        row_is_add_on = bool(
+            _DAYCARE_ADD_ON_RE.search(f"{section_context} {first_heading}")
+        )
+
+        normalized_size = str(pet_size or "").strip().upper()
+        size_block_re = re.compile(
+            r"For\s+(XXL|XL|XS|S|M|L)\s+size\s+(?:dogs?|cats?)\b.*?"
+            r"(?=(?:\n\s*)?For\s+(?:XXL|XL|XS|S|M|L)\s+size\s+(?:dogs?|cats?)\b|\Z)",
+            re.IGNORECASE | re.DOTALL,
+        )
+        size_blocks = list(size_block_re.finditer(content))
+        if size_blocks:
+            if not normalized_size:
+                # Returning all tiers under the same package label makes an
+                # exact price lookup ambiguous and unsafe.
+                continue
+            matching_block = next(
+                (
+                    match.group(0)
+                    for match in size_blocks
+                    if match.group(1).upper() == normalized_size
+                ),
+                "",
+            )
+            if not matching_block:
+                continue
+            content = re.sub(
+                r"^For\s+(?:XXL|XL|XS|S|M|L)\s+size\s+(?:dogs?|cats?)\b.*?\)\s*-\s*",
+                "",
+                matching_block,
+                count=1,
+                flags=re.IGNORECASE | re.DOTALL,
+            )
+        elif normalized_size:
+            # CompanyRAGRetriever may already have narrowed the full table to
+            # "For S size - ...". Remove that deterministic prefix so the
+            # first package label is as exact as every semicolon-separated one.
+            content = re.sub(
+                rf"For\s+{re.escape(normalized_size)}\s+size"
+                r"(?:\s+(?:dogs?|cats?))?(?:\s*\([^)]*\))?\s*-\s*",
+                "",
+                content,
+                count=1,
+                flags=re.IGNORECASE,
+            )
         # Document ingestion preserves newlines; semicolons, table pipes, and
         # sentence boundaries cover the common exported DOCX table formats.
         segments = re.split(r"[\n;|]+|(?<=[.!?])\s+", content)
@@ -81,7 +154,7 @@ def _extract_daycare_catalogue_options(rag_rows: list[dict]) -> tuple[list[dict]
             if len(label) < 2 or len(label) > 100:
                 continue
             price = float(price_match.group(1))
-            is_add_on = bool(_DAYCARE_ADD_ON_RE.search(label))
+            is_add_on = row_is_add_on or bool(_DAYCARE_ADD_ON_RE.search(label))
             kind = "add_on" if is_add_on else "service"
             key = (label.casefold(), price, kind)
             if key in seen:
@@ -323,11 +396,19 @@ def get_latest_booking(company_id: str | int, customer_id: str | int) -> dict:
 
 
 @tool
-def get_last_completed_booking(company_id: str | int, customer_id: str | int) -> dict:
+def get_last_completed_booking(
+    company_id: str | int,
+    customer_id: str | int,
+    service_type: ServiceType | None = None,
+    pet_id: str | int | None = None,
+) -> dict:
     """
-    Get the customer's most recent booking that has ALREADY happened
-    (booking_date strictly before today) — use this for "same as last time",
-    "repeat my previous booking", "like last time", "same one as before".
+    Get the customer's most recent COMPLETED booking (status Done/Completed,
+    with a date strictly before today) for one pet and service category. Use
+    this for "same as last time", "repeat my previous booking", "like last
+    time", "same one as before". For a booking request, pass both the real
+    pet_id and the explicit service_type; otherwise an unrelated pet/service
+    is not an acceptable repeat template.
     get_latest_booking can return a future Scheduled/Pending booking instead,
     which is NOT what "previous"/"last time" means.
 
@@ -339,12 +420,25 @@ def get_last_completed_booking(company_id: str | int, customer_id: str | int) ->
 
     context = CustomerContext(company_id=int(company_id))
     context.resolved_customer_id = int(customer_id)
-    result = get_last_completed_booking_by_customer_id(context)
-    if result.get("status") != "success" or not result.get("data_found"):
-        return {"found": False}
+    result = get_last_completed_booking_by_customer_id(
+        context,
+        pet_id=int(pet_id) if pet_id not in (None, "") else None,
+        service_type=str(service_type or ""),
+    )
+    status = str(result.get("status") or "error")
+    if status == "not_found" or (status == "success" and not result.get("data_found")):
+        return {"status": "not_found", "found": False}
+    if status != "success":
+        return {
+            **result,
+            "status": "error",
+            "found": None,
+            "error_code": "BOOKING_HISTORY_UNAVAILABLE",
+            "recoverable": True,
+        }
 
     data = result.get("data") or {}
-    return {"found": True, **data}
+    return {"status": "success", "found": True, **data}
 
 
 @tool
@@ -428,9 +522,74 @@ def get_booking_service_options(
                 company_id, query, service_type=rag_service_type, pet_type=species, pet_size=size
             )
         except Exception as exc:
-            rag_rows = [{"error": str(exc)}]
-        if category == "DAYCARE":
-            service_options, add_on_options = _extract_daycare_catalogue_options(rag_rows)
+            # GROOMING/DAYCARE have no relational catalogue fallback in this
+            # deployment. Returning the relational wrapper's old
+            # status=success with an empty service_options list turned an
+            # embedding/RPC outage into the false business fact "there are no
+            # services", after which the LLM improvised a menu or claimed the
+            # historical package was retired. Keep the failure structured and
+            # fail closed instead.
+            return {
+                **result,
+                "status": "error",
+                "success": False,
+                "data_found": False,
+                "data": {
+                    **dict(result.get("data") or {}),
+                    "service_options": [],
+                    "add_on_options": [],
+                },
+                "error": "SERVICE_CATALOGUE_UNAVAILABLE",
+                "error_code": "SERVICE_CATALOGUE_UNAVAILABLE",
+                "recoverable": True,
+                "handoff_required": False,
+                "detailed_pricing_by_size": [],
+                "_internal_error": str(exc),
+            }
+        if not rag_rows:
+            # An empty vector result contains no evidence that the catalogue
+            # is empty. Treat it as unavailable so the model cannot convert a
+            # retrieval/filtering problem into a business claim or invent a
+            # replacement menu.
+            return {
+                **result,
+                "status": "error",
+                "success": False,
+                "data_found": False,
+                "data": {
+                    **dict(result.get("data") or {}),
+                    "service_options": [],
+                    "add_on_options": [],
+                },
+                "error": "SERVICE_CATALOGUE_UNAVAILABLE",
+                "error_code": "SERVICE_CATALOGUE_UNAVAILABLE",
+                "recoverable": True,
+                "handoff_required": False,
+                "detailed_pricing_by_size": [],
+                "_internal_error": "RAG search returned no catalogue evidence",
+            }
+        if category in {"GROOMING", "DAYCARE"}:
+            service_options, add_on_options = _extract_daycare_catalogue_options(
+                rag_rows, pet_size=pet_size if category == "GROOMING" else ""
+            )
+            if not service_options:
+                return {
+                    **result,
+                    "status": "error",
+                    "success": False,
+                    "data_found": False,
+                    "data": {
+                        **dict(result.get("data") or {}),
+                        "service_options": [],
+                        "add_on_options": [],
+                    },
+                    "error": "SERVICE_CATALOGUE_UNAVAILABLE",
+                    "error_code": "SERVICE_CATALOGUE_UNAVAILABLE",
+                    "recoverable": True,
+                    "handoff_required": False,
+                    "detailed_pricing_by_size": rag_rows,
+                    "_internal_error": "RAG rows did not contain structured bookable services",
+                }
             data = dict(result.get("data") or {})
             if service_options:
                 data["service_options"] = service_options

@@ -16,6 +16,11 @@ create index if not exists payment_company_redemption_idx
 create index if not exists redemption_company_status_idx
   on redemption (company_id, status);
 
+-- Keep this base migration aligned with the later rejection-reason repair so
+-- re-running it can never recreate the obsolete three-argument overload.
+alter table redemption
+  add column if not exists rejection_reason text;
+
 -- A voucher request is created as Pending and linked to one payment. No
 -- points move until a manager approves it.
 create or replace function request_redemption(
@@ -120,11 +125,15 @@ end;
 $$;
 
 -- Approval revalidates and locks the member/coupon before deducting exactly
--- once. Rejection never changes the member balance.
+-- once. Rejection never changes the member balance and requires an auditable
+-- reason. Drop the old signature so PostgREST never sees both overloads.
+drop function if exists decide_redemption(int, int, text);
+
 create or replace function decide_redemption(
   p_company_id int,
   p_redemption_id int,
-  p_status text
+  p_status text,
+  p_reason text default null
 )
 returns jsonb
 language plpgsql
@@ -140,6 +149,9 @@ declare
 begin
   if p_status not in ('Approved', 'Rejected') then
     raise exception 'status must be Approved or Rejected' using errcode = 'P0001';
+  end if;
+  if p_status = 'Rejected' and nullif(btrim(p_reason), '') is null then
+    raise exception 'A rejection reason is required' using errcode = 'P0001';
   end if;
 
   -- All payment/redemption/member functions lock in this exact order to
@@ -216,7 +228,8 @@ begin
     update redemption
     set status = 'Rejected',
         approved_date = null,
-        approved_time = null
+        approved_time = null,
+        rejection_reason = btrim(p_reason)
     where company_id = p_company_id and redemption_id = p_redemption_id;
     v_new_balance := null;
   end if;

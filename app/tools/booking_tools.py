@@ -115,7 +115,9 @@ def _verify_flat_price_against_catalogue(
             rag_rows = CompanyRAGRetriever().search(
                 company_id, "daycare packages and prices", service_type="daycare",
             )
-        services, add_ons = _extract_daycare_catalogue_options(rag_rows)
+        services, add_ons = _extract_daycare_catalogue_options(
+            rag_rows, pet_size=pet_size if normalized_service == "GROOMING" else ""
+        )
     except Exception as exc:
         return {
             "error": "PRICE_VERIFICATION_UNAVAILABLE",

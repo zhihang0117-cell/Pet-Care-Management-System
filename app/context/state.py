@@ -74,6 +74,13 @@ class ConversationState:
     # customer that no booking existed even though Supabase had one.
     latest_booking: dict | None = None
 
+    # Exact historical booking selected for a "same as last time" request.
+    # This is deliberately separate from latest_booking: the latter may be a
+    # newer upcoming booking in another service, while a repeat request must
+    # be scoped to the named pet + requested service and then revalidated
+    # against today's catalogue before any availability is offered.
+    repeat_booking_template: dict | None = None
+
     # Set whenever cancel_booking/reschedule_booking returns
     # "confirmation_required" — {"tool", "booking_id", "service_type"}.
     # Confirmed live: once the customer replies with just the pet's name to
@@ -87,7 +94,11 @@ class ConversationState:
 
     collected_slots: dict[str, Any] = field(default_factory=dict)
     missing_slots: list[str] = field(default_factory=list)
+    # Main bookable choices and optional add-ons must never share one ordinal
+    # namespace.  "The second one" means the second main service unless the
+    # customer explicitly says they are choosing from the add-on list.
     offered_options: list[dict[str, Any]] = field(default_factory=list)
+    offered_add_on_options: list[dict[str, Any]] = field(default_factory=list)
 
     # Server-observed catalogue and availability evidence used to validate a
     # booking write.  These are deliberately separate from offered_options:
@@ -171,27 +182,17 @@ class ConversationState:
     # both the loyalty upsell and register_loyalty_member's consent check).
     turn_counter: int = 0
 
-    # Turn number on which a loyalty tool (get_loyalty_balance/
-    # check_coupon_eligibility/register_loyalty_member/redeem_reward) was
-    # last called. create_booking is only allowed once this is set AND is
-    # strictly earlier than the current turn — so the model must let a full
-    # turn boundary pass (i.e. actually say something to the customer and
-    # get a reply) before the booking can go through, not just call the
-    # tool and immediately confirm in the same breath.
+    # Turn number on which a successful loyalty lookup/preview was actually
+    # surfaced in the customer-facing reply. Merely calling a loyalty tool is
+    # not enough: create_booking is allowed only after the customer really saw
+    # the offer and a full turn boundary passed.
     loyalty_offer_shown_turn: int | None = None
-
-    # Turn number on which register_loyalty_member last returned
-    # confirmation_required. confirmed=true is only honored by
-    # _run_tool if this is set AND strictly earlier than the current turn —
-    # same reasoning as above, prevents the model previewing then
-    # immediately "confirming" a signup the customer was never actually
-    # asked about in a real, separate reply.
-    register_preview_turn: int | None = None
 
     # Customer's stated staff preference for the CURRENT booking flow, once
     # they've named one — reused if a later create_booking call in the same
     # flow omits it (the model has been observed carrying it in some turns
     # but dropping it in others for the same booking). Cleared whenever a
-    # booking actually completes/fails so it never leaks into an unrelated
-    # later booking.
+    # booking completes or the flow is abandoned so it never leaks into an
+    # unrelated later booking. Recoverable create failures retain it;
+    # completing or abandoning that flow clears it deterministically.
     preferred_staff: str | None = None

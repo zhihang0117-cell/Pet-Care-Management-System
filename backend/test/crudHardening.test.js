@@ -112,9 +112,30 @@ test("staff status is saved and key stored HTML values are escaped", async () =>
 
 test("RAG and backup tables are not directly readable by browser roles", async () => {
   const sql = await read("../sql/security_integrity_hardening_migration.sql");
+  const hotfix = await read("../sql/backup_table_rls_hotfix.sql");
   assert.match(sql, /chunks_bge_large/);
+  assert.match(sql, /'_status_backup_20260805'/);
   assert.match(sql, /enable row level security/);
   assert.match(sql, /revoke all on table public\.%I from public, anon, authenticated/);
+  assert.match(hotfix, /alter table public\._status_backup_20260805 enable row level security/);
+  assert.match(hotfix, /from public, anon, authenticated/);
+  assert.match(hotfix, /notify pgrst, 'reload schema'/);
+});
+
+test("RAG and redemption RPC migrations cannot regress when rerun out of order", async () => {
+  const ragBase = await read("../sql/002_add_document_id_to_chunks_bge_large.sql");
+  const ragRepair = await read("../sql/shared_knowledge_base_rag_fix.sql");
+  const paymentBase = await read("../sql/verify_payment_function.sql");
+  const redemptionRepair = await read("../sql/redemption_rejection_reason_migration.sql");
+
+  assert.match(ragBase, /c\.company_id is null/);
+  assert.match(ragBase, /c\.company_id = p_company_id or c\.company_id is null/);
+  assert.match(ragRepair, /or c\.company_id is null/);
+  for (const sql of [paymentBase, redemptionRepair]) {
+    assert.match(sql, /drop function if exists decide_redemption\(int, int, text\)/);
+    assert.match(sql, /p_reason text default null/);
+    assert.match(sql, /rejection_reason = btrim\(p_reason\)/);
+  }
 });
 
 test("workflow statuses and tenant links are enforced in Postgres", async () => {

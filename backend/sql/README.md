@@ -19,8 +19,21 @@ For this repair, apply/re-run in this order:
 4. `booking_slot_holds_migration.sql`
 5. `leave_decision_atomic_migration.sql`
 6. `verify_payment_function.sql`
-7. `security_integrity_hardening_migration.sql`
-8. `cancel_booking_atomic_migration.sql`
+7. `redemption_rejection_reason_migration.sql`
+8. `security_integrity_hardening_migration.sql`
+9. `cancel_booking_atomic_migration.sql`
+
+RAG RPC ordering: apply `002_add_document_id_to_chunks_bge_large.sql` before
+`shared_knowledge_base_rag_fix.sql`. Both repository definitions now preserve
+`company_id IS NULL` as shared knowledge, so accidentally re-running the base
+file no longer removes shared retrieval. The later file remains the canonical
+review/audit migration for that behavior.
+
+`verify_payment_function.sql` and
+`redemption_rejection_reason_migration.sql` now both install only the latest
+four-argument `decide_redemption(..., p_reason)` behavior and explicitly drop
+the obsolete three-argument signature. They are safe against accidental
+out-of-order re-runs without leaving ambiguous PostgREST overloads.
 
 Status below was confirmed by read-only introspection against the live
 project on 2026-08-07. “Re-run” means the repository version contains a
@@ -48,6 +61,7 @@ repair that was not visible in the live PostgREST schema cache.
 | `chat_api_key_migration.sql` | Hash-only `company_chat_key` table (per-company `/chat` auth, see `app/db/customer_context.py`) | not applied live |
 | `staff_service_capability_migration.sql` | `staff.provides_service`, `staff.service_types_json` | not yet applied — created this session, no live verification available here |
 | `security_integrity_hardening_migration.sql` | Protects chunks/backups, normalizes statuses, same-tenant FKs, availability RPC/schema refresh | new — apply after the prerequisites listed in `backend/README.md` |
+| `backup_table_rls_hotfix.sql` | Targeted RLS + privilege lockdown for the actual `_status_backup_20260805` table | new — apply immediately; this avoids re-running unrelated hardening changes |
 | `cancel_booking_atomic_migration.sql` | One transaction for booking cancellation + payment/refund/redemption reversal | new — apply last |
 
 `fix_missing_identity_columns.sql` sets column-level identity defaults, which

@@ -76,6 +76,267 @@ def test_run_tool_overrides_model_company_id_with_session_tenant(monkeypatch):
     assert tool_call["args"]["company_id"] == "7"
 
 
+def test_repeat_history_overrides_model_pet_and_service_with_customer_request(monkeypatch):
+    class CapturingTool:
+        def invoke(self, args):
+            return dict(args)
+
+    monkeypatch.setitem(TOOLS_BY_NAME, "get_last_completed_booking", CapturingTool())
+    state = ConversationState(
+        phone_number="+60123456705",
+        company_id="7",
+        customer_id=42,
+        pet_id=25,
+        service_type="GROOMING",
+    )
+    state.known_pets = [
+        {"pet_id": 25, "pet_type": "Cat", "pet_name": "Milo", "pet_size": "M"}
+    ]
+    tool_call = {
+        "name": "get_last_completed_booking",
+        "args": {
+            "company_id": "999",
+            "customer_id": 999,
+            "pet_id": 999,
+            "service_type": "BOARDING",
+        },
+    }
+
+    result = object.__new__(PawfectOrchestrator)._run_tool(
+        tool_call,
+        state=state,
+        user_message="grooming like last time for Milo",
+    )
+
+    assert result["company_id"] == "7"
+    assert result["customer_id"] == 42
+    assert result["pet_id"] == 25
+    assert result["service_type"] == "GROOMING"
+
+
+def test_repeat_template_must_match_current_catalogue_before_availability():
+    state = ConversationState(
+        phone_number="+60123456705",
+        company_id="1",
+        active_scenario="MAKE_BOOKING",
+        service_type="GROOMING",
+        pet_id=1,
+        current_datetime_resolution={
+            "date": "2026-08-08",
+            "date_range": None,
+            "period": "afternoon",
+        },
+    )
+    PawfectOrchestrator._cache_repeat_booking_template(
+        state,
+        "get_last_completed_booking",
+        {
+            "found": True,
+            "booking_id": 339,
+            "pet_id": 1,
+            "pet_name": "Milo",
+            "last_service_type": "GROOMING",
+            "package_name": "Standard Bath - Groomers Choice",
+            "price": 80,
+            "add_on": "-",
+            "add_on_price": 0,
+        },
+        {"service_type": "GROOMING", "pet_id": 1},
+    )
+    state.verified_service_options = [
+        {
+            "service_type": "GROOMING",
+            "pet_id": 1,
+            "service_name": "Standard Bath - Groomers Choice",
+            "price": 80,
+            "selection_kind": "service",
+        }
+    ]
+    PawfectOrchestrator._cache_repeat_booking_template(
+        state,
+        "get_booking_service_options",
+        {"status": "success", "data": {}},
+        {"service_type": "GROOMING", "pet_id": 1},
+    )
+
+    assert state.repeat_booking_template["catalogue_validated"] is True
+    assert state.repeat_booking_template["package_name"] == "Standard Bath - Groomers Choice"
+    assert PawfectOrchestrator._next_repeat_booking_tool(
+        state,
+        "grooming like last time for Milo next Saturday afternoon",
+        [
+            {"tool": "get_last_completed_booking"},
+            {"tool": "get_booking_service_options"},
+        ],
+    ) == "check_availability"
+
+
+def test_repeat_template_with_retired_package_does_not_advance_to_availability():
+    state = ConversationState(
+        phone_number="+60123456705",
+        company_id="1",
+        active_scenario="MAKE_BOOKING",
+        current_datetime_resolution={"date": "2026-08-08"},
+        repeat_booking_template={
+            "pet_id": 1,
+            "service_type": "GROOMING",
+            "catalogue_validated": False,
+        },
+    )
+
+    assert PawfectOrchestrator._next_repeat_booking_tool(
+        state,
+        "grooming like last time for Milo next Saturday afternoon",
+        [
+            {"tool": "get_last_completed_booking"},
+            {"tool": "get_booking_service_options"},
+        ],
+    ) is None
+
+
+def test_cancel_pet_name_in_initial_request_cannot_skip_preview(monkeypatch):
+    class CapturingTool:
+        def __init__(self):
+            self.calls = []
+
+        def invoke(self, args):
+            self.calls.append(dict(args))
+            return {"status": "confirmation_required", "data": {"booking_id": 91}}
+
+    capturing = CapturingTool()
+    monkeypatch.setitem(TOOLS_BY_NAME, "cancel_booking", capturing)
+    state = ConversationState(
+        phone_number="+60123456705",
+        company_id="1",
+        customer_id=1,
+        active_scenario="CANCEL_BOOKING",
+        turn_counter=1,
+    )
+
+    object.__new__(PawfectOrchestrator)._run_tool(
+        {
+            "name": "cancel_booking",
+            "args": {
+                "booking_id": 91,
+                "service_type": "GROOMING",
+                "confirm_pet_name": "Milo",
+            },
+        },
+        state,
+        "cancel Milo's booking",
+    )
+
+    assert capturing.calls[0]["confirm_pet_name"] == ""
+
+
+def test_cancel_pet_name_is_accepted_only_after_prior_turn_preview(monkeypatch):
+    class CapturingTool:
+        def __init__(self):
+            self.calls = []
+
+        def invoke(self, args):
+            self.calls.append(dict(args))
+            return {"status": "success", "data": {"booking_id": 91}}
+
+    capturing = CapturingTool()
+    monkeypatch.setitem(TOOLS_BY_NAME, "cancel_booking", capturing)
+    state = ConversationState(
+        phone_number="+60123456705",
+        company_id="1",
+        customer_id=1,
+        active_scenario="CANCEL_BOOKING",
+        turn_counter=2,
+        pending_booking_confirmation={
+            "tool": "cancel_booking",
+            "booking_id": 91,
+            "service_type": "GROOMING",
+            "preview_turn": 1,
+        },
+    )
+
+    object.__new__(PawfectOrchestrator)._run_tool(
+        {
+            "name": "cancel_booking",
+            "args": {
+                "booking_id": 91,
+                "service_type": "GROOMING",
+                "confirm_pet_name": "Milo",
+            },
+        },
+        state,
+        "Milo",
+    )
+
+    assert capturing.calls[0]["confirm_pet_name"] == "Milo"
+
+
+def test_registration_writes_reject_model_invented_customer_and_pet_names(monkeypatch):
+    class CapturingTool:
+        def invoke(self, args):
+            return {"status": "success", "data": dict(args)}
+
+    monkeypatch.setitem(TOOLS_BY_NAME, "create_customer", CapturingTool())
+    monkeypatch.setitem(TOOLS_BY_NAME, "create_pet", CapturingTool())
+    orchestrator = object.__new__(PawfectOrchestrator)
+    new_customer = ConversationState(
+        phone_number="+60123456705", company_id="1", active_scenario="MAKE_BOOKING"
+    )
+
+    customer_result = orchestrator._run_tool(
+        {"name": "create_customer", "args": {"full_name": "Invented Person"}},
+        new_customer,
+        "I need to make a booking",
+    )
+    assert customer_result["error"] == "UNCONFIRMED_CUSTOMER_NAME"
+
+    existing_customer = ConversationState(
+        phone_number="+60123456705",
+        company_id="1",
+        customer_id=1,
+        active_scenario="MAKE_BOOKING",
+    )
+    pet_result = orchestrator._run_tool(
+        {
+            "name": "create_pet",
+            "args": {
+                "pet_name": "Ghost",
+                "pet_type": "cat",
+                "height_text": "30 cm",
+                "breed": "mixed",
+            },
+        },
+        existing_customer,
+        "I have a cat, mixed breed, around 30 cm",
+    )
+    assert pet_result["error"] == "UNCONFIRMED_PET_NAME"
+
+
+def test_vaccination_update_rejects_model_computed_expiry_wording(monkeypatch):
+    class CapturingTool:
+        def invoke(self, args):
+            return {"status": "success", "data": dict(args)}
+
+    monkeypatch.setitem(TOOLS_BY_NAME, "update_pet_vaccination", CapturingTool())
+    state = ConversationState(
+        phone_number="+60123456705",
+        company_id="1",
+        customer_id=1,
+        pet_id=9,
+        active_scenario="MAKE_BOOKING",
+    )
+
+    result = object.__new__(PawfectOrchestrator)._run_tool(
+        {
+            "name": "update_pet_vaccination",
+            "args": {"pet_id": 9, "vaccination_expiry_text": "30 August 2027"},
+        },
+        state,
+        "the vaccination expires next year",
+    )
+
+    assert result["error"] == "UNCONFIRMED_VACCINATION_EXPIRY"
+
+
 def test_create_pet_breed_guard_accepts_customer_wording_and_flexible_unknown_answers():
     state = ConversationState(phone_number="+60123456705", company_id="1")
 

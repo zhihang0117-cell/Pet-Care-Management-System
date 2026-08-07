@@ -54,9 +54,9 @@ $$;
 comment on function match_chunks_bge_large(vector, int, text, jsonb) is
   'Compatibility BGE-Large search. filter_tenant remains text, safely cast to bigint company_id when numeric. company_id IS NULL rows are shared knowledge, visible to every tenant.';
 
--- If/when production code switches to match_chunks_bge_large_production
--- (the bigint-only RPC in 002_add_document_id_to_chunks_bge_large.sql), it
--- needs the identical fix — it currently has no shared-row clause at all:
+-- The repository's base definition of match_chunks_bge_large_production in
+-- 002_add_document_id_to_chunks_bge_large.sql now has the identical shared-
+-- row clause. The reference definition is retained below for review only:
 --
 -- create or replace function match_chunks_bge_large_production(
 --   query_embedding vector(1024),

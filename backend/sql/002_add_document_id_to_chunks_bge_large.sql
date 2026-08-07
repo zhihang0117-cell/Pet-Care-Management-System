@@ -59,7 +59,8 @@ language sql stable as $$
          1 - (c.embedding <=> query_embedding) as similarity
   from chunks_bge_large c
   where (
-      c.company_id = (
+      c.company_id is null
+      or c.company_id = (
         case
           when filter_tenant ~ '^[0-9]+$' then filter_tenant::bigint
           else null
@@ -74,7 +75,7 @@ language sql stable as $$
 $$;
 
 comment on function match_chunks_bge_large(vector, int, text, jsonb) is
-  'Compatibility BGE-Large search. filter_tenant remains text, safely cast to bigint company_id when numeric.';
+  'Compatibility BGE-Large search. NULL company_id rows are shared; tenant rows remain scoped by filter_tenant.';
 
 -- ---------------------------------------------------------------------------
 -- Step 3: production bigint company_id search RPC
@@ -101,14 +102,14 @@ language sql stable as $$
          c.metadata,
          1 - (c.embedding <=> query_embedding) as similarity
   from chunks_bge_large c
-  where c.company_id = p_company_id
+  where (c.company_id = p_company_id or c.company_id is null)
     and c.metadata @> filter_metadata
   order by c.embedding <=> query_embedding
   limit match_count;
 $$;
 
 comment on function match_chunks_bge_large_production(vector, int, bigint, jsonb) is
-  'Production BGE-Large similarity search scoped by bigint company_id. Returns table document_id.';
+  'Production BGE-Large search for tenant rows plus shared NULL-company rows. Returns document_id.';
 
 -- ---------------------------------------------------------------------------
 -- Step 4: atomic replace RPC for one (company_id, document_id)

@@ -5,10 +5,16 @@ from langchain_core.messages import AIMessage
 
 from app.context.company import get_company_config
 from app.context.state import ConversationState
-from app.orchestrator import PawfectOrchestrator, TOOLS_BY_NAME, ToolLoopError
+from app.orchestrator import (
+    PawfectOrchestrator,
+    TOOLS_BY_NAME,
+    ToolLoopError,
+    _tools_for_scenario,
+)
 from app.prompts.system_prompt import SYSTEM_PROMPT
 from app.tools.document_tools import send_booking_confirmation
 from app.tools.customer_tools import _extract_daycare_catalogue_options
+from app.tools.booking_tools import _verify_flat_price_against_catalogue
 
 
 def _call(name, call_id, **args):
@@ -43,6 +49,63 @@ def test_state_update_runs_before_sibling_business_tools():
     ordered, has_dependency = PawfectOrchestrator._ordered_tool_calls(calls)
     assert has_dependency is True
     assert ordered[0]["name"] == "update_conversation_state"
+
+
+def test_repeat_booking_dependencies_finish_history_and_catalogue_before_availability():
+    calls = [
+        _call("check_availability", "availability", date="2026-08-08"),
+        _call("get_booking_service_options", "options", service_type="GROOMING"),
+        _call("get_last_completed_booking", "history", service_type="GROOMING"),
+    ]
+
+    ordered, has_dependency = PawfectOrchestrator._ordered_tool_calls(calls)
+
+    assert has_dependency is True
+    assert [call["name"] for call in ordered] == [
+        "get_last_completed_booking",
+        "get_booking_service_options",
+        "check_availability",
+    ]
+
+
+def test_make_booking_toolset_keeps_side_policy_but_excludes_latest_booking_read():
+    names = {tool.name for tool in _tools_for_scenario("MAKE_BOOKING")}
+
+    assert "get_last_completed_booking" in names
+    assert "get_booking_service_options" in names
+    assert "check_availability" in names
+    assert "retrieve_policy" in names
+    assert "get_latest_booking" not in names
+
+
+def test_repeat_history_tool_schema_accepts_pet_and_service_scope():
+    schema_model = TOOLS_BY_NAME["get_last_completed_booking"].args_schema
+    schema = (
+        schema_model.model_json_schema()
+        if hasattr(schema_model, "model_json_schema")
+        else schema_model.schema()
+    )
+
+    assert "pet_id" in schema["properties"]
+    assert "service_type" in schema["properties"]
+
+
+def test_narrative_catalogue_label_matches_booking_table_product_name():
+    services, add_ons = _extract_daycare_catalogue_options(
+        [
+            {
+                "content": (
+                    "Cat Bathing Packages:\n"
+                    "The Standard Bath - Groomers Choice package is priced at RM80."
+                ),
+                "metadata": {"pet_type": "cat", "service_type": "grooming"},
+            }
+        ]
+    )
+
+    assert add_ons == []
+    assert services[0]["service_name"] == "Standard Bath - Groomers Choice"
+    assert services[0]["price"] == 80
 
 
 def test_runtime_context_refreshes_scenario_and_business_clock():
@@ -259,6 +322,81 @@ def test_daycare_catalogue_marks_hourly_rates_for_total_price_validation():
     ]
 
 
+def test_grooming_catalogue_uses_only_selected_size_and_inherits_add_on_section():
+    rows = [
+        {
+            "content": (
+                "Dog Bathing Packages:\n\n"
+                "For XS size dogs (Below 25cm) - Standard Short Fur is RM35; "
+                "Premium Long Fur is RM79.\n\n"
+                "For S size dogs (25cm - 40cm) - Standard Short Fur is RM43; "
+                "Premium Long Fur is RM88.\n\n"
+                "For M size dogs (40cm - 55cm) - Standard Short Fur is RM62; "
+                "Premium Long Fur is RM118."
+            ),
+            "metadata": {"section_title": "Dog Bathing Packages"},
+        },
+        {
+            "content": (
+                "Basic Grooming Add-ons:\n\n"
+                "Nail Clipping is priced at RM15.\n\n"
+                "Teeth Brushing is priced at RM10."
+            ),
+            "metadata": {
+                "main_header": "Grooming Add-on Price",
+                "section_title": "Basic Grooming Add-ons",
+            },
+        },
+    ]
+
+    services, add_ons = _extract_daycare_catalogue_options(rows, pet_size="S")
+
+    assert {(item["service_name"], item["price"]) for item in services} == {
+        ("Standard Short Fur", 43.0),
+        ("Premium Long Fur", 88.0),
+    }
+    assert ("Premium Long Fur", 79.0) not in {
+        (item["service_name"], item["price"]) for item in services
+    }
+    assert {(item["service_name"], item["price"]) for item in add_ons} == {
+        ("Nail Clipping", 15.0),
+        ("Teeth Brushing", 10.0),
+    }
+    assert all(item["selection_kind"] == "add_on" for item in add_ons)
+
+
+def test_booking_price_verifier_accepts_s_grooming_package_and_teeth_add_on(monkeypatch):
+    rows = [
+        {
+            "content": (
+                "Dog Bathing Packages:\n"
+                "For S size - Standard Short Fur is RM43; Premium Long Fur is RM88."
+            ),
+            "metadata": {"section_title": "Dog Bathing Packages"},
+        },
+        {
+            "content": "Basic Grooming Add-ons:\nTeeth Brushing is priced at RM10.",
+            "metadata": {"main_header": "Grooming Add-on Price"},
+        },
+    ]
+
+    monkeypatch.setattr(
+        "app.rag.retriever.CompanyRAGRetriever.search",
+        lambda *_args, **_kwargs: rows,
+    )
+
+    assert _verify_flat_price_against_catalogue(
+        1,
+        "GROOMING",
+        "Premium Long Fur",
+        88,
+        pet_type="dog",
+        pet_size="S",
+        add_on="Teeth Brushing",
+        add_on_price=10,
+    ) is None
+
+
 def test_evidence_is_bounded_and_internal_delivery_fields_are_removed():
     compact = PawfectOrchestrator._compact_evidence_result(
         {
@@ -293,6 +431,103 @@ def test_unrelated_tool_success_does_not_erase_missing_information():
         {"status": "success", "data": {"service_options": []}},
     )
     assert state.missing_information == []
+
+
+def test_fresh_empty_coupon_lookup_clears_stale_eligibility():
+    state = ConversationState(phone_number="+60123456705", company_id="1")
+    state.known_coupons = [
+        {"coupon_id": 5, "reward_name": "RM10 Voucher", "discount_value": 10}
+    ]
+
+    PawfectOrchestrator._cache_known_coupons(
+        state,
+        "check_coupon_eligibility",
+        {"status": "success", "data": {"eligible_coupons": []}},
+    )
+
+    assert state.known_coupons == []
+
+
+def test_optional_booking_fields_must_be_selected_by_customer():
+    state = ConversationState(phone_number="+60123456705", company_id="1")
+
+    invented_staff = PawfectOrchestrator._reject_unconfirmed_optional_booking_fields(
+        state,
+        {"preferred_staff": "Sarah Wong"},
+        "any staff is fine",
+    )
+    invented_add_on = PawfectOrchestrator._reject_unconfirmed_optional_booking_fields(
+        state,
+        {"add_on": "Teeth Brushing"},
+        "standard bath only",
+    )
+    selected_add_on = PawfectOrchestrator._reject_unconfirmed_optional_booking_fields(
+        state,
+        {"add_on": "Teeth Brushing"},
+        "please add Teeth Brushing",
+    )
+
+    assert invented_staff["error"] == "UNCONFIRMED_PREFERRED_STAFF"
+    assert invented_add_on["error"] == "UNCONFIRMED_ADD_ON_SELECTION"
+    assert selected_add_on is None
+
+
+def test_catalogue_main_services_and_add_ons_have_separate_ordinal_namespaces():
+    state = ConversationState(phone_number="+60123456705", company_id="1")
+    PawfectOrchestrator._cache_offered_options(
+        state,
+        "get_booking_service_options",
+        {
+            "status": "success",
+            "data": {
+                "service_options": [
+                    {"service_name": "Standard Bath", "selection_kind": "service"},
+                    {"service_name": "Premium Bath", "selection_kind": "service"},
+                ],
+                "add_on_options": [
+                    {"service_name": "Teeth Brushing", "selection_kind": "add_on"},
+                    {"service_name": "Nail Trim", "selection_kind": "add_on"},
+                ],
+            },
+        },
+    )
+    orchestrator = object.__new__(PawfectOrchestrator)
+
+    assert [item["service_name"] for item in state.offered_options] == [
+        "Standard Bath", "Premium Bath"
+    ]
+    assert [item["service_name"] for item in state.offered_add_on_options] == [
+        "Teeth Brushing", "Nail Trim"
+    ]
+    assert orchestrator._resolve_ordinal_reference(state, "the second one")["service_name"] == "Premium Bath"
+    assert orchestrator._resolve_ordinal_reference(state, "the second add-on")["service_name"] == "Nail Trim"
+
+
+def test_structured_catalogue_is_not_parsed_and_cached_twice():
+    state = ConversationState(
+        phone_number="+60123456705",
+        company_id="1",
+        known_pets=[{"pet_id": 7, "pet_size": "S"}],
+    )
+    PawfectOrchestrator._cache_booking_evidence(
+        state,
+        "get_booking_service_options",
+        {
+            "status": "success",
+            "data": {
+                "service_options": [{
+                    "service_name": "Standard Bath",
+                    "price": 43,
+                    "selection_kind": "service",
+                }],
+                "add_on_options": [],
+            },
+            "detailed_pricing_by_size": [{"content": "Standard Bath: RM43"}],
+        },
+        {"service_type": "GROOMING", "pet_id": 7},
+    )
+
+    assert len(state.verified_service_options) == 1
 
 
 def test_range_availability_becomes_reusable_offered_options():
@@ -361,6 +596,169 @@ def test_latest_availability_result_deterministically_replaces_unverified_times(
     assert "只有" in grounded.content
 
 
+def test_repeat_availability_reply_names_validated_historical_package_not_full_catalogue():
+    state = ConversationState(phone_number="+60123456705", company_id="1")
+    state.repeat_booking_template = {
+        "pet_name": "Milo",
+        "package_name": "Standard Bath - Groomers Choice",
+        "price": 80,
+        "add_on": "",
+        "catalogue_validated": True,
+    }
+    trace = [
+        {
+            "tool": "check_availability",
+            "result": json.dumps(
+                {
+                    "status": "success",
+                    "data": {
+                        "selection_target": "CHECK_IN",
+                        "available_slots": ["14:00:00", "15:30:00"],
+                    },
+                }
+            ),
+        }
+    ]
+
+    grounded = PawfectOrchestrator._ground_latest_availability_response(
+        AIMessage(content="Here is every grooming package..."),
+        "grooming like last time for Milo next Saturday afternoon",
+        trace,
+        state,
+    )
+
+    assert "Milo's last visit" in grounded.content
+    assert "Standard Bath - Groomers Choice" in grounded.content
+    assert "RM80" in grounded.content
+    assert "14:00" in grounded.content
+    assert "15:30" in grounded.content
+    assert "every grooming package" not in grounded.content
+
+
+def test_stale_repeat_template_does_not_leak_into_unrelated_availability_reply():
+    state = ConversationState(phone_number="+60123456705", company_id="1")
+    state.repeat_booking_template = {
+        "pet_name": "Milo",
+        "package_name": "Old Bath",
+        "price": 80,
+        "catalogue_validated": True,
+    }
+    grounded = PawfectOrchestrator._ground_latest_availability_response(
+        AIMessage(content="model text"),
+        "Is daycare available tomorrow?",
+        [{
+            "tool": "check_availability",
+            "result": {"status": "success", "data": {"available_slots": ["10:00"]}},
+        }],
+        state,
+    )
+
+    assert "Old Bath" not in grounded.content
+    assert "Milo's last visit" not in grounded.content
+
+
+def test_empty_rag_list_is_not_successful_policy_evidence():
+    assert PawfectOrchestrator._tool_result_status([]) == "not_found"
+    assert "retrieve_policy" not in PawfectOrchestrator._successful_trace_tools([
+        {"tool": "retrieve_policy", "result": "[]"}
+    ])
+
+
+def test_policy_side_question_does_not_replace_active_booking_scenario():
+    orchestrator = object.__new__(PawfectOrchestrator)
+    state = ConversationState(
+        phone_number="+60123456705",
+        company_id="1",
+        active_scenario="MAKE_BOOKING",
+        service_type="GROOMING",
+        objective="Create the requested booking.",
+        offered_options=[{"service_name": "Standard Bath"}],
+    )
+    orchestrator._apply_tool_result_state(
+        state,
+        {"name": "update_conversation_state", "args": {"active_scenario": "POLICY_QUERY"}},
+        {"active_scenario": "POLICY_QUERY", "current_step": None, "service_type": None},
+    )
+
+    assert state.active_scenario == "MAKE_BOOKING"
+    assert state.service_type == "GROOMING"
+    assert state.offered_options == [{"service_name": "Standard Bath"}]
+
+
+def test_abandoning_booking_flow_clears_booking_only_ephemera():
+    orchestrator = object.__new__(PawfectOrchestrator)
+    state = ConversationState(
+        phone_number="+60123456705",
+        company_id="1",
+        active_scenario="MAKE_BOOKING",
+        preferred_staff="Sarah",
+        loyalty_decision="declined",
+        repeat_booking_template={"catalogue_validated": True},
+        pending_actions={"create_booking": {"signature": "old"}},
+        verified_availability_slots=[{"time": "10:00"}],
+    )
+    orchestrator._apply_tool_result_state(
+        state,
+        {"name": "update_conversation_state", "args": {"active_scenario": "ENQUIRY"}},
+        {"active_scenario": "ENQUIRY", "current_step": None, "service_type": None},
+    )
+
+    assert state.preferred_staff is None
+    assert state.loyalty_decision is None
+    assert state.repeat_booking_template is None
+    assert "create_booking" not in state.pending_actions
+    assert state.verified_availability_slots == []
+
+
+def test_failed_read_tool_is_not_accepted_as_grounding_evidence():
+    state = ConversationState(phone_number="+60123456705", company_id="1")
+    failed_policy = [{
+        "tool": "retrieve_policy",
+        "result": json.dumps({"status": "error", "error": "RAG unavailable"}),
+    }]
+    failed_catalogue = [{
+        "tool": "get_booking_service_options",
+        "result": json.dumps({
+            "status": "error",
+            "error_code": "SERVICE_CATALOGUE_UNAVAILABLE",
+        }),
+    }]
+
+    assert PawfectOrchestrator._needs_tool_repair(
+        state,
+        "What is the cancellation policy?",
+        "The policy allows cancellation at any time.",
+        failed_policy,
+    ) is True
+    assert PawfectOrchestrator._needs_tool_repair(
+        state,
+        "What grooming packages are available?",
+        "The standard package costs RM80.",
+        failed_catalogue,
+    ) is True
+
+
+def test_failed_document_lookup_cannot_be_rendered_as_sent():
+    response = AIMessage(content="Your confirmation PDF was sent successfully.")
+    trace = [{
+        "tool": "send_booking_confirmation",
+        "result": json.dumps({
+            "status": "not_found",
+            "message": "No booking could be resolved.",
+            "handoff_required": False,
+        }),
+    }]
+
+    grounded = PawfectOrchestrator._ground_document_delivery_response(
+        response,
+        "Please send my confirmation document",
+        trace,
+    )
+
+    assert "not sent" in grounded.content
+    assert "sent successfully" not in grounded.content
+
+
 def test_successful_action_releases_scenario_but_keeps_booking_evidence():
     orchestrator = object.__new__(PawfectOrchestrator)
     state = ConversationState(
@@ -369,6 +767,8 @@ def test_successful_action_releases_scenario_but_keeps_booking_evidence():
         active_scenario="MAKE_BOOKING",
         service_type="GROOMING",
         current_step="CREATE_BOOKING",
+        loyalty_decision="declined",
+        loyalty_offer_shown_turn=1,
     )
     result = {
         "status": "success",
@@ -387,6 +787,8 @@ def test_successful_action_releases_scenario_but_keeps_booking_evidence():
     assert state.active_scenario is None
     assert state.last_created_booking["booking_id"] == 91
     assert state.verified_facts["created_booking"]["status"] == "success"
+    assert state.loyalty_decision is None
+    assert state.loyalty_offer_shown_turn is None
 
 
 def test_tool_repair_is_narrow_and_reuses_existing_evidence():

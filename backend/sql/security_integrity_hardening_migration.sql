@@ -12,7 +12,8 @@ begin
   foreach table_name in array array[
     'chunks_bge_large',
     'chunks_bge_large_backup_20260716',
-    'chunks_bge_large_status_backup_20260805'
+    'chunks_bge_large_status_backup_20260805',
+    '_status_backup_20260805'
   ] loop
     if to_regclass(format('public.%I', table_name)) is not null then
       execute format('alter table public.%I enable row level security', table_name);

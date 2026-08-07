@@ -73,6 +73,12 @@ QUALIFYING_PREVIOUS_BOOKING_STATUSES = frozenset(
     }
 )
 
+# A tool named "last completed booking" must not treat an old Pending or
+# Scheduled row as proof that the visit actually happened.  Those statuses
+# remain valid for generic latest-booking lookups above, but repeat-service
+# history is intentionally stricter.
+COMPLETED_BOOKING_STATUSES = frozenset({"completed", "done"})
+
 # Statuses that must never be presented as a previous completed service.
 EXCLUDED_PREVIOUS_BOOKING_STATUSES = frozenset(
     {
@@ -707,20 +713,46 @@ def _collect_latest_customer_booking(context: CustomerContext, client) -> dict |
     return latest
 
 
-def _collect_last_completed_customer_booking(context: CustomerContext, client) -> dict | None:
-    """Most recent real past visit, independent of any newer future booking."""
+def _collect_last_completed_customer_booking(
+    context: CustomerContext,
+    client,
+    *,
+    pet_id: int | None = None,
+    service_type: str = "",
+) -> dict | None:
+    """Most recent real past visit for the requested pet/service scope."""
     pets_result = get_customer_pets(context)
     pet_ids = [pet["pet_id"] for pet in pets_result.get("data", {}).get("pets", [])]
     if not pet_ids:
         return None
 
+    if pet_id is not None:
+        try:
+            selected_pet_id = int(pet_id)
+        except (TypeError, ValueError):
+            return None
+        if selected_pet_id not in pet_ids:
+            return None
+        pet_ids = [selected_pet_id]
+
+    normalized_service = str(service_type or "").strip().upper()
+    if normalized_service and normalized_service not in SERVICE_TYPE_TO_BOOKING_TABLE:
+        return None
+    service_types = (
+        [normalized_service]
+        if normalized_service
+        else list(SERVICE_TYPE_TO_BOOKING_TABLE)
+    )
+
     pet_names = _pet_name_map(client, context.company_id, pet_ids)
     today = today_business()
     completed: list[dict] = []
-    for service_type in SERVICE_TYPE_TO_BOOKING_TABLE:
-        table = _service_table(service_type)
-        for row in _fetch_bookings_for_customer(client, context.company_id, pet_ids, service_type):
-            if not is_qualifying_previous_booking_status(row.get("booking_status")):
+    for scoped_service_type in service_types:
+        table = _service_table(scoped_service_type)
+        for row in _fetch_bookings_for_customer(
+            client, context.company_id, pet_ids, scoped_service_type
+        ):
+            if _normalize_booking_status(row.get("booking_status")) not in COMPLETED_BOOKING_STATUSES:
                 continue
             booking = _serialize_booking_row(table, row)
             raw_date = booking.get("booking_date")
@@ -788,6 +820,16 @@ def _serialize_latest_booking_payload(latest: dict, customer_id: int | None) -> 
         "last_booking_time": latest.get("booking_time") or latest.get("check_in_time"),
         "booking_date": latest.get("booking_date"),
         "booking_status": latest.get("booking_status"),
+        "price": latest.get("price"),
+        "add_on": latest.get("add_on"),
+        "add_on_price": latest.get("add_on_price"),
+        "check_in_date": latest.get("check_in_date"),
+        "check_in_time": latest.get("check_in_time"),
+        "check_out_date": latest.get("check_out_date"),
+        "check_out_time": latest.get("check_out_time"),
+        "room_type": latest.get("room_type"),
+        "price_per_night": latest.get("price_per_night"),
+        "total_price": latest.get("total_price"),
         "source_table": latest.get("source_table"),
         "display_label": latest.get("display_label") or _display_label_for_booking(latest),
     }
@@ -823,13 +865,23 @@ def get_latest_booking_by_customer_id(context: CustomerContext) -> dict:
         return _result("get_latest_booking_by_customer_id", "error", {}, str(exc))
 
 
-def get_last_completed_booking_by_customer_id(context: CustomerContext) -> dict:
-    """Return the latest past visit even when a newer upcoming booking exists."""
+def get_last_completed_booking_by_customer_id(
+    context: CustomerContext,
+    *,
+    pet_id: int | None = None,
+    service_type: str = "",
+) -> dict:
+    """Return the latest completed visit in the requested pet/service scope."""
     resolve_customer_context(context)
     if context.resolved_customer_id is None:
         return _result("get_last_completed_booking_by_customer_id", "not_found", {})
     try:
-        latest = _collect_last_completed_customer_booking(context, get_supabase_client())
+        latest = _collect_last_completed_customer_booking(
+            context,
+            get_supabase_client(),
+            pet_id=pet_id,
+            service_type=service_type,
+        )
         if not latest:
             return _result(
                 "get_last_completed_booking_by_customer_id",

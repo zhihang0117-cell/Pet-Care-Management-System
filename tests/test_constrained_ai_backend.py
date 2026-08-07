@@ -1,9 +1,11 @@
 from datetime import date
+import json
 
 from langchain_core.messages import AIMessage
 from langchain_core.utils.function_calling import convert_to_openai_tool
 
 from app.context.state import ConversationState
+from app.db import relational_actions
 from app.orchestrator import (
     ALL_TOOLS,
     MUTATING_TOOL_NAMES,
@@ -25,6 +27,133 @@ class _CapturingTool:
 
 def _call(name, **args):
     return {"name": name, "id": f"{name}-1", "args": args}
+
+
+def test_last_completed_lookup_is_scoped_to_owned_pet_service_and_done_status(monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        relational_actions,
+        "get_customer_pets",
+        lambda context: {
+            "status": "success",
+            "data": {"pets": [{"pet_id": 1}, {"pet_id": 2}]},
+        },
+    )
+    monkeypatch.setattr(
+        relational_actions,
+        "_pet_name_map",
+        lambda client, company_id, pet_ids: {1: "Milo"},
+    )
+    monkeypatch.setattr(relational_actions, "today_business", lambda: date(2026, 8, 7))
+
+    def fake_fetch(client, company_id, pet_ids, service_type):
+        calls.append((company_id, list(pet_ids), service_type))
+        return [
+            {
+                "grooming_booking_id": 999,
+                "pet_id": 1,
+                "service_name": "Wrong pending service",
+                "booking_date": "2026-08-06",
+                "booking_time": "16:00:00",
+                "booking_status": "Pending",
+                "price": 999,
+            },
+            {
+                "grooming_booking_id": 339,
+                "pet_id": 1,
+                "service_name": "Standard Bath - Groomers Choice",
+                "booking_date": "2026-08-03",
+                "booking_time": "14:30:00",
+                "booking_status": "Done",
+                "price": 80,
+                "add_on": "-",
+                "add_on_price": 0,
+            },
+        ]
+
+    monkeypatch.setattr(relational_actions, "_fetch_bookings_for_customer", fake_fetch)
+    context = relational_actions.CustomerContext(company_id=7)
+    context.resolved_customer_id = 42
+
+    booking = relational_actions._collect_last_completed_customer_booking(
+        context,
+        object(),
+        pet_id=1,
+        service_type="GROOMING",
+    )
+
+    assert calls == [(7, [1], "GROOMING")]
+    assert booking["booking_id"] == 339
+    assert booking["package_name"] == "Standard Bath - Groomers Choice"
+    assert booking["price"] == 80
+
+
+def test_last_completed_lookup_rejects_pet_outside_customer_roster(monkeypatch):
+    monkeypatch.setattr(
+        relational_actions,
+        "get_customer_pets",
+        lambda context: {"status": "success", "data": {"pets": [{"pet_id": 1}]}},
+    )
+    context = relational_actions.CustomerContext(company_id=7)
+    context.resolved_customer_id = 42
+
+    assert relational_actions._collect_last_completed_customer_booking(
+        context, object(), pet_id=999, service_type="GROOMING"
+    ) is None
+
+
+def test_catalogue_dependency_failure_is_not_reported_as_empty_success(monkeypatch):
+    def fail_search(*args, **kwargs):
+        raise ModuleNotFoundError("sentence_transformers")
+
+    monkeypatch.setattr("app.rag.retriever.CompanyRAGRetriever.search", fail_search)
+
+    result = TOOLS_BY_NAME["get_booking_service_options"].invoke(
+        {"company_id": 7, "service_type": "GROOMING", "pet_id": ""}
+    )
+
+    assert result["status"] == "error"
+    assert result["error_code"] == "SERVICE_CATALOGUE_UNAVAILABLE"
+    assert result["data"]["service_options"] == []
+    assert result["data"]["add_on_options"] == []
+    assert result["success"] is False
+
+
+def test_empty_catalogue_rag_result_is_not_reported_as_empty_success(monkeypatch):
+    monkeypatch.setattr("app.rag.retriever.CompanyRAGRetriever.search", lambda *args, **kwargs: [])
+
+    result = TOOLS_BY_NAME["get_booking_service_options"].invoke(
+        {"company_id": 7, "service_type": "GROOMING", "pet_id": ""}
+    )
+
+    assert result["status"] == "error"
+    assert result["error_code"] == "SERVICE_CATALOGUE_UNAVAILABLE"
+    assert result["data"]["service_options"] == []
+
+
+def test_last_completed_booking_preserves_database_error(monkeypatch):
+    monkeypatch.setattr(
+        relational_actions,
+        "get_last_completed_booking_by_customer_id",
+        lambda *args, **kwargs: {
+            "status": "error",
+            "data_found": False,
+            "error": "connection refused",
+        },
+    )
+
+    result = TOOLS_BY_NAME["get_last_completed_booking"].invoke(
+        {
+            "company_id": 7,
+            "customer_id": 42,
+            "service_type": "GROOMING",
+            "pet_id": 1,
+        }
+    )
+
+    assert result["status"] == "error"
+    assert result["found"] is None
+    assert result["error_code"] == "BOOKING_HISTORY_UNAVAILABLE"
 
 
 def test_scenario_capabilities_are_fail_closed():
@@ -110,10 +239,12 @@ def test_booking_requires_exact_preview_then_standalone_confirmation(monkeypatch
     assert preview["status"] == "confirmation_required"
     assert capturing.calls == []
 
-    # A detail change is a new action, not approval of the first preview.
+    # A customer-requested detail change is a new action, not approval of the
+    # first preview. A standalone "yes" is tested separately as exact-payload
+    # authorization even if the model itself mutates arguments.
     state.turn_counter = 2
     changed = orchestrator._run_tool(
-        _call("create_booking", **{**args, "time": "10:30"}), state, "yes"
+        _call("create_booking", **{**args, "time": "10:30"}), state, "yes, make it 10:30"
     )
     assert changed["error"] == "UNVERIFIED_AVAILABILITY_SLOT"
     assert capturing.calls == []
@@ -131,6 +262,99 @@ def test_booking_requires_exact_preview_then_standalone_confirmation(monkeypatch
     completed = orchestrator._run_tool(_call("create_booking", **args), state, "确认")
     assert completed["status"] == "success"
     assert len(capturing.calls) == 1
+
+
+def test_correct_confirms_exact_preview_with_add_on_and_previous_turn_slot(monkeypatch):
+    capturing = _CapturingTool({"status": "success", "data": {"booking_id": 91}})
+    monkeypatch.setitem(TOOLS_BY_NAME, "create_booking", capturing)
+    orchestrator = object.__new__(PawfectOrchestrator)
+    state = ConversationState(
+        phone_number="+60123456705",
+        company_id="1",
+        active_scenario="MAKE_BOOKING",
+        customer_id=22,
+        pet_id=32,
+        pet_name="Lucky",
+        pet_type="dog",
+        pet_size="S",
+        loyalty_decision="declined",
+    )
+    state.known_pets = [{
+        "pet_id": 32,
+        "pet_name": "Lucky",
+        "pet_type": "dog",
+        "pet_size": "S",
+    }]
+    state.resolved_dates = ["2026-08-15"]
+    state.verified_service_options = [
+        {
+            "service_type": "GROOMING",
+            "pet_id": 32,
+            "service_name": "Premium Long Fur",
+            "price": 88,
+            "selection_kind": "service",
+        },
+        {
+            "service_type": "GROOMING",
+            "pet_id": 32,
+            "service_name": "Teeth Brushing",
+            "price": 10,
+            "selection_kind": "add_on",
+        },
+    ]
+    state.verified_availability_slots = [{
+        "service_type": "GROOMING",
+        "verified_turn": 1,
+        "date": "2026-08-15",
+        "time": "10:00",
+        "room_type": "",
+        "preferred_staff": "",
+    }]
+    state.history = [
+        {"role": "human", "content": "Premium Long Fur with Teeth Brushing, please"},
+        {"role": "ai", "content": "I will prepare those exact choices."},
+    ]
+    exact_args = {
+        "service_type": "GROOMING",
+        "pet_id": 32,
+        "pet_name": "Lucky",
+        "package_name": "Premium Long Fur",
+        "date": "2026-08-15",
+        "time": "10:00",
+        "price": 88,
+        "add_on": "Teeth Brushing",
+        "add_on_price": 10,
+    }
+
+    state.turn_counter = 1
+    preview = orchestrator._run_tool(
+        _call("create_booking", **exact_args), state, "please book this"
+    )
+    assert preview["status"] == "confirmation_required"
+    assert capturing.calls == []
+
+    state.turn_counter = 2
+    completed = orchestrator._run_tool(
+        _call(
+            "create_booking",
+            service_type="GROOMING",
+            pet_id=32,
+            pet_name="Lucky",
+            package_name="Standard Short Fur",
+            date="2026-08-15",
+            time="",
+            price=43,
+        ),
+        state,
+        "正确",
+    )
+
+    assert completed["status"] == "success"
+    assert capturing.calls == [{
+        **exact_args,
+        "company_id": "1",
+        "customer_id": 22,
+    }]
 
 
 def test_boarding_slot_evidence_must_match_room_and_full_stay():
@@ -424,6 +648,283 @@ def test_payment_history_scope_is_always_from_session(monkeypatch):
     )
     assert result["status"] == "success"
     assert capturing.calls == [{"company_id": "7", "customer_id": 22}]
+
+
+def test_identical_successful_read_is_cached_and_forces_final_response(monkeypatch):
+    capturing = _CapturingTool({
+        "status": "success",
+        "data": {
+            "loyalty_points": 120,
+            "eligible_coupons": [
+                {"coupon_id": 5, "reward_name": "RM10 Voucher", "discount_value": 10}
+            ],
+        },
+    })
+    monkeypatch.setitem(TOOLS_BY_NAME, "check_coupon_eligibility", capturing)
+
+    class _RepeatingModel:
+        def __init__(self):
+            self.calls = 0
+
+        def bind_tools(self, *_args, **_kwargs):
+            return self
+
+        def invoke(self, _messages):
+            self.calls += 1
+            if self.calls <= 2:
+                return AIMessage(
+                    content="",
+                    tool_calls=[{
+                        "name": "check_coupon_eligibility",
+                        "id": f"coupon-{self.calls}",
+                        "args": {"company_id": "wrong", "customer_id": "wrong"},
+                    }],
+                )
+            return AIMessage(content="You have 120 loyalty points and an eligible RM10 coupon.")
+
+    model = _RepeatingModel()
+    orchestrator = object.__new__(PawfectOrchestrator)
+    orchestrator._base_model = model
+    orchestrator._resolve_identity = lambda _company_id, _state: {
+        "found": True,
+        "customer_id": 22,
+        "full_name": "Alicia Lee",
+    }
+    orchestrator._save_escalation_message = lambda *_args: None
+    state = ConversationState(
+        phone_number="+60123456705",
+        company_id="7",
+        active_scenario="LOYALTY_QUERY",
+        customer_id=22,
+        customer_name="Alicia Lee",
+    )
+
+    response, trace = orchestrator.invoke_with_trace(
+        {"company_id": "7", "company_name": "Pawfect", "timezone": "Asia/Kuala_Lumpur"},
+        state,
+        "Do I have a voucher?",
+    )
+
+    assert model.calls == 3
+    assert capturing.calls == [{"company_id": "7", "customer_id": 22}]
+    assert len(trace) == 2
+    assert json.loads(trace[1]["result"])["_internal_duplicate_read_suppressed"] is True
+    assert "RM10 coupon" in response.content
+    assert state.loyalty_offer_shown_turn == state.turn_counter == 1
+
+
+def test_identical_failed_read_is_cached_and_cannot_loop_to_iteration_limit(monkeypatch):
+    capturing = _CapturingTool({
+        "status": "error",
+        "error_code": "SUPABASE_UNAVAILABLE",
+        "message": "Database connection failed.",
+    })
+    monkeypatch.setitem(TOOLS_BY_NAME, "check_coupon_eligibility", capturing)
+
+    class _RepeatingFailureModel:
+        def __init__(self):
+            self.calls = 0
+
+        def bind_tools(self, *_args, **_kwargs):
+            return self
+
+        def invoke(self, _messages):
+            self.calls += 1
+            if self.calls <= 2:
+                return AIMessage(
+                    content="",
+                    tool_calls=[{
+                        "name": "check_coupon_eligibility",
+                        "id": f"coupon-failure-{self.calls}",
+                        "args": {"company_id": "wrong", "customer_id": "wrong"},
+                    }],
+                )
+            return AIMessage(content="I can't verify your coupons right now. Please try again shortly.")
+
+    model = _RepeatingFailureModel()
+    orchestrator = object.__new__(PawfectOrchestrator)
+    orchestrator._base_model = model
+    orchestrator._resolve_identity = lambda _company_id, _state: {
+        "found": True,
+        "customer_id": 22,
+        "full_name": "Alicia Lee",
+    }
+    orchestrator._save_escalation_message = lambda *_args: None
+    state = ConversationState(
+        phone_number="+60123456705",
+        company_id="7",
+        active_scenario="LOYALTY_QUERY",
+        customer_id=22,
+    )
+
+    response, trace = orchestrator.invoke_with_trace(
+        {"company_id": "7", "company_name": "Pawfect", "timezone": "Asia/Kuala_Lumpur"},
+        state,
+        "Do I have a voucher?",
+    )
+
+    assert model.calls == 3
+    assert len(capturing.calls) == 1
+    assert len(trace) == 2
+    duplicate = json.loads(trace[1]["result"])
+    assert duplicate["status"] == "error"
+    assert duplicate["_internal_duplicate_read_suppressed"] is True
+    assert "can't verify" in response.content
+
+
+def test_repeat_booking_guard_replaces_catalogue_dump_with_scoped_history_and_availability(
+    monkeypatch,
+):
+    history_tool = _CapturingTool({
+        "found": True,
+        "booking_id": 339,
+        "pet_id": 1,
+        "pet_name": "Milo",
+        "last_service_type": "GROOMING",
+        "package_name": "Standard Bath - Groomers Choice",
+        "price": 80,
+        "add_on": "-",
+        "add_on_price": 0,
+    })
+    options_tool = _CapturingTool({
+        "status": "success",
+        "data": {
+            "service_type": "GROOMING",
+            "service_options": [{
+                "service_name": "Standard Bath - Groomers Choice",
+                "price": 80,
+                "selection_kind": "service",
+            }],
+            "add_on_options": [],
+        },
+        "detailed_pricing_by_size": [],
+    })
+    availability_tool = _CapturingTool({
+        "status": "success",
+        "data": {
+            "service_type": "GROOMING",
+            "booking_date": "2026-08-15",
+            "selection_target": "CHECK_IN",
+            "available_slots": ["14:00:00", "15:30:00"],
+        },
+    })
+    history_tool.name = "get_last_completed_booking"
+    options_tool.name = "get_booking_service_options"
+    availability_tool.name = "check_availability"
+    monkeypatch.setitem(TOOLS_BY_NAME, "get_last_completed_booking", history_tool)
+    monkeypatch.setitem(TOOLS_BY_NAME, "get_booking_service_options", options_tool)
+    monkeypatch.setitem(TOOLS_BY_NAME, "check_availability", availability_tool)
+    monkeypatch.setattr("app.tools.calendar_tools.today_business", lambda: date(2026, 8, 7))
+
+    class _PrematureCatalogueModel:
+        def __init__(self):
+            self.bound_names = []
+
+        def bind_tools(self, tools, **_kwargs):
+            self.bound_names = [tool.name for tool in tools]
+            return self
+
+        def invoke(self, _messages):
+            if self.bound_names == ["get_last_completed_booking"]:
+                return AIMessage(
+                    content="",
+                    tool_calls=[_call(
+                        "get_last_completed_booking",
+                        company_id="wrong",
+                        customer_id="wrong",
+                    )],
+                )
+            if self.bound_names == ["get_booking_service_options"]:
+                return AIMessage(
+                    content="",
+                    tool_calls=[_call(
+                        "get_booking_service_options",
+                        company_id="wrong",
+                        service_type="BOARDING",
+                    )],
+                )
+            if self.bound_names == ["check_availability"]:
+                return AIMessage(
+                    content="",
+                    tool_calls=[_call(
+                        "check_availability",
+                        company_id="wrong",
+                        service_type="BOARDING",
+                        date="2099-01-01",
+                    )],
+                )
+            if availability_tool.calls:
+                return AIMessage(content="I booked it for 4 PM.")
+            return AIMessage(content="Here is every grooming package. Pick one.")
+
+    orchestrator = object.__new__(PawfectOrchestrator)
+    orchestrator._base_model = _PrematureCatalogueModel()
+    orchestrator._resolve_identity = lambda _company_id, _state: {
+        "found": True,
+        "customer_id": 1,
+        "full_name": "Alicia Lee",
+        "pets": [{"pet_id": 1, "pet_name": "Milo", "pet_type": "Cat", "size": "M"}],
+    }
+    orchestrator._save_escalation_message = lambda *_args: None
+    state = ConversationState(
+        phone_number="+60123456705",
+        company_id="1",
+        active_scenario="MAKE_BOOKING",
+        service_type="GROOMING",
+        customer_id=1,
+        customer_name="Alicia Lee",
+        pet_id=1,
+        pet_name="Milo",
+        pet_type="Cat",
+        pet_size="M",
+        known_pets=[{
+            "pet_id": 1,
+            "pet_name": "Milo",
+            "pet_type": "Cat",
+            "pet_size": "M",
+        }],
+    )
+
+    response, trace = orchestrator.invoke_with_trace(
+        {"company_id": "1", "company_name": "Pawfect", "timezone": "Asia/Kuala_Lumpur"},
+        state,
+        "can i book for next saturday afternoon grooming for Milo like last time?",
+    )
+
+    assert [item["tool"] for item in trace] == [
+        "get_last_completed_booking",
+        "get_booking_service_options",
+        "check_availability",
+    ]
+    assert "retrieve_policy" not in {item["tool"] for item in trace}
+    assert history_tool.calls[0]["pet_id"] == 1
+    assert history_tool.calls[0]["service_type"] == "GROOMING"
+    assert options_tool.calls[0]["pet_id"] == 1
+    assert options_tool.calls[0]["service_type"] == "GROOMING"
+    assert availability_tool.calls[0]["date"] == "2026-08-15"
+    assert availability_tool.calls[0]["time"] == "afternoon"
+    assert availability_tool.calls[0]["service_type"] == "GROOMING"
+    assert "Standard Bath - Groomers Choice" in response.content
+    assert "14:00" in response.content
+    assert "15:30" in response.content
+    assert "I booked it" not in response.content
+
+
+def test_loyalty_lookup_alone_does_not_mark_offer_as_presented():
+    state = ConversationState(phone_number="+60123456705", company_id="7")
+    state.turn_counter = 4
+    trace = [{
+        "tool": "check_coupon_eligibility",
+        "result": json.dumps({"status": "success", "data": {"eligible_coupons": []}}),
+    }]
+
+    PawfectOrchestrator._cache_loyalty_offer_presented(state, "Which date works for you?", trace)
+    assert state.loyalty_offer_shown_turn is None
+
+    PawfectOrchestrator._cache_loyalty_offer_presented(
+        state, "You do not currently have an eligible coupon.", trace
+    )
+    assert state.loyalty_offer_shown_turn == 4
 
 
 def test_datetime_is_pre_resolved_and_explicit_staff_handoff_is_saved(monkeypatch):
