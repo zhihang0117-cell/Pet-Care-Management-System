@@ -12,6 +12,33 @@ from zoneinfo import ZoneInfo
 from langchain_core.messages import ToolMessage
 from langchain_openai import ChatOpenAI
 
+from app.agent.confirmation_policy import (
+    AFFIRMATIVE_RE,
+    NEGATIVE_RE,
+    confirmation_intent,
+)
+from app.agent.booking_authorization import (
+    ADD_ON_REFERENCE_RE,
+    customer_stated_value,
+    recent_customer_text,
+    reject_unconfirmed_optional_booking_fields,
+)
+from app.agent.evidence_policy import (
+    policy_evidence_matches,
+    service_options_evidence_matches,
+)
+from app.agent.pet_resolution import (
+    CAT_WORDS_RE,
+    DOG_WORDS_RE,
+    known_pet_by_id,
+    match_named_pet,
+    stated_species,
+)
+from app.agent.response_grounding import (
+    ground_booking_preview_response,
+    ground_document_delivery_response,
+    ground_membership_response,
+)
 from app.context.company import get_company_config
 from app.db.relational_provider import get_relational_repository
 from app.prompts.system_prompt import SYSTEM_PROMPT
@@ -104,6 +131,7 @@ CUSTOMER_SCOPED_TOOL_NAMES = {
     "get_latest_booking",
     "get_last_completed_booking",
     "get_booking_by_id",
+    "get_booking_service_options",
     "check_availability",
     "check_availability_range",
     "create_booking",
@@ -417,29 +445,7 @@ class PawfectOrchestrator:
 
     @staticmethod
     def _match_named_pet(state, user_message: str) -> None:
-        """
-        Multi-pet customers can't rely on the single-pet auto-cache, and the
-        model has shown it will guess pet_id/pet_type (including outright
-        wrong species) rather than reliably calling find_pet_by_name first
-        when the customer just names a pet ("book grooming for Milo"). Do
-        the same lookup deterministically: if exactly one known pet's name
-        appears in this message, resolve it in code before the model runs.
-        """
-        if not state.known_pets or not user_message:
-            return
-        text = user_message.lower()
-        matches = [
-            p
-            for p in state.known_pets
-            if p.get("pet_name") and re.search(rf"\b{re.escape(str(p['pet_name']).lower())}\b", text)
-        ]
-        if len(matches) == 1:
-            state.pet_id = matches[0].get("pet_id")
-            state.pet_type = matches[0].get("pet_type")
-            state.pet_name = matches[0].get("pet_name")
-            state.pet_size = matches[0].get("pet_size")
-            state.pet_breed = matches[0].get("pet_breed")
-            state.pet_selected_turn = state.turn_counter
+        match_named_pet(state, user_message)
 
     @staticmethod
     def _customer_context_for_state(customer: dict, state) -> dict:
@@ -1133,19 +1139,12 @@ class PawfectOrchestrator:
             ),
         }
 
-    _DOG_WORDS_RE = re.compile(r"\b(?:dog|puppy|anjing)\b|犬|狗")
-    _CAT_WORDS_RE = re.compile(r"\b(?:cat|kitten|kucing)\b|猫|貓")
+    _DOG_WORDS_RE = DOG_WORDS_RE
+    _CAT_WORDS_RE = CAT_WORDS_RE
 
     @classmethod
     def _stated_species(cls, user_message: str) -> str | None:
-        text = (user_message or "").lower()
-        has_dog = bool(cls._DOG_WORDS_RE.search(text))
-        has_cat = bool(cls._CAT_WORDS_RE.search(text))
-        if has_dog and not has_cat:
-            return "dog"
-        if has_cat and not has_dog:
-            return "cat"
-        return None  # neither mentioned, or both — too ambiguous to act on
+        return stated_species(user_message)
 
     @classmethod
     def _reject_species_mismatch(cls, state, args: dict, user_message: str) -> dict | None:
@@ -1176,27 +1175,30 @@ class PawfectOrchestrator:
         pet_label = "the pet on file"
         pet_id = args.get("pet_id")
         if pet_id:
-            try:
-                company_id = int(args.get("company_id") or state.company_id)
-                pet_id_int = int(pet_id)
-            except (TypeError, ValueError):
-                return None
-            from app.db.supabase_client import get_supabase_client
-
-            rows = (
-                get_supabase_client()
-                .table("pet")
-                .select("pet_type, pet_name")
-                .eq("company_id", company_id)
-                .eq("pet_id", pet_id_int)
-                .limit(1)
-                .execute()
-                .data
-                or []
-            )
-            if rows:
-                known_species = str(rows[0].get("pet_type") or "").strip().lower()
-                pet_label = rows[0].get("pet_name") or pet_label
+            if state.customer_id is None:
+                return {
+                    "error": "PET_OWNERSHIP_UNVERIFIED",
+                    "message": (
+                        "A pet_id cannot be used until the customer identity is resolved. "
+                        "Resolve/create the customer and their pet first."
+                    ),
+                }
+            # Identity hydration and create_pet both maintain an owned roster.
+            # Reuse that authoritative application state instead of issuing a
+            # second, differently-scoped Supabase query from the orchestrator.
+            # This keeps ownership in one boundary and also prevents lookup
+            # exceptions here from escaping before the normal tool error path.
+            known_pet = cls._known_pet_by_id(state, pet_id)
+            if known_pet is None:
+                return {
+                    "error": "PET_NOT_OWNED_BY_CUSTOMER",
+                    "message": (
+                        "The supplied pet_id does not belong to the resolved customer. "
+                        "Use the customer's verified pet roster; do not retry with guessed IDs."
+                    ),
+                }
+            known_species = str(known_pet.get("pet_type") or "").strip().lower()
+            pet_label = known_pet.get("pet_name") or pet_label
         elif args.get("pet_type"):
             known_species = str(args.get("pet_type") or "").strip().lower()
             pet_label = "the pet already on file"
@@ -1299,15 +1301,10 @@ class PawfectOrchestrator:
         }
 
     @staticmethod
-    def _recent_customer_text(state, user_message: str) -> str:
-        return " ".join(
-            [str(user_message or "")]
-            + [
-                str(turn.get("content") or "")
-                for turn in state.history
-                if turn.get("role") == "human"
-            ]
-        )
+    def _recent_customer_text(
+        state, user_message: str, *, since_turn: int | None = None
+    ) -> str:
+        return recent_customer_text(state, user_message, since_turn=since_turn)
 
     @staticmethod
     def _canonicalize_explicit_breed_answer(args: dict, user_message: str) -> dict:
@@ -1348,11 +1345,7 @@ class PawfectOrchestrator:
 
     @staticmethod
     def _customer_stated_value(value: object, customer_text: str) -> bool:
-        def compact(item: object) -> str:
-            return re.sub(r"[^\w\u3400-\u9fff]+", "", str(item or "").casefold())
-
-        needle = compact(value)
-        return bool(needle and needle in compact(customer_text))
+        return customer_stated_value(value, customer_text)
 
     @classmethod
     def _reject_unconfirmed_registration_fields(
@@ -1417,53 +1410,13 @@ class PawfectOrchestrator:
     def _reject_unconfirmed_optional_booking_fields(
         cls, state, args: dict, user_message: str
     ) -> dict | None:
-        """Optional upsells/preferences must originate with the customer."""
-        customer_text = cls._recent_customer_text(state, user_message)
-        preferred_staff = str(args.get("preferred_staff") or "").strip()
-        if preferred_staff and not cls._customer_stated_value(preferred_staff, customer_text):
-            return {
-                "error": "UNCONFIRMED_PREFERRED_STAFF",
-                "message": (
-                    "preferred_staff was not named by the customer. Leave it blank so staff "
-                    "assignment remains automatic, or ask for their preference."
-                ),
-            }
-
-        add_on = str(args.get("add_on") or "").strip()
-        if not add_on:
-            return None
-        if cls._customer_stated_value(add_on, customer_text):
-            return None
-        selected_index = cls._detect_ordinal_index(user_message)
-        add_on_reference = bool(cls._ADD_ON_REFERENCE_RE.search(str(user_message or "")))
-        selected = (
-            state.offered_add_on_options[selected_index - 1]
-            if selected_index is not None
-            and add_on_reference
-            and 1 <= selected_index <= len(state.offered_add_on_options)
-            else None
+        return reject_unconfirmed_optional_booking_fields(
+            state,
+            args,
+            user_message,
+            detect_ordinal_index=cls._detect_ordinal_index,
+            normalize_option_label=cls._normalized_option_label,
         )
-        if (
-            isinstance(selected, dict)
-            and str(selected.get("selection_kind") or "") == "add_on"
-            and cls._normalized_option_label(selected.get("service_name") or selected.get("label"))
-            == cls._normalized_option_label(add_on)
-        ):
-            return None
-        repeat = state.repeat_booking_template or {}
-        if (
-            repeat.get("catalogue_validated")
-            and cls._normalized_option_label(repeat.get("add_on"))
-            == cls._normalized_option_label(add_on)
-        ):
-            return None
-        return {
-            "error": "UNCONFIRMED_ADD_ON_SELECTION",
-            "message": (
-                "The add-on is real but the customer did not select it. Do not add optional "
-                "services automatically; ask for an explicit choice."
-            ),
-        }
 
     @staticmethod
     def _reject_mismatched_coupon(state, args: dict, user_message: str) -> dict | None:
@@ -1647,7 +1600,10 @@ class PawfectOrchestrator:
         # check happened on an earlier customer turn. We deliberately do not
         # infer consent from a generic "yes" otherwise because it may be the
         # booking confirmation instead.
-        if state.loyalty_offer_shown_turn is not None and state.loyalty_offer_shown_turn < state.turn_counter:
+        if (
+            state.loyalty_offer_shown_turn is not None
+            and state.loyalty_offer_shown_turn == state.turn_counter - 1
+        ):
             if text in {"no", "no thanks", "no need", "skip", "不用", "不要", "不需要", "跳过", "tak", "tidak", "tak nak", "tidak mahu"}:
                 declined = True
             elif text in {"yes", "yes please", "要", "可以", "use it", "使用", "ya", "boleh", "nak"}:
@@ -1664,6 +1620,65 @@ class PawfectOrchestrator:
             "source": "customer_message",
             "turn": state.turn_counter,
         }
+
+    @classmethod
+    def _capture_explicit_add_on_decision(cls, state, user_message: str) -> None:
+        """Record a short decline only when the preceding reply asked about add-ons."""
+        if not state.offered_add_on_options:
+            return
+        previous_reply = next(
+            (
+                str(turn.get("content") or "")
+                for turn in reversed(state.history)
+                if turn.get("role") == "ai"
+            ),
+            "",
+        )
+        if not cls._ADD_ON_REFERENCE_RE.search(previous_reply):
+            return
+        if cls._confirmation_intent(user_message) != "negative":
+            return
+        state.verified_facts["add_on_decision"] = {
+            "value": "declined",
+            "source": "customer_message",
+            "turn": state.turn_counter,
+        }
+
+    @classmethod
+    def _tools_for_turn(cls, state, user_message: str) -> list:
+        """Expose optional loyalty capabilities only while they are relevant."""
+        tools = _tools_for_scenario(state.active_scenario)
+        if state.active_scenario in {"MEMBER", "LOYALTY_QUERY"}:
+            return tools
+
+        text = str(user_message or "")
+        explicit_loyalty_topic = bool(re.search(
+            r"\b(?:loyalty|voucher|coupon|points?|member(?:ship)?|register|enrol|sign\s*up)\b|"
+            r"积分|点数|优惠券|礼券|会员|會員|注册|註冊|"
+            r"\b(?:baucar|kupon|ganjaran|keahlian|daftar)\b",
+            text,
+            re.IGNORECASE,
+        ))
+        recent_offer_reply = (
+            state.loyalty_offer_shown_turn is not None
+            and state.loyalty_offer_shown_turn == state.turn_counter - 1
+        )
+        has_current_pending_confirmation = any(
+            isinstance(pending, dict)
+            and int(pending.get("preview_turn") or 0) == state.turn_counter - 1
+            for name, pending in state.pending_actions.items()
+            if name in {"register_loyalty_member", "redeem_reward"}
+        )
+        if explicit_loyalty_topic or recent_offer_reply or has_current_pending_confirmation:
+            return tools
+
+        loyalty_names = {
+            "get_loyalty_balance",
+            "check_coupon_eligibility",
+            "register_loyalty_member",
+            "redeem_reward",
+        }
+        return [tool for tool in tools if tool.name not in loyalty_names]
 
     # PDPA/GDPR-style "delete my data" requests have no self-service tool —
     # there is no create_pet-style write path that could safely automate
@@ -1800,30 +1815,13 @@ class PawfectOrchestrator:
         }
         return f"{tool_name}:{json.dumps(normalized, sort_keys=True, default=str)}"
 
-    _AFFIRMATIVE_RE = re.compile(
-        r"^(?:yes|y|confirm(?:ed)?|proceed|go\s+ahead|book\s+it|do\s+it|ok(?:ay)?|sure|"
-        r"ya|boleh|ya\s+boleh|teruskan|sahkan|可以|确认|確認|正确|正確|对|對|没错|沒錯|"
-        r"是的|好|好的|同意|继续|繼續|没问题|沒問題)$",
-        re.IGNORECASE,
-    )
-    _NEGATIVE_RE = re.compile(
-        r"^(?:no|n|cancel|stop|don't|do\s+not|tak|tidak|jangan|不要|取消|不用|不确认|不確認)$",
-        re.IGNORECASE,
-    )
-    _ADD_ON_REFERENCE_RE = re.compile(
-        r"\badd[\s-]?on(?:s)?\b|附加(?:服务|服務)?|加购|加購|额外(?:服务|服務)?|"
-        r"\b(?:tambahan|add-on)\b",
-        re.IGNORECASE,
-    )
+    _AFFIRMATIVE_RE = AFFIRMATIVE_RE
+    _NEGATIVE_RE = NEGATIVE_RE
+    _ADD_ON_REFERENCE_RE = ADD_ON_REFERENCE_RE
 
     @classmethod
     def _confirmation_intent(cls, user_message: str) -> str | None:
-        compact = re.sub(r"[\s.!?,，。！？]+", " ", str(user_message or "").strip()).strip()
-        if cls._AFFIRMATIVE_RE.fullmatch(compact):
-            return "affirmative"
-        if cls._NEGATIVE_RE.fullmatch(compact):
-            return "negative"
-        return None
+        return confirmation_intent(user_message)
 
     @classmethod
     def _pending_scenario_matches(cls, state, tool_name: str, pending: dict) -> bool:
@@ -2173,16 +2171,7 @@ class PawfectOrchestrator:
 
     @staticmethod
     def _known_pet_by_id(state, pet_id) -> dict | None:
-        """The state.known_pets entry matching pet_id, or None if pet_id is
-        missing/blank or isn't actually one of this customer's real pets
-        (i.e. the model hallucinated or mismatched it)."""
-        if pet_id is None or str(pet_id).strip() == "":
-            return None
-        try:
-            pet_id_int = int(pet_id)
-        except (TypeError, ValueError):
-            return None
-        return next((p for p in state.known_pets if p.get("pet_id") == pet_id_int), None)
+        return known_pet_by_id(state, pet_id)
 
     def _run_tool(
         self,
@@ -2330,7 +2319,12 @@ class PawfectOrchestrator:
                         # reasoning as pet_id below.
                         args = {**args, "customer_id": state.customer_id}
                     elif tool_call["name"] not in {
-                        "check_availability", "check_availability_range"
+                        "check_availability",
+                        "check_availability_range",
+                        # General catalogue enquiries do not require a customer.
+                        # Only the pet-specific form requires ownership, which
+                        # the tool itself rejects when customer_id is absent.
+                        "get_booking_service_options",
                     }:
                         # No real identity exists yet for this phone number.
                         # Confirmed live: for a brand-new customer, the model
@@ -2412,18 +2406,34 @@ class PawfectOrchestrator:
                     # customer's real pets (still guards the original case: a
                     # hallucinated/mismatched pet_id) — otherwise trust it.
                     if len(state.known_pets) > 1:
-                        # For multi-pet customers, only the pet selected in
-                        # application state is authoritative. A valid ID that
-                        # the model guessed from the roster is still not a
-                        # customer selection for this booking flow.
-                        known = self._known_pet_by_id(state, state.pet_id)
+                        cached_pet = self._known_pet_by_id(state, state.pet_id)
+                        model_pet = self._known_pet_by_id(state, args.get("pet_id"))
+                        # A pet explicitly resolved from this customer message
+                        # is authoritative. During later turns of the same flow,
+                        # an omitted/same pet_id may safely reuse that selection.
+                        # A different real roster ID is not permission by itself:
+                        # the model can guess one, so reject instead of silently
+                        # switching pets or silently forcing the stale cached ID.
+                        if state.pet_selected_turn == state.turn_counter:
+                            known = cached_pet
+                        elif cached_pet is not None and args.get("pet_id") in (None, ""):
+                            known = cached_pet
+                        elif (
+                            cached_pet is not None
+                            and model_pet is not None
+                            and model_pet.get("pet_id") == cached_pet.get("pet_id")
+                        ):
+                            known = model_pet
+                        else:
+                            known = None
                         if known is None:
                             return {
                                 "status": "missing_information",
                                 "error_code": "PET_SELECTION_REQUIRED",
                                 "message": (
-                                    "Several pets are registered and none was selected for this "
-                                    "booking. Ask which pet; do not choose a pet_id yourself."
+                                    "Several pets are registered and the current message did not "
+                                    "unambiguously select the pet represented by this tool call. "
+                                    "Ask which pet; do not choose or switch pet_id yourself."
                                 ),
                             }
                         args = {**args, "pet_id": known.get("pet_id")}
@@ -2840,6 +2850,7 @@ class PawfectOrchestrator:
                     state.pet_name = known.get("pet_name")
                     state.pet_size = known.get("pet_size")
                     state.pet_breed = known.get("pet_breed")
+                    state.pet_selected_turn = state.turn_counter
             return
         if tool_name == "find_pet_by_name" and result.get("status") == "success":
             data = result.get("data") or {}
@@ -3300,13 +3311,19 @@ class PawfectOrchestrator:
         return {"preview": encoded[:max_chars] + "…", "truncated": True}
 
     @classmethod
-    def _update_agent_evidence(cls, state, tool_name: str, result) -> None:
+    def _update_agent_evidence(
+        cls, state, tool_name: str, result, args: dict | None = None
+    ) -> None:
         """Record observed facts, never private model reasoning or guesses."""
         status = cls._tool_result_status(result)
         evidence = {
             "turn": state.turn_counter,
             "tool": tool_name,
             "status": status,
+            # Evidence without its input scope is not reusable evidence.  A
+            # grooming catalogue cannot support a later boarding answer, and a
+            # food-policy retrieval cannot support cancellation terms.
+            "args": cls._compact_evidence_result(args or {}, max_chars=1200),
             "result": cls._compact_evidence_result(result),
         }
         state.recent_tool_evidence = (
@@ -3695,6 +3712,16 @@ class PawfectOrchestrator:
         return successful
 
     @classmethod
+    def _service_options_evidence_matches(cls, state, user_message: str) -> bool:
+        return service_options_evidence_matches(
+            state, user_message, cls._explicit_service_type
+        )
+
+    @staticmethod
+    def _policy_evidence_matches(state, user_message: str) -> bool:
+        return policy_evidence_matches(state, user_message)
+
+    @classmethod
     def _needs_tool_repair(
         cls,
         state,
@@ -3706,6 +3733,8 @@ class PawfectOrchestrator:
         text = (user_message or "").lower()
         answer = (response_content or "").lower()
         successful_tools = cls._successful_trace_tools(trace)
+        scoped_service_options = cls._service_options_evidence_matches(state, user_message)
+        scoped_policy_knowledge = cls._policy_evidence_matches(state, user_message)
         action_claim = bool(
             re.search(
                 r"\b(?:booked|booking confirmed|cancelled|canceled|rescheduled|redeemed)\b"
@@ -3785,11 +3814,13 @@ class PawfectOrchestrator:
             "check_availability_range", "retrieve_policy",
         }
         price_evidence_facts = {
-            "service_options", "policy_knowledge", "latest_booking", "resolved_booking",
+            "latest_booking", "resolved_booking",
             "payment_history", "availability", "availability_range",
         }
         if price_value_claim and not (
             successful_tools & price_evidence_tools
+            or scoped_service_options
+            or scoped_policy_knowledge
             or any((state.verified_facts or {}).get(key) for key in price_evidence_facts)
         ):
             return True
@@ -3878,7 +3909,7 @@ class PawfectOrchestrator:
             re.IGNORECASE,
         ))
         if policy_claim and not (
-            (state.verified_facts or {}).get("policy_knowledge")
+            scoped_policy_knowledge
             or "retrieve_policy" in successful_tools
         ):
             return True
@@ -3950,15 +3981,15 @@ class PawfectOrchestrator:
             text,
         ))
         if catalogue_intent and not (
-            facts.get("service_options")
-            or facts.get("policy_knowledge")
+            scoped_service_options
+            or scoped_policy_knowledge
             or successful_tools & {"get_booking_service_options", "retrieve_policy"}
         ):
             return True
 
         policy_intent = bool(re.search(r"\bpolicy\b|政策|\bpolisi\b", text))
         if policy_intent and not (
-            facts.get("policy_knowledge") or "retrieve_policy" in successful_tools
+            scoped_policy_knowledge or "retrieve_policy" in successful_tools
         ):
             return True
 
@@ -4007,7 +4038,7 @@ class PawfectOrchestrator:
             r"\b(?:harga|kos|pakej|bilik)\b",
             text,
         ):
-            if facts.get("service_options") or facts.get("policy_knowledge"):
+            if scoped_service_options or scoped_policy_knowledge:
                 return False
         if re.search(
             r"\b(?:grooming|daycare|boarding|add-?on|recommend|suggest)\b|"
@@ -4015,9 +4046,9 @@ class PawfectOrchestrator:
             r"\b(?:penginapan|tambahan|cadang(?:kan)?)\b",
             text,
         ):
-            if facts.get("service_options") or facts.get("policy_knowledge"):
+            if scoped_service_options or scoped_policy_knowledge:
                 return False
-        if re.search(r"\b(?:policy)\b|政策|\bpolisi\b", text) and facts.get("policy_knowledge"):
+        if re.search(r"\b(?:policy)\b|政策|\bpolisi\b", text) and scoped_policy_knowledge:
             return False
         if re.search(
             r"\b(?:loyalty|points?|voucher|coupon)\b|积分|点数|优惠券|"
@@ -4262,133 +4293,22 @@ class PawfectOrchestrator:
 
     @staticmethod
     def _ground_document_delivery_response(response, user_message: str, trace: list[dict]):
-        """Never let prose turn a failed document dispatch into fake success."""
-        document_intent = bool(re.search(
-            r"\b(?:confirmation|document|slip|pdf)\b|确认单|确认文件|文件",
-            user_message or "",
-            re.IGNORECASE,
-        ))
-        if not document_intent or PawfectOrchestrator._trace_has_successful_document_delivery(trace):
-            return response
-
-        attempts = [
-            item for item in trace
-            if item.get("tool") in {
-                "create_booking", "reschedule_booking", "send_booking_confirmation"
-            }
-        ]
-        if not attempts:
-            return response
-        try:
-            result = json.loads(attempts[-1].get("result") or "{}")
-        except (TypeError, json.JSONDecodeError):
-            return response
-        if not isinstance(result, dict):
-            return response
-        chinese = bool(re.search(r"[\u3400-\u9fff]", user_message or ""))
-        if result.get("handoff_required"):
-            truthful = (
-                "这次确认单没有成功发送。我已经把文件发送问题记录给员工跟进。"
-                if chinese else
-                "The confirmation document was not delivered successfully. I've logged the "
-                "delivery problem for staff follow-up."
-            )
-        else:
-            truthful = (
-                "这次确认单没有发送：系统未能确认可发送的目标预约。请确认预约后再试。"
-                if chinese else
-                "The confirmation document was not sent because the target booking could not "
-                "be verified. Please clarify the booking and try again."
-            )
-        return response.model_copy(update={"content": truthful})
+        return ground_document_delivery_response(
+            response,
+            user_message,
+            trace,
+            trace_has_successful_delivery=(
+                PawfectOrchestrator._trace_has_successful_document_delivery
+            ),
+        )
 
     @staticmethod
     def _ground_membership_response(response, user_message: str, trace: list[dict], state=None):
-        """Make the customer-facing result match the observed membership write.
-
-        A successful registration must not be replaced by a model-generated
-        greeting or another confirmation request.  Only a real tool result is
-        allowed to trigger this deterministic completion message.
-        """
-        attempts = [item for item in trace if item.get("tool") == "register_loyalty_member"]
-        if not attempts:
-            return response
-        try:
-            result = json.loads(attempts[-1].get("result") or "{}")
-        except (TypeError, json.JSONDecodeError):
-            return response
-        if not isinstance(result, dict) or result.get("status") != "success":
-            return response
-
-        data = result.get("data") if isinstance(result.get("data"), dict) else {}
-        tier = data.get("tier") or data.get("membership_status") or "Bronze"
-        points = data.get("points_balance")
-        points = 0 if points is None else points
-        chinese = bool(re.search(r"[\u3400-\u9fff]", user_message or ""))
-        if data.get("already_member"):
-            truthful = (
-                f"您已经是会员。目前等级为 {tier}，积分余额为 {points}。"
-                if chinese else
-                f"You're already a loyalty member. Your current tier is {tier}, with {points} points."
-            )
-        else:
-            truthful = (
-                f"会员注册已完成。您的等级为 {tier}，初始积分为 {points}。"
-                if chinese else
-                f"Your loyalty membership is now active. Your tier is {tier}, with {points} points."
-            )
-        if state is not None and state.active_scenario == "MAKE_BOOKING":
-            existing = str(response.content or "").strip()
-            combined = "\n\n".join(part for part in (truthful, existing) if part)
-            return response.model_copy(update={"content": combined})
-        return response.model_copy(update={"content": truthful})
+        return ground_membership_response(response, user_message, trace, state)
 
     @staticmethod
     def _ground_booking_preview_response(response, user_message: str, trace: list[dict]):
-        """Render an exact create-booking preview instead of model error prose."""
-        latest = next(
-            (item for item in reversed(trace) if item.get("tool") == "create_booking"),
-            None,
-        )
-        if latest is None:
-            return response
-        try:
-            result = json.loads(latest.get("result") or "{}")
-        except (TypeError, json.JSONDecodeError):
-            return response
-        if not isinstance(result, dict) or result.get("status") != "confirmation_required":
-            return response
-        preview = (result.get("data") or {}).get("preview")
-        if not isinstance(preview, dict):
-            return response
-
-        pet = preview.get("pet_name") or "your pet"
-        package = preview.get("package_name") or preview.get("service_type") or "service"
-        date_value = preview.get("date") or ""
-        start = str(preview.get("time") or "")[:5]
-        checkout = str(preview.get("check_out_time") or "")[:5]
-        duration = preview.get("duration_minutes")
-        price = preview.get("price")
-        price_text = f"RM{float(price):g}" if price not in (None, "") else ""
-        chinese = bool(re.search(r"[\u3400-\u9fff]", user_message or ""))
-        if chinese:
-            timing = f"{start} 至 {checkout}" if checkout else (
-                f"{start}，时长 {duration} 分钟" if duration else start
-            )
-            content = (
-                f"请确认预约：{pet}，{package}，{date_value} {timing}"
-                f"{f'，{price_text}' if price_text else ''}。回复“确认”后才会正式建立预约。"
-            )
-        else:
-            timing = f"{start} to {checkout}" if checkout else (
-                f"{start} for {duration} minutes" if duration else start
-            )
-            content = (
-                f"Please confirm this booking for {pet}: {package} on {date_value}, "
-                f"{timing}{f', {price_text}' if price_text else ''}. "
-                "Reply yes to create the booking."
-            )
-        return response.model_copy(update={"content": content})
+        return ground_booking_preview_response(response, user_message, trace)
 
     @staticmethod
     def _ground_unavailable_profile_claims(response, user_message: str, customer: dict):
@@ -4443,6 +4363,10 @@ class PawfectOrchestrator:
                     state.daycare_duration_minutes = None
                     state.verified_facts.pop("daycare_duration_minutes", None)
                 if previous_scenario != state.active_scenario:
+                    if state.active_scenario == "MAKE_BOOKING":
+                        state.booking_flow_started_turn = state.turn_counter
+                    elif previous_scenario == "MAKE_BOOKING":
+                        state.booking_flow_started_turn = None
                     state.pending_actions = {}
                     state.pending_booking_confirmation = None
                     state.offered_options = []
@@ -4506,6 +4430,7 @@ class PawfectOrchestrator:
             state.loyalty_decision = None
             state.loyalty_offer_shown_turn = None
             state.repeat_booking_template = None
+            state.booking_flow_started_turn = None
             state.verified_facts.pop("daycare_duration_minutes", None)
             self._cache_created_booking(state, result)
             payment_id = (result.get("data") or {}).get("payment_id")
@@ -4525,11 +4450,16 @@ class PawfectOrchestrator:
             state.pending_actions.pop(tool_name, None)
 
         self._sync_scenario_from_tool_call(state, tool_name, result)
-        self._update_agent_evidence(state, tool_name, result)
+        self._update_agent_evidence(state, tool_name, result, args)
 
     def invoke_with_trace(self, company_context: dict, state, user_message: str):
         """Evidence-driven tool loop with flexible planning and full trace."""
         state.turn_counter += 1
+        if state.active_scenario == "MAKE_BOOKING" and state.booking_flow_started_turn is None:
+            # Safe migration path for an in-flight session created before this
+            # field existed: start the authorization boundary now rather than
+            # trusting unrelated older history.
+            state.booking_flow_started_turn = state.turn_counter
         # A confirmation only authorizes the preview from the immediately
         # preceding customer turn. Drop anything older before routing a bare
         # "yes" so an unrelated later reply cannot execute stale work.
@@ -4567,6 +4497,7 @@ class PawfectOrchestrator:
             state.current_datetime_resolution = None
             state.verified_facts.pop("current_datetime_resolution", None)
         self._capture_explicit_loyalty_decision(state, user_message)
+        self._capture_explicit_add_on_decision(state, user_message)
         self._capture_explicit_daycare_duration(state, user_message)
         is_first_message = not state.history
         customer = self._resolve_identity(company_context["company_id"], state)
@@ -4616,7 +4547,7 @@ class PawfectOrchestrator:
         resolved_selection = self._resolve_ordinal_reference(state, user_message)
         self._cache_daycare_duration_from_selection(state, resolved_selection)
         bound_scenario = state.active_scenario
-        bound_tools = _tools_for_scenario(bound_scenario)
+        bound_tools = self._tools_for_turn(state, user_message)
         model = self._base_model.bind_tools(bound_tools, strict=True)
         messages = self.build_messages(
             company_context,
@@ -4637,9 +4568,10 @@ class PawfectOrchestrator:
         force_exact_tool_once: tuple[str, dict] | None = None
         retry_booking_after_availability: dict | None = None
         booking_availability_repair_used = False
-        force_final_after_duplicate_read = False
+        force_final_after_duplicate_tool = False
         successful_read_results: dict[str, object] = {}
         successful_read_lock = Lock()
+        failed_mutation_results: dict[str, dict] = {}
 
         if customer.get("found") is None:
             # state.customer_id is guaranteed None here — this branch is only
@@ -4736,6 +4668,14 @@ class PawfectOrchestrator:
                         state.customer_id,
                         exc,
                     )
+            if (
+                tool_call["name"] in MUTATING_TOOL_NAMES
+                and isinstance(result, dict)
+                and result.get("status") == "error"
+                and result.get("handoff_required")
+                and not result.get("_internal_duplicate_mutation_suppressed")
+            ):
+                failed_mutation_results[tool_call["name"]] = dict(result)
             self._apply_tool_result_state(state, tool_call, result)
             if (
                 tool_call["name"] in MUTATING_TOOL_NAMES
@@ -4751,16 +4691,15 @@ class PawfectOrchestrator:
         for iteration_index in range(MAX_TOOL_ITERATIONS):
             active_authoritative_tool: str | None = None
             active_authoritative_args: dict | None = None
-            if force_final_after_duplicate_read:
-                # An identical read was requested again after it had already
-                # completed (successfully, empty, or failed). Remove tool
-                # schemas for one pass so the model must converge on a customer
-                # response from the evidence it already has instead of burning
-                # every remaining iteration on the same call.
+            if force_final_after_duplicate_tool:
+                # A read was repeated after reaching a stable result, or a
+                # mutation was repeated after a non-recoverable failure.
+                # Remove tool schemas for one pass so the model must converge
+                # on a customer response instead of exhausting the loop.
                 bound_tools = []
                 model = self._base_model
                 bound_scenario = "__FORCED_FINAL_AFTER_DUPLICATE_READ__"
-                force_final_after_duplicate_read = False
+                force_final_after_duplicate_tool = False
                 repair_used = True
             elif force_pending_tool_once:
                 # A standalone affirmative on a later turn is an explicit
@@ -4813,7 +4752,7 @@ class PawfectOrchestrator:
                 # no evidence. Exclude the bookkeeping-only state tool so this
                 # forced call must observe or act on real business data.
                 repair_tools = [
-                    tool for tool in _tools_for_scenario(state.active_scenario)
+                    tool for tool in self._tools_for_turn(state, user_message)
                     if tool.name != "update_conversation_state"
                 ]
                 if not repair_tools:
@@ -4841,7 +4780,7 @@ class PawfectOrchestrator:
                 # invoke_with_trace re-entered and rebuilt the binding fresh.
                 # Rebuilding here closes that gap within the same turn too.
                 bound_scenario = state.active_scenario
-                bound_tools = _tools_for_scenario(bound_scenario)
+                bound_tools = self._tools_for_turn(state, user_message)
                 model = self._base_model.bind_tools(bound_tools, strict=True)
 
             self._refresh_runtime_message(
@@ -4948,8 +4887,12 @@ class PawfectOrchestrator:
                     response = response.model_copy(
                         update={"content": f"{response.content.rstrip()}\n\n{warning}"}
                     )
-                state.history.append({"role": "human", "content": user_message})
-                state.history.append({"role": "ai", "content": response.content})
+                state.history.append({
+                    "role": "human", "content": user_message, "turn": state.turn_counter
+                })
+                state.history.append({
+                    "role": "ai", "content": response.content, "turn": state.turn_counter
+                })
                 state.history = state.history[-MAX_HISTORY_TURNS * 2 :]
                 return response, trace
 
@@ -4961,19 +4904,31 @@ class PawfectOrchestrator:
                 started_at = time_module.perf_counter()
                 queued_at = submitted_at.get(tool_call["id"], batch_started_at)
                 queue_wait_ms = round((started_at - queued_at) * 1000, 1)
-                result = self._run_tool(
-                    tool_call,
-                    state,
-                    user_message,
-                    sibling_tool_names,
-                    successful_read_results,
-                    successful_read_lock,
-                    (
-                        active_authoritative_args
-                        if tool_call["name"] == active_authoritative_tool
-                        else None
-                    ),
-                )
+                cached_failure = failed_mutation_results.get(tool_call["name"])
+                if cached_failure is not None:
+                    result = {
+                        **cached_failure,
+                        "_internal_duplicate_mutation_suppressed": True,
+                        "message": (
+                            "This mutation already returned a non-recoverable operational "
+                            "failure during this customer turn. Do not call it again; explain "
+                            "the failure and continue without claiming success."
+                        ),
+                    }
+                else:
+                    result = self._run_tool(
+                        tool_call,
+                        state,
+                        user_message,
+                        sibling_tool_names,
+                        successful_read_results,
+                        successful_read_lock,
+                        (
+                            active_authoritative_args
+                            if tool_call["name"] == active_authoritative_tool
+                            else None
+                        ),
+                    )
                 duration_ms = round((time_module.perf_counter() - started_at) * 1000, 1)
                 return result, duration_ms, queue_wait_ms
 
@@ -5224,18 +5179,21 @@ class PawfectOrchestrator:
 
             if any(
                 isinstance(record["result"], dict)
-                and record["result"].get("_internal_duplicate_read_suppressed")
+                and (
+                    record["result"].get("_internal_duplicate_read_suppressed")
+                    or record["result"].get("_internal_duplicate_mutation_suppressed")
+                )
                 for record in records_by_id.values()
             ):
                 messages.append((
                     "system",
-                    "An identical read tool call already completed during this customer "
-                    "turn and its cached result is present above. Tool access is disabled "
+                    "A tool call already reached a result that must not be repeated during "
+                    "this customer turn, and its cached result is present above. Tool access is disabled "
                     "for the next response. Give the customer a natural final answer from "
                     "the available evidence, or ask only for genuinely missing customer "
                     "input. Do not request or claim another tool call.",
                 ))
-                force_final_after_duplicate_read = True
+                force_final_after_duplicate_tool = True
 
         raise ToolLoopError(
             "Tool-calling loop did not converge within MAX_TOOL_ITERATIONS",

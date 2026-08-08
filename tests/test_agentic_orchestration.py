@@ -242,6 +242,39 @@ def test_short_no_need_declines_a_real_prior_loyalty_offer():
     assert state.loyalty_decision == "declined"
 
 
+def test_nono_declines_add_ons_without_reopening_stale_loyalty_flow():
+    state = ConversationState(
+        phone_number="+60123456705",
+        company_id="1",
+        active_scenario="MAKE_BOOKING",
+        turn_counter=5,
+        loyalty_decision="accepted",
+        loyalty_offer_shown_turn=2,
+        history=[
+            {
+                "role": "ai",
+                "content": "Would you like to include any add-ons?",
+            }
+        ],
+    )
+    state.offered_add_on_options = [
+        {"service_name": "Nail Clipping", "selection_kind": "add_on", "price": 15}
+    ]
+
+    PawfectOrchestrator._capture_explicit_add_on_decision(state, "nono")
+    names = {tool.name for tool in PawfectOrchestrator._tools_for_turn(state, "nono")}
+
+    assert PawfectOrchestrator._confirmation_intent("nono") == "negative"
+    assert state.verified_facts["add_on_decision"]["value"] == "declined"
+    assert not names & {
+        "get_loyalty_balance",
+        "check_coupon_eligibility",
+        "register_loyalty_member",
+        "redeem_reward",
+    }
+    assert "create_booking" in names
+
+
 def test_daycare_duration_survives_side_flow_and_is_injected_into_checks_and_write():
     state = ConversationState(
         phone_number="+60123456705",
@@ -550,9 +583,35 @@ def test_optional_booking_fields_must_be_selected_by_customer():
         "please add Teeth Brushing",
     )
 
-    assert invented_staff["error"] == "UNCONFIRMED_PREFERRED_STAFF"
+    assert invented_staff["error"] == "STAFF_PREFERENCE_DECLINED"
     assert invented_add_on["error"] == "UNCONFIRMED_ADD_ON_SELECTION"
     assert selected_add_on is None
+
+
+def test_old_booking_preferences_do_not_authorize_current_booking_fields():
+    state = ConversationState(phone_number="+60123456705", company_id="1")
+    state.turn_counter = 6
+    state.booking_flow_started_turn = 5
+    state.history = [
+        {"role": "human", "content": "Add Teeth Brushing and use Alice", "turn": 2},
+        {"role": "ai", "content": "That earlier booking is complete.", "turn": 2},
+    ]
+
+    stale_add_on = PawfectOrchestrator._reject_unconfirmed_optional_booking_fields(
+        state,
+        {"add_on": "Teeth Brushing"},
+        "No add-ons for this booking",
+    )
+    state.preferred_staff = "Alice"
+    stale_staff = PawfectOrchestrator._reject_unconfirmed_optional_booking_fields(
+        state,
+        {"preferred_staff": "Alice"},
+        "Any staff is fine this time",
+    )
+
+    assert stale_add_on["error"] == "ADD_ON_DECLINED"
+    assert stale_staff["error"] == "STAFF_PREFERENCE_DECLINED"
+    assert state.preferred_staff is None
 
 
 def test_catalogue_main_services_and_add_ons_have_separate_ordinal_namespaces():
@@ -992,7 +1051,11 @@ def test_tool_repair_is_narrow_and_reuses_existing_evidence():
         state, "Please book Milo", "Which date would you prefer?", []
     )
 
-    state.verified_facts["service_options"] = {"status": "success"}
+    state.verified_facts["service_options"] = {
+        "status": "success",
+        "tool": "get_booking_service_options",
+        "args": {"service_type": "GROOMING"},
+    }
     assert not PawfectOrchestrator._needs_tool_repair(
         state, "What is the grooming price?", "The verified option is RM50.", []
     )
@@ -1032,6 +1095,38 @@ def test_tool_repair_is_narrow_and_reuses_existing_evidence():
     )
 
 
+def test_tool_repair_rejects_stale_evidence_from_a_different_scope():
+    state = ConversationState(phone_number="+60123456705", company_id="1")
+    state.turn_counter = 4
+    state.verified_facts["service_options"] = {
+        "turn": 1,
+        "tool": "get_booking_service_options",
+        "status": "success",
+        "args": {"service_type": "GROOMING", "pet_id": 5},
+    }
+    assert PawfectOrchestrator._needs_tool_repair(
+        state,
+        "What is the boarding room price?",
+        "The boarding room costs RM50.",
+        [],
+    )
+
+    state.verified_facts = {
+        "policy_knowledge": {
+            "turn": 1,
+            "tool": "retrieve_policy",
+            "status": "success",
+            "args": {"query": "bringing your own pet food policy"},
+        }
+    }
+    assert PawfectOrchestrator._needs_tool_repair(
+        state,
+        "What is your cancellation policy?",
+        "Free cancellation is allowed.",
+        [],
+    )
+
+
 def test_tool_repair_catches_booking_status_and_policy_claims_behind_a_question():
     # Same bypass shape as the price/availability/coupon/vaccination claims
     # above: a fabricated status/policy claim immediately followed by a
@@ -1060,7 +1155,11 @@ def test_tool_repair_catches_booking_status_and_policy_claims_behind_a_question(
         booking_trace,
     )
     state_with_policy = ConversationState(phone_number="+60123456705", company_id="1")
-    state_with_policy.verified_facts["policy_knowledge"] = {"status": "success"}
+    state_with_policy.verified_facts["policy_knowledge"] = {
+        "status": "success",
+        "tool": "retrieve_policy",
+        "args": {"query": "policy on bringing my own pet food"},
+    }
     assert not PawfectOrchestrator._needs_tool_repair(
         state_with_policy,
         "What's your policy on bringing my own pet food?",

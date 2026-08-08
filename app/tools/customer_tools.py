@@ -498,8 +498,8 @@ def get_booking_by_id(
     return _repo().get_booking_by_id(int(company_id), int(customer_id), int(booking_id), service_type)
 
 
-def _pet_details_for(company_id: int, pet_id: int) -> tuple[str, str]:
-    """Look up a pet's species and size directly — never trust the model to pass the right values."""
+def _pet_details_for(company_id: int, customer_id: int, pet_id: int) -> tuple[str, str]:
+    """Return species/size only for a pet owned by the resolved customer."""
     from app.db.supabase_client import get_supabase_client
 
     rows = (
@@ -507,18 +507,24 @@ def _pet_details_for(company_id: int, pet_id: int) -> tuple[str, str]:
         .table("pet")
         .select("pet_type, size")
         .eq("company_id", company_id)
+        .eq("customer_id", customer_id)
         .eq("pet_id", pet_id)
         .limit(1)
         .execute()
         .data
     )
-    row = rows[0] if rows else {}
+    if not rows:
+        raise ValueError("PET_NOT_OWNED_BY_CUSTOMER")
+    row = rows[0]
     return str(row.get("pet_type") or "").strip(), str(row.get("size") or "").strip()
 
 
 @tool
 def get_booking_service_options(
-    company_id: str | int, service_type: ServiceType, pet_id: str | int | None = ""
+    company_id: str | int,
+    service_type: ServiceType,
+    pet_id: str | int | None = "",
+    customer_id: str | int | None = "",
 ) -> dict:
     """
     List bookable services/rooms and prices for a service category
@@ -548,7 +554,26 @@ def get_booking_service_options(
     """
     from app.db.relational_actions import get_booking_service_options as _get_options
 
-    pet_type, pet_size = _pet_details_for(int(company_id), int(pet_id)) if pet_id else ("", "")
+    if pet_id and not customer_id:
+        return {
+            "status": "missing_information",
+            "error": "PET_OWNERSHIP_UNVERIFIED",
+            "error_code": "PET_OWNERSHIP_UNVERIFIED",
+            "message": "Resolve the customer before requesting pet-specific service options.",
+        }
+    try:
+        pet_type, pet_size = (
+            _pet_details_for(int(company_id), int(customer_id), int(pet_id))
+            if pet_id else ("", "")
+        )
+    except (TypeError, ValueError) as exc:
+        return {
+            "status": "error",
+            "error": "PET_NOT_OWNED_BY_CUSTOMER",
+            "error_code": "PET_NOT_OWNED_BY_CUSTOMER",
+            "message": "The selected pet does not belong to the resolved customer.",
+            "_internal_error": str(exc),
+        }
     context = CustomerContext(company_id=int(company_id))
     result = _get_options(context, service_type, pet_type)
 

@@ -97,6 +97,11 @@ gcloud run deploy pawfectai-ai \
 
 (Create those Secret Manager secrets first — `gcloud secrets create supabase-url --data-file=-`, etc. — or swap `--set-secrets` for a second `--set-env-vars` block if you'd rather manage them as plain env vars; the `SUPABASE_SERVICE_ROLE_KEY` and the API keys are the ones actually worth keeping in Secret Manager.)
 
+At startup, the service performs a read-only PostgREST OpenAPI preflight and
+refuses to serve traffic when a required database RPC is missing. Apply the
+manual migrations in `backend/sql/README.md` before deploying; in particular,
+membership registration requires `loyalty_member_registration_migration.sql`.
+
 - **`OPENAI_API_KEY` is required for every single `/chat` call, not just RAG**
   — `app/orchestrator.py`'s `ChatOpenAI(...)` (the gpt-4o-mini call itself)
   reads this from the environment; it is unrelated to `EMBEDDING_PROVIDER`

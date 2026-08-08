@@ -183,6 +183,8 @@ when the customer clearly requested more than one.
 For GROOMING and DAYCARE add-ons, pass both add_on and its real add_on_price
 from verified catalogue/policy evidence. Never only increase the total while
 leaving the add-on fields blank. BOARDING does not accept those add-on fields.
+When RUNTIME_CONTEXT records add_on_decision=declined, continue the booking
+with blank add-on fields; do not re-offer add-ons or switch to a loyalty flow.
 An item returned under add_on_options is an add-on to the selected booking,
 not a standalone bookable service. Never claim it can be booked separately
 unless the same exact item is independently returned under service_options.

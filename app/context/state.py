@@ -40,6 +40,12 @@ class ConversationState:
     # that pet for a new multi-pet booking flow.
     pet_selected_turn: int | None = None
 
+    # First customer turn belonging to the current MAKE_BOOKING flow.  Optional
+    # choices such as staff and add-ons are authorized only from statements at
+    # or after this boundary; an old booking's preference must never leak into
+    # a later booking merely because it is still present in chat history.
+    booking_flow_started_turn: int | None = None
+
     # Full pet roster, cached once per session (first message prefetch, or
     # any get_pets call) as
     # [{"pet_id", "pet_type", "pet_name", "pet_size", "pet_breed"}, ...]. Lets

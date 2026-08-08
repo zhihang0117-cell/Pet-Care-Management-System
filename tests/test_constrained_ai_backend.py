@@ -5,7 +5,7 @@ from langchain_core.messages import AIMessage
 from langchain_core.utils.function_calling import convert_to_openai_tool
 
 from app.context.state import ConversationState
-from app.db import relational_actions
+from app.db import relational_actions, supabase_client
 from app.orchestrator import (
     ALL_TOOLS,
     MUTATING_TOOL_NAMES,
@@ -13,6 +13,7 @@ from app.orchestrator import (
     TOOLS_BY_NAME,
     _tools_for_scenario,
 )
+from app.tools.customer_tools import _pet_details_for, get_booking_service_options
 
 
 class _CapturingTool:
@@ -27,6 +28,59 @@ class _CapturingTool:
 
 def _call(name, **args):
     return {"name": name, "id": f"{name}-1", "args": args}
+
+
+def test_natural_standalone_confirmation_phrases_are_accepted():
+    accepted = [
+        "yes go ahead",
+        "sure, book it",
+        "correct please",
+        "yes please book it",
+        "可以，继续",
+        "好的，请继续",
+    ]
+    for phrase in accepted:
+        assert PawfectOrchestrator._confirmation_intent(phrase) == "affirmative"
+
+    assert PawfectOrchestrator._confirmation_intent("yes, but change it to 3pm") is None
+    assert PawfectOrchestrator._confirmation_intent("no thanks") == "negative"
+
+
+def test_pet_specific_catalogue_requires_resolved_customer_ownership():
+    result = get_booking_service_options.invoke({
+        "company_id": 1,
+        "service_type": "GROOMING",
+        "pet_id": 99,
+    })
+    assert result["error_code"] == "PET_OWNERSHIP_UNVERIFIED"
+
+
+def test_pet_detail_lookup_includes_customer_id_filter(monkeypatch):
+    class Query:
+        def __init__(self):
+            self.filters = []
+
+        def select(self, _fields):
+            return self
+
+        def eq(self, field, value):
+            self.filters.append((field, value))
+            return self
+
+        def limit(self, _count):
+            return self
+
+        def execute(self):
+            return type("Result", (), {"data": [{"pet_type": "Dog", "size": "S"}]})()
+
+    query = Query()
+    client = type("Client", (), {"table": lambda self, _name: query})()
+    monkeypatch.setattr(supabase_client, "get_supabase_client", lambda: client)
+
+    assert _pet_details_for(1, 42, 99) == ("Dog", "S")
+    assert ("company_id", 1) in query.filters
+    assert ("customer_id", 42) in query.filters
+    assert ("pet_id", 99) in query.filters
 
 
 def test_last_completed_lookup_is_scoped_to_owned_pet_service_and_done_status(monkeypatch):
@@ -311,9 +365,14 @@ def test_correct_confirms_exact_preview_with_add_on_and_previous_turn_slot(monke
         "preferred_staff": "",
     }]
     state.history = [
-        {"role": "human", "content": "Premium Long Fur with Teeth Brushing, please"},
-        {"role": "ai", "content": "I will prepare those exact choices."},
+        {
+            "role": "human",
+            "content": "Premium Long Fur with Teeth Brushing, please",
+            "turn": 1,
+        },
+        {"role": "ai", "content": "I will prepare those exact choices.", "turn": 1},
     ]
+    state.booking_flow_started_turn = 1
     exact_args = {
         "service_type": "GROOMING",
         "pet_id": 32,
@@ -648,6 +707,48 @@ def test_membership_confirmation_cannot_be_inferred_from_unrelated_turn(monkeypa
     assert len(capturing.calls) == 1
 
 
+def test_polite_membership_confirmation_executes_exact_pending_write(monkeypatch):
+    capturing = _CapturingTool({"status": "success", "data": {"member_id": 3}})
+    monkeypatch.setitem(TOOLS_BY_NAME, "register_loyalty_member", capturing)
+    orchestrator = object.__new__(PawfectOrchestrator)
+    state = ConversationState(
+        phone_number="+60123456705",
+        company_id="7",
+        active_scenario="MEMBER",
+        customer_id=22,
+        turn_counter=2,
+    )
+    exact_args = {"company_id": "7", "customer_id": 22, "confirmed": True}
+    state.pending_actions["register_loyalty_member"] = {
+        "signature": orchestrator._mutation_signature(
+            "register_loyalty_member", exact_args
+        ),
+        "args": exact_args,
+        "preview_turn": 1,
+        "scenario": "MEMBER",
+    }
+
+    result = orchestrator._run_tool(
+        _call(
+            "register_loyalty_member",
+            company_id="wrong",
+            customer_id="wrong",
+            confirmed=False,
+        ),
+        state,
+        "yes, please",
+    )
+
+    assert result["status"] == "success"
+    assert capturing.calls == [exact_args]
+
+
+def test_confirmation_with_extra_request_is_not_standalone():
+    assert PawfectOrchestrator._confirmation_intent("yes please") == "affirmative"
+    assert PawfectOrchestrator._confirmation_intent("yes, please") == "affirmative"
+    assert PawfectOrchestrator._confirmation_intent("yes please, and book grooming") is None
+
+
 def test_membership_yes_forces_exact_pending_write_and_cannot_jump_to_greeting(monkeypatch):
     capturing = _CapturingTool({
         "status": "success",
@@ -730,6 +831,78 @@ def test_membership_yes_forces_exact_pending_write_and_cannot_jump_to_greeting(m
     assert not response.content.startswith("Hi")
     assert state.active_scenario is None
     assert "register_loyalty_member" not in state.pending_actions
+
+
+def test_nonrecoverable_membership_failure_is_executed_once_then_forces_final(monkeypatch):
+    failing = _CapturingTool({
+        "status": "error",
+        "error": "registration RPC unavailable",
+        "handoff_required": True,
+        "handoff_reason": "DATABASE_ERROR",
+    })
+    failing.name = "register_loyalty_member"
+    monkeypatch.setitem(TOOLS_BY_NAME, "register_loyalty_member", failing)
+
+    class _RepeatingFailureModel:
+        def bind_tools(self, tools, **_kwargs):
+            class _BoundModel:
+                def invoke(self, _messages):
+                    return AIMessage(
+                        content="",
+                        tool_calls=[_call(
+                            "register_loyalty_member",
+                            company_id="7",
+                            customer_id=22,
+                            confirmed=True,
+                        )],
+                    )
+
+            assert tools
+            return _BoundModel()
+
+        def invoke(self, _messages):
+            return AIMessage(content="I couldn't complete the registration. Staff were notified.")
+
+    orchestrator = object.__new__(PawfectOrchestrator)
+    orchestrator._base_model = _RepeatingFailureModel()
+    orchestrator._resolve_identity = lambda _company_id, _state: {
+        "found": True,
+        "customer_id": 22,
+        "full_name": "Alicia Lee",
+    }
+    orchestrator._save_escalation_message = lambda *_args: None
+    state = ConversationState(
+        phone_number="+60123456705",
+        company_id="7",
+        active_scenario="MEMBER",
+        customer_id=22,
+        customer_name="Alicia Lee",
+        turn_counter=1,
+    )
+    exact_args = {"company_id": "7", "customer_id": 22, "confirmed": True}
+    state.pending_actions["register_loyalty_member"] = {
+        "signature": orchestrator._mutation_signature(
+            "register_loyalty_member", exact_args
+        ),
+        "args": exact_args,
+        "preview_turn": 1,
+        "scenario": "MEMBER",
+    }
+
+    response, trace = orchestrator.invoke_with_trace(
+        {"company_id": "7", "company_name": "Pawfect", "timezone": "Asia/Kuala_Lumpur"},
+        state,
+        "yes",
+    )
+
+    assert len(failing.calls) == 1
+    assert [item["tool"] for item in trace] == [
+        "register_loyalty_member",
+        "register_loyalty_member",
+    ]
+    assert "couldn't complete" in response.content
+    repeated_result = json.loads(trace[-1]["result"])
+    assert repeated_result["_internal_duplicate_mutation_suppressed"] is True
 
 
 def test_booking_preview_does_not_require_loyalty_membership(monkeypatch):

@@ -1,0 +1,236 @@
+{
+  "confirmation": [
+    {"id": "en_yes", "assistant": "Reply yes to confirm.", "user": "yes", "expected": "affirmative"},
+    {"id": "en_polite", "assistant": "Reply yes to confirm.", "user": "yes please", "expected": "affirmative"},
+    {"id": "en_go_ahead", "assistant": "Shall I proceed?", "user": "yes go ahead", "expected": "affirmative"},
+    {"id": "en_book_it", "assistant": "Please confirm the preview.", "user": "sure, book it", "expected": "affirmative"},
+    {"id": "en_correct", "assistant": "Are these details correct?", "user": "correct please", "expected": "affirmative"},
+    {"id": "zh_continue", "assistant": "请确认是否继续。", "user": "可以，继续", "expected": "affirmative"},
+    {"id": "zh_polite_continue", "assistant": "请确认是否继续。", "user": "好的，请继续", "expected": "affirmative"},
+    {"id": "zh_correct", "assistant": "资料正确吗？", "user": "正确", "expected": "affirmative"},
+    {"id": "ms_yes", "assistant": "Sila sahkan.", "user": "ya", "expected": "affirmative"},
+    {"id": "ms_continue", "assistant": "Sila sahkan.", "user": "boleh teruskan", "expected": "affirmative"},
+    {"id": "negative_no", "assistant": "Would you like an add-on?", "user": "no", "expected": "negative"},
+    {"id": "negative_nono", "assistant": "Would you like an add-on?", "user": "nono", "expected": "negative"},
+    {"id": "negative_polite", "assistant": "Would you like an add-on?", "user": "no thanks", "expected": "negative"},
+    {"id": "negative_zh", "assistant": "需要附加服务吗？", "user": "不用", "expected": "negative"},
+    {"id": "change_is_not_confirmation", "assistant": "Reply yes to confirm.", "user": "yes, but change it to 3pm", "expected": null},
+    {"id": "extra_request_is_not_confirmation", "assistant": "Reply yes to confirm.", "user": "yes please, and book grooming", "expected": null},
+    {"id": "booking_word_is_not_confirmation", "assistant": "请确认。", "user": "预约", "expected": null}
+  ],
+  "pet_resolution": [
+    {
+      "id": "latin_name",
+      "pets": [{"pet_id": 5, "pet_name": "Simba", "pet_type": "Dog"}, {"pet_id": 25, "pet_name": "Lili", "pet_type": "Cat"}],
+      "initial_pet_id": null,
+      "user": "show grooming for Lili",
+      "expected_pet_id": 25
+    },
+    {
+      "id": "cjk_name",
+      "pets": [{"pet_id": 7, "pet_name": "小白", "pet_type": "Dog"}],
+      "initial_pet_id": null,
+      "user": "帮小白预约美容",
+      "expected_pet_id": 7
+    },
+    {
+      "id": "other_pet_en",
+      "pets": [{"pet_id": 5, "pet_name": "Simba", "pet_type": "Dog"}, {"pet_id": 25, "pet_name": "Lili", "pet_type": "Cat"}],
+      "initial_pet_id": 5,
+      "user": "what about my other pet?",
+      "expected_pet_id": 25
+    },
+    {
+      "id": "other_pet_zh",
+      "pets": [{"pet_id": 5, "pet_name": "Simba", "pet_type": "Dog"}, {"pet_id": 25, "pet_name": "Lili", "pet_type": "Cat"}],
+      "initial_pet_id": 5,
+      "user": "那另一只呢？",
+      "expected_pet_id": 25
+    },
+    {
+      "id": "unique_species",
+      "pets": [{"pet_id": 5, "pet_name": "Simba", "pet_type": "Dog"}, {"pet_id": 25, "pet_name": "Lili", "pet_type": "Cat"}],
+      "initial_pet_id": 5,
+      "user": "what about my cat?",
+      "expected_pet_id": 25
+    },
+    {
+      "id": "ambiguous_species",
+      "pets": [{"pet_id": 5, "pet_name": "Simba", "pet_type": "Dog"}, {"pet_id": 25, "pet_name": "Lili", "pet_type": "Dog"}],
+      "initial_pet_id": null,
+      "user": "what about my dog?",
+      "expected_pet_id": null
+    }
+  ],
+  "evidence": [
+    {
+      "id": "matching_grooming_catalogue",
+      "fact_key": "service_options",
+      "evidence": {"turn": 1, "tool": "get_booking_service_options", "status": "success", "args": {"service_type": "GROOMING"}},
+      "user": "What is the grooming price?",
+      "response": "The verified option is RM50.",
+      "expected_repair": false
+    },
+    {
+      "id": "grooming_does_not_support_boarding",
+      "fact_key": "service_options",
+      "evidence": {"turn": 1, "tool": "get_booking_service_options", "status": "success", "args": {"service_type": "GROOMING"}},
+      "user": "What is the boarding room price?",
+      "response": "The room costs RM50.",
+      "expected_repair": true
+    },
+    {
+      "id": "matching_food_policy",
+      "fact_key": "policy_knowledge",
+      "evidence": {"turn": 1, "tool": "retrieve_policy", "status": "success", "args": {"query": "bringing your own pet food policy"}},
+      "user": "What is your policy on bringing my own pet food?",
+      "response": "Bringing your own pet food is allowed.",
+      "expected_repair": false
+    },
+    {
+      "id": "food_policy_does_not_support_cancellation",
+      "fact_key": "policy_knowledge",
+      "evidence": {"turn": 1, "tool": "retrieve_policy", "status": "success", "args": {"query": "bringing your own pet food policy"}},
+      "user": "What is your cancellation policy?",
+      "response": "Free cancellation is allowed.",
+      "expected_repair": true
+    },
+    {
+      "id": "unscoped_legacy_evidence_is_not_authority",
+      "fact_key": "service_options",
+      "evidence": {"turn": 1, "tool": "get_booking_service_options", "status": "success"},
+      "user": "What is the grooming price?",
+      "response": "The option costs RM50.",
+      "expected_repair": true
+    }
+  ],
+  "optional_booking": [
+    {
+      "id": "old_addon_declined_now",
+      "history": [{"role": "human", "content": "Add Teeth Brushing", "turn": 2}],
+      "flow_started_turn": 5,
+      "user": "No add-ons for this booking",
+      "args": {"add_on": "Teeth Brushing"},
+      "expected_error": "ADD_ON_DECLINED"
+    },
+    {
+      "id": "old_staff_declined_now",
+      "history": [{"role": "human", "content": "Use Alice", "turn": 2}],
+      "flow_started_turn": 5,
+      "preferred_staff": "Alice",
+      "user": "Any staff is fine this time",
+      "args": {"preferred_staff": "Alice"},
+      "expected_error": "STAFF_PREFERENCE_DECLINED"
+    },
+    {
+      "id": "current_addon_is_authorized",
+      "history": [],
+      "flow_started_turn": 5,
+      "user": "Please add Teeth Brushing",
+      "args": {"add_on": "Teeth Brushing"},
+      "expected_error": null
+    },
+    {
+      "id": "current_flow_staff_is_authorized",
+      "history": [{"role": "human", "content": "I prefer Alice", "turn": 5}],
+      "flow_started_turn": 5,
+      "user": "Please continue",
+      "args": {"preferred_staff": "Alice"},
+      "expected_error": null
+    }
+  ],
+  "response_grounding": [
+    {
+      "id": "booking_preview_overrides_false_error_en",
+      "kind": "booking_preview",
+      "user": "Book grooming for Milo tomorrow",
+      "model_response": "There was a technical error and I could not continue.",
+      "result": {
+        "status": "confirmation_required",
+        "data": {
+          "preview": {
+            "pet_name": "Milo",
+            "package_name": "Basic Grooming",
+            "date": "2026-08-09",
+            "time": "10:00:00",
+            "duration_minutes": 60,
+            "price": 80
+          }
+        }
+      },
+      "expected_contains": ["Milo", "Basic Grooming", "2026-08-09", "10:00", "RM80", "Reply yes"],
+      "expected_absent": ["technical error"]
+    },
+    {
+      "id": "booking_preview_zh",
+      "kind": "booking_preview",
+      "user": "帮小白预约美容",
+      "model_response": "无法处理。",
+      "result": {
+        "status": "confirmation_required",
+        "data": {
+          "preview": {
+            "pet_name": "小白",
+            "package_name": "基础美容",
+            "date": "2026-08-10",
+            "time": "14:00:00",
+            "check_out_time": "15:30:00",
+            "price": 95
+          }
+        }
+      },
+      "expected_contains": ["请确认预约", "小白", "基础美容", "14:00 至 15:30", "RM95"],
+      "expected_absent": ["无法处理"]
+    },
+    {
+      "id": "membership_success_overrides_false_error_en",
+      "kind": "membership",
+      "user": "Yes, register me as a member",
+      "model_response": "I cannot complete registration due to a technical error.",
+      "result": {
+        "status": "success",
+        "data": {"tier": "Bronze", "points_balance": 0}
+      },
+      "expected_contains": ["membership is now active", "Bronze", "0 points"],
+      "expected_absent": ["technical error"]
+    },
+    {
+      "id": "membership_existing_member_zh",
+      "kind": "membership",
+      "user": "请帮我注册会员",
+      "model_response": "注册失败。",
+      "result": {
+        "status": "success",
+        "data": {"already_member": true, "membership_status": "Silver", "points_balance": 120}
+      },
+      "expected_contains": ["已经是会员", "Silver", "120"],
+      "expected_absent": ["注册失败"]
+    },
+    {
+      "id": "document_failure_overrides_false_success_en",
+      "kind": "document",
+      "user": "Please send my confirmation PDF",
+      "model_response": "Your confirmation PDF was sent successfully.",
+      "result": {
+        "status": "not_found",
+        "message": "No booking could be resolved.",
+        "handoff_required": false
+      },
+      "expected_contains": ["not sent", "target booking could not be verified"],
+      "expected_absent": ["sent successfully"]
+    },
+    {
+      "id": "document_failure_handoff_zh",
+      "kind": "document",
+      "user": "请发送预约确认单",
+      "model_response": "确认单已发送。",
+      "result": {
+        "status": "error",
+        "message": "Delivery failed.",
+        "handoff_required": true
+      },
+      "expected_contains": ["没有成功发送", "员工跟进"],
+      "expected_absent": ["确认单已发送"]
+    }
+  ]
+}

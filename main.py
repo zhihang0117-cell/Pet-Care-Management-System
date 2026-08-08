@@ -188,6 +188,14 @@ def _warm_up_embedding_model() -> None:
         )
 
 
+@app.on_event("startup")
+def _verify_database_schema() -> None:
+    """Fail deployment before traffic when a required migration is absent."""
+    from app.db.schema_preflight import verify_required_supabase_schema
+
+    verify_required_supabase_schema()
+
+
 def _agent_state_summary(state) -> dict:
     """Small, non-sensitive progress snapshot for the authenticated eval console."""
     return {

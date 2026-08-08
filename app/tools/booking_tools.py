@@ -412,9 +412,18 @@ def create_booking(
             try:
                 from app.tools.customer_tools import _pet_details_for
 
-                catalogue_pet_type, catalogue_pet_size = _pet_details_for(int(company_id), int(pet_id))
-            except Exception:
-                pass  # A lookup hiccup here must never block the write — falls through to no verification.
+                catalogue_pet_type, catalogue_pet_size = _pet_details_for(
+                    int(company_id), int(customer_id), int(pet_id)
+                )
+            except Exception as exc:
+                return {
+                    "error": "PET_OWNERSHIP_UNVERIFIED",
+                    "message": (
+                        "The selected pet could not be verified as belonging to this customer; "
+                        "no booking was written."
+                    ),
+                    "_internal_error": str(exc),
+                }
         price_mismatch = _verify_flat_price_against_catalogue(
             company_id, normalized_service, package_name, price,
             pet_type=catalogue_pet_type, pet_size=catalogue_pet_size,

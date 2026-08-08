@@ -28,13 +28,132 @@ def test_match_named_pet_resolves_the_pet_named_in_this_message():
     assert state.pet_name == "Lili"
 
 
-def test_match_named_pet_does_nothing_when_no_known_pet_is_named():
+def test_match_named_pet_resolves_unambiguous_other_pet_reference():
     state = _state_with_two_pets()
     state.pet_id = 5  # simulate an earlier turn having resolved Simba
     PawfectOrchestrator._match_named_pet(state, "and what about my other pet?")
-    # No name match this turn -> must not guess; stale state.pet_id is left
-    # for _known_pet_by_id/_run_tool's override to handle, not overwritten here.
-    assert state.pet_id == 5
+    assert state.pet_id == 25
+    assert state.pet_name == "Lili"
+
+
+def test_match_named_pet_supports_cjk_names_without_word_boundaries():
+    state = ConversationState(phone_number="+60123456705", company_id="1")
+    state.turn_counter = 3
+    state.known_pets = [
+        {"pet_id": 7, "pet_type": "Dog", "pet_name": "小白", "pet_size": "S"}
+    ]
+
+    PawfectOrchestrator._match_named_pet(state, "帮小白预约美容")
+
+    assert state.pet_id == 7
+    assert state.pet_selected_turn == 3
+
+
+def test_match_named_pet_resolves_unique_species_reference():
+    state = ConversationState(phone_number="+60123456705", company_id="1")
+    state.turn_counter = 4
+    state.known_pets = [
+        {"pet_id": 5, "pet_type": "Dog", "pet_name": "Simba", "pet_size": "S"},
+        {"pet_id": 25, "pet_type": "Cat", "pet_name": "Lili", "pet_size": "S"},
+    ]
+    state.pet_id = 5
+
+    PawfectOrchestrator._match_named_pet(state, "what about my cat?")
+
+    assert state.pet_id == 25
+    assert state.pet_selected_turn == 4
+
+
+def test_multi_pet_tool_uses_unambiguous_other_pet_not_stale_state(monkeypatch):
+    class CapturingTool:
+        def invoke(self, args):
+            return dict(args)
+
+    monkeypatch.setitem(TOOLS_BY_NAME, "get_booking_service_options", CapturingTool())
+    state = _state_with_two_pets()
+    state.customer_id = 42
+    state.pet_id = 5
+    state.pet_name = "Simba"
+    state.pet_selected_turn = 1
+    state.turn_counter = 2
+    PawfectOrchestrator._match_named_pet(state, "and what about my other pet?")
+
+    result = object.__new__(PawfectOrchestrator)._run_tool(
+        {
+            "name": "get_booking_service_options",
+            "args": {"service_type": "GROOMING", "pet_id": 25},
+        },
+        state=state,
+        user_message="and what about my other pet?",
+    )
+
+    assert result["pet_id"] == 25
+    assert result["customer_id"] == 42
+
+
+def test_general_catalogue_enquiry_does_not_require_customer_identity(monkeypatch):
+    class CapturingTool:
+        def invoke(self, args):
+            return dict(args)
+
+    monkeypatch.setitem(TOOLS_BY_NAME, "get_booking_service_options", CapturingTool())
+    state = ConversationState(phone_number="+60123456705", company_id="7")
+
+    result = object.__new__(PawfectOrchestrator)._run_tool(
+        {
+            "name": "get_booking_service_options",
+            "args": {"service_type": "BOARDING"},
+        },
+        state=state,
+        user_message="What boarding rooms do you have?",
+    )
+
+    assert result == {"company_id": "7", "service_type": "BOARDING"}
+
+
+def test_multi_pet_tool_reuses_current_flow_pet_when_model_omits_id(monkeypatch):
+    class CapturingTool:
+        def invoke(self, args):
+            return dict(args)
+
+    monkeypatch.setitem(TOOLS_BY_NAME, "get_booking_service_options", CapturingTool())
+    state = _state_with_two_pets()
+    state.customer_id = 42
+    state.pet_id = 25
+    state.pet_selected_turn = 1
+    state.turn_counter = 2
+
+    result = object.__new__(PawfectOrchestrator)._run_tool(
+        {"name": "get_booking_service_options", "args": {"service_type": "GROOMING"}},
+        state=state,
+        user_message="show me the packages",
+    )
+
+    assert result["pet_id"] == 25
+
+
+def test_multi_pet_tool_rejects_model_only_pet_switch(monkeypatch):
+    class CapturingTool:
+        def invoke(self, args):
+            raise AssertionError("tool must not run")
+
+    monkeypatch.setitem(TOOLS_BY_NAME, "get_booking_service_options", CapturingTool())
+    state = _state_with_two_pets()
+    state.customer_id = 42
+    state.pet_id = 5
+    state.pet_selected_turn = 1
+    state.turn_counter = 2
+
+    result = object.__new__(PawfectOrchestrator)._run_tool(
+        {
+            "name": "get_booking_service_options",
+            "args": {"service_type": "GROOMING", "pet_id": 25},
+        },
+        state=state,
+        user_message="show me the packages",
+    )
+
+    assert result["error_code"] == "PET_SELECTION_REQUIRED"
 
 
 def test_known_pet_by_id_finds_a_real_pet():
