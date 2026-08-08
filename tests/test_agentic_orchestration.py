@@ -1738,6 +1738,157 @@ def test_tool_repair_catches_booking_status_and_policy_claims_behind_a_question(
     )
 
 
+def test_tool_repair_catches_a_fabricated_no_availability_claim():
+    """Confirmed live: "Unfortunately, there are no grooming slots available
+    tomorrow. Would you like to choose a different date or time?" passed
+    straight through with an EMPTY trace (zero tool calls this turn) — the
+    existing availability backstop only matched a positive "X is available"
+    claim, never a negative "no slots available" one, even though a
+    fabricated refusal costs a real booking exactly as a fabricated slot
+    does."""
+    assert PawfectOrchestrator._needs_tool_repair(
+        ConversationState(phone_number="+60123456705", company_id="1"),
+        "Do you have grooming slots available tomorrow?",
+        "Unfortunately, there are no grooming slots available tomorrow. "
+        "Would you like to choose a different date or time?",
+        [],
+    )
+    assert PawfectOrchestrator._needs_tool_repair(
+        ConversationState(phone_number="+60123456705", company_id="1"),
+        "有没有空位？",
+        "很抱歉，明天没有空位。",
+        [],
+    )
+
+    # A real check_availability call this turn still makes the same negative
+    # answer trustworthy. (Text deliberately doesn't name a service — a
+    # message naming "grooming"/"daycare"/"boarding" also trips the
+    # separate, pre-existing catalogue_intent check further down this same
+    # function, which is a distinct, narrower issue left alone here.)
+    availability_trace = [{
+        "tool": "check_availability",
+        "result": '{"status":"success","data":{"available_slots":[]}}',
+    }]
+    assert not PawfectOrchestrator._needs_tool_repair(
+        ConversationState(phone_number="+60123456705", company_id="1"),
+        "Do you have any slots available tomorrow?",
+        "Unfortunately, there are no slots available tomorrow.",
+        availability_trace,
+    )
+
+
+def test_fabricated_no_availability_claim_is_caught_across_realistic_human_phrasings():
+    """Broad phrasing sweep: a real customer-facing model reply never says
+    "no slots available" verbatim, it paraphrases — casual, formal, EN/ZH,
+    with contractions, emoji, idioms. Every one of these must still be
+    caught with an empty trace (no real availability check backing it)."""
+    fabricated_refusals = [
+        "Sorry, we're fully booked tomorrow.",
+        "Nope, nothing free tomorrow.",
+        "Unfortunately we don't have any slots left tomorrow.",
+        "No open slots for tomorrow, I'm afraid.",
+        "Ah sorry, tomorrow's slots are all taken.",
+        "We don't have anything available tomorrow, sorry!",
+        "Tomorrow is fully booked, sorry about that.",
+        "There's nothing available tomorrow unfortunately.",
+        "Sorry hun, no free slots tomorrow :(",
+        "All our slots for tomorrow are gone.",
+        "We're all booked up tomorrow.",
+        "I don't think we have any openings tomorrow.",
+        "Nothing's open tomorrow, sorry.",
+        "We're completely booked for tomorrow.",
+        "Sorry, no vacancy tomorrow.",
+        "Sorry, we can't fit you in tomorrow.",
+        "Tomorrow's fully booked, sorry!",
+        "不好意思，明天没位置了。",
+        "抱歉，明天已经满了。",
+        "明天没有空档。",
+        "明天的位子都被订满了。",
+        "不好意思哦，明天约满了。",
+        "很抱歉，明天没有空位。",
+    ]
+    for reply in fabricated_refusals:
+        assert PawfectOrchestrator._needs_tool_repair(
+            ConversationState(phone_number="+60123456705", company_id="1"),
+            "Any slots free tomorrow?",
+            reply,
+            [],
+        ), f"should have caught: {reply!r}"
+
+    # Genuinely unrelated replies (clarifying questions, real positive
+    # answers, generic small talk) must never be forced into repair by this
+    # same broadened pattern.
+    benign_replies = [
+        "Which pet is this booking for?",
+        "What date would you like to book?",
+        "Sure! What time works best for you?",
+        "Got it, may I know your pet's name?",
+        "I can help with that — could you confirm the service type first?",
+        "Could you tell me what time you'd prefer?",
+        "Let me check that for you, one moment.",
+        "Sure, I can help you book that daycare slot.",
+    ]
+    for reply in benign_replies:
+        assert not PawfectOrchestrator._needs_tool_repair(
+            ConversationState(phone_number="+60123456705", company_id="1"),
+            "Any slots free tomorrow?",
+            reply,
+            [],
+        ), f"should NOT have caught: {reply!r}"
+
+
+def test_tool_repair_catches_a_booking_preview_stating_a_stale_unverified_time():
+    """Confirmed live: "Here's the updated summary of your booking for Yoyo
+    on August 13, 2026: ... Check-in Time: 16:00 ... Please confirm if you
+    would like to proceed with this booking!" was shown with NO
+    check_availability call this turn — 16:00 was carried forward from an
+    earlier turn's evidence, never freshly verified. The customer confirmed,
+    and create_booking's own real check then rejected 16:00 as unavailable,
+    sending them back to square one. create_booking has no
+    confirmation_required step of its own, so nothing else catches this."""
+    state = ConversationState(
+        phone_number="+60123456705", company_id="1", active_scenario="MAKE_BOOKING"
+    )
+    preview = (
+        "Here's the updated summary of your booking for Yoyo on **August 13, 2026**:\n\n"
+        "- **Service**: Standard Bath - Groomers Choice (RM80)\n"
+        "- **Add-on**: Ear Cleaning (RM15)\n"
+        "- **Check-in Time**: 16:00\n"
+        "- **Total Cost**: RM95\n\n"
+        "Please confirm if you would like to proceed with this booking!"
+    )
+    assert PawfectOrchestrator._needs_tool_repair(state, "confirm", preview, [])
+
+    # A fresh check_availability call this turn that actually includes
+    # 16:00 makes the same preview trustworthy.
+    fresh_trace = [{
+        "tool": "check_availability",
+        "result": json.dumps({
+            "status": "success",
+            "data": {"available_slots": ["15:30:00", "16:00:00", "16:30:00"]},
+        }),
+    }]
+    assert not PawfectOrchestrator._needs_tool_repair(state, "confirm", preview, fresh_trace)
+
+    # A fresh call this turn that does NOT include 16:00 (the real bug) must
+    # still force repair, not just an empty trace.
+    stale_trace = [{
+        "tool": "check_availability",
+        "result": json.dumps({
+            "status": "success",
+            "data": {"available_slots": ["09:30:00", "10:00:00"]},
+        }),
+    }]
+    assert PawfectOrchestrator._needs_tool_repair(state, "confirm", preview, stale_trace)
+
+    # Once create_booking has actually succeeded this turn, restating its
+    # confirmed time is no longer subject to this check.
+    created_trace = [{"tool": "create_booking", "result": '{"status":"success"}'}]
+    assert not PawfectOrchestrator._needs_tool_repair(
+        state, "confirm", "Your booking is confirmed for 16:00. See you then!", created_trace
+    )
+
+
 def test_prompt_keeps_recommendations_evidence_based_and_optional():
     assert "Helpful recommendations are a core capability" in SYSTEM_PROMPT
     assert "suggest only options supported by current-company evidence" in SYSTEM_PROMPT

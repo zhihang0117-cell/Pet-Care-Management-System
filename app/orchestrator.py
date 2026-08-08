@@ -69,6 +69,7 @@ from app.agent.tool_loop import (
     compact_evidence_result,
     enrich_customer_context,
     finalize_customer_response,
+    fresh_available_times,
     invoke_with_turn_read_cache,
     mutation_signature,
     ordered_tool_calls,
@@ -2016,16 +2017,73 @@ class PawfectOrchestrator:
         # response_requests_customer_input's early return skip past
         # availability_intent entirely and silently accept the same
         # fabricated slot.
+        #
+        # Confirmed live: the ZERO-tool-call turn is not just a positive-slot
+        # risk — "Unfortunately, there are no grooming slots available
+        # tomorrow." with an empty trace (no check_availability call at all)
+        # passed straight through, because every pattern above only matched
+        # a positive "X is available" claim. A fabricated "nothing's
+        # available" is exactly as false and costs a real booking, so the
+        # negative phrasing needs the same backstop, not just the positive
+        # one.
+        # The negative side is deliberately broad — checked live against ~25
+        # realistic human phrasings (casual/formal, EN/ZH, "we're full",
+        # "don't have any openings", "all taken", "slots are gone", etc.)
+        # rather than one exact template, because a real customer-facing
+        # model reply never says "no slots available" verbatim; it paraphrases.
         availability_value_claim = bool(re.search(
             r"\d{1,2}(?::\d{2})?\s*(?:am|pm)?\s+is\s+available|"
             r"available\s+(?:at|on)\s+\d|"
             r"\bslots?\s+(?:is|are)\s+available\b|"
-            r"有空位|有档期|时段.{0,5}有空",
+            # negation word + availability noun: "no slots", "don't have any
+            # openings", "nothing available", "zero vacancies".
+            r"\b(?:no|not\s+any|zero|none|don'?t|doesn'?t|do\s+not|does\s+not)\b"
+                r"(?:\s+\w+){0,3}?\s+(?:have\s+)?(?:any\s+)?"
+                r"(?:slots?|openings?|vacanc(?:y|ies)|availability|times?|appointments?|rooms?|anything)\s*"
+                r"(?:available|open|free|left)?\b|"
+            r"\bnothing(?:'s|\s+is)?\s+(?:available|open|free)\b|"
+            # availability noun + bad-state word, either order: "slots are
+            # all taken", "all our slots are gone", "rooms are unavailable".
+            r"\b(?:slots?|times?|appointments?|rooms?|openings?)\b.{0,20}\b(?:all\s+)?(?:taken|gone|full|unavailable)\b|"
+            r"\b(?:fully|all|completely)[\s-]?booked\b|"
+            r"\bbooked\s+up\b|\bbooked\s+solid\b|\ball\s+booked\b|"
+            r"\bcan(?:not|'t)\s+(?:fit|accommodate|squeeze)\s+(?:you|anyone)?\b|"
+            r"\bwe'?re\s+(?:fully\s+)?full\b|"
+            r"有空位|有档期|时段.{0,5}有空|"
+            r"没(?:有)?.{0,10}(?:空位|档期|时段|名额|空档|位置|位子)|(?:已经)?(?:满了|订满|约满|排满)",
             answer,
             re.IGNORECASE,
         ))
         if availability_value_claim and not trace_has_successful_availability(trace):
             return True
+
+        # create_booking has no confirmation_required step of its own — the
+        # "please confirm this booking" preview is composed entirely by the
+        # model from whatever availability evidence it has, which can be
+        # several turns old by the time an add-on/confirm step is reached.
+        # Confirmed live: a preview stated "Check-in Time: 16:00", the
+        # customer confirmed, and create_booking's own real check rejected
+        # 16:00 as unavailable — that time was never backed by a fresh
+        # check_availability call this turn, just carried forward from
+        # memory. None of the claim patterns above catch this: it's a
+        # summary line, not a sentence containing the word "available".
+        # Checked before the response_requests_customer_input early return
+        # below, same as the other claims — "Please confirm..." itself
+        # matches that function's own trigger phrase and would otherwise
+        # bypass this entirely.
+        if (
+            state.active_scenario == "MAKE_BOOKING"
+            and "create_booking" not in successful_tools
+            and re.search(
+                r"please\s+confirm|reply\s+yes|confirm\s+(?:this|the)\s+booking|"
+                r"确认(?:预约|这个预约|以上|吗)|回复.{0,4}(?:确认|yes)",
+                answer,
+                re.IGNORECASE,
+            )
+        ):
+            stated_times = set(re.findall(r"\b\d{1,2}:\d{2}\b", answer))
+            if stated_times and not stated_times & fresh_available_times(trace):
+                return True
 
         # HEALTH BOUNDARY in the system prompt says "Only after success may
         # the updated status be treated as recorded" — this had zero

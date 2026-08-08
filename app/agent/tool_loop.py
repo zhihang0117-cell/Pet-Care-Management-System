@@ -224,6 +224,40 @@ def trace_has_successful_availability(trace: list[dict]) -> bool:
     return False
 
 
+def fresh_available_times(trace: list[dict]) -> set[str]:
+    """Every real HH:MM time this turn's own check_availability/
+    check_availability_range call(s) actually returned as available.
+
+    create_booking has no confirmation_required step of its own (unlike
+    cancel_booking/register_loyalty_member) — the "please confirm this
+    booking" preview is composed entirely by the model from whatever
+    availability evidence it has, which can be several turns old by the
+    time the customer reaches an add-on/confirm step. A stated time that
+    isn't in this set is exactly as fabricated as any other unsupported
+    claim, just formatted as a summary line ("Check-in Time: 16:00")
+    instead of a sentence — see _needs_tool_repair's booking-preview check.
+    """
+    times: set[str] = set()
+    for item in trace:
+        if item.get("tool") not in {"check_availability", "check_availability_range"}:
+            continue
+        result = _parsed_trace_result(item)
+        if not isinstance(result, dict):
+            continue
+        if item.get("tool") == "check_availability_range":
+            for day in result.get("days") or []:
+                for slot in day.get("available_slots") or []:
+                    times.add(str(slot)[:5])
+            continue
+        if tool_result_status(result) != "success":
+            continue
+        data = result.get("data") or {}
+        for key in ("available_slots", "available_check_out_times"):
+            for slot in data.get(key) or []:
+                times.add(str(slot)[:5])
+    return times
+
+
 def successful_trace_tools(trace: list[dict]) -> set[str]:
     """Tool names with an actually successful result, not merely a call."""
     successful: set[str] = set()
