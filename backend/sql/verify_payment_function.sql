@@ -407,5 +407,5 @@ grant execute on function verify_payment(int, int, int, int, numeric, int, text,
   to service_role;
 revoke all on function request_redemption(int, int, int) from public, anon, authenticated;
 grant execute on function request_redemption(int, int, int) to service_role;
-revoke all on function decide_redemption(int, int, text) from public, anon, authenticated;
-grant execute on function decide_redemption(int, int, text) to service_role;
+revoke all on function decide_redemption(int, int, text, text) from public, anon, authenticated;
+grant execute on function decide_redemption(int, int, text, text) to service_role;
