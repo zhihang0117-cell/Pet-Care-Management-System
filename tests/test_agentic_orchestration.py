@@ -16,32 +16,30 @@ from app.orchestrator import (
 )
 from app.context.runtime_context import build_runtime_context, customer_context_for_state
 from app.prompts.system_prompt import SYSTEM_PROMPT
-from app.agent.booking_authorization import reject_unconfirmed_optional_booking_fields
-from app.agent.confirmation_policy import confirmation_intent
+from app.agent.guardrails import (
+    confirmation_intent,
+    reject_unconfirmed_optional_booking_fields,
+    sync_scenario_from_tool_call,
+)
 from app.agent.response_grounding import (
     ground_daycare_recommendation_response,
     ground_direct_datetime_response,
     ground_document_delivery_response,
     ground_latest_availability_response,
 )
-from app.agent.scenario_state import sync_scenario_from_tool_call
-from app.agent.tool_batch_execution import (
+from app.agent.tool_loop import (
     await_tool_future_result,
-    plan_tool_batch,
-)
-from app.agent.tool_call_runtime import restore_confirmed_pending_args
-from app.agent.tool_execution_policy import (
+    batch_has_duplicate_suppression,
+    booking_availability_repair,
     compact_evidence_result,
     mutation_signature,
     ordered_tool_calls,
+    plan_tool_batch,
+    restore_confirmed_pending_args,
+    reused_failed_mutation,
     successful_trace_tools,
     tool_result_status,
     trace_has_successful_document_delivery,
-)
-from app.agent.tool_loop_outcomes import (
-    batch_has_duplicate_suppression,
-    booking_availability_repair,
-    reused_failed_mutation,
 )
 from app.tools.document_tools import send_booking_confirmation
 from app.tools.customer_tools import _extract_daycare_catalogue_options
@@ -598,12 +596,18 @@ def test_direct_datetime_response_falls_back_on_a_vague_non_answer():
     assert grounded.content == "The date is 2026-08-15 (Saturday)."
 
 
-def test_daycare_recommendation_trusts_model_when_it_already_names_eligible_option():
+def test_daycare_recommendation_never_trusts_model_even_when_naming_right_option():
+    """Regression test: naming the right option is not enough — a reply can
+    still mislead by stating a raw per-unit rate instead of the actual total
+    for the requested duration (confirmed live: "RM20 per hour" for Hourly
+    Care listed ahead of a flat RM55 option that's actually cheaper for a
+    7-hour stay). This must always be replaced by the computed comparison."""
     state = ConversationState(
         phone_number="+60123456705",
         company_id="1",
+        active_scenario="MAKE_BOOKING",
         service_type="DAYCARE",
-        daycare_duration_minutes=240,
+        daycare_duration_minutes=420,
     )
     trace = [{
         "tool": "get_booking_service_options",
@@ -612,6 +616,11 @@ def test_daycare_recommendation_trusts_model_when_it_already_names_eligible_opti
             "status": "success",
             "data": {
                 "service_options": [
+                    {
+                        "service_name": "Hourly Care",
+                        "price": 20,
+                        "pricing_unit": "hour",
+                    },
                     {
                         "service_name": "Daycare Above 3 Hours",
                         "price": 55,
@@ -623,19 +632,75 @@ def test_daycare_recommendation_trusts_model_when_it_already_names_eligible_opti
             },
         }),
     }]
-    own_words = AIMessage(
-        content="For four hours, Daycare Above 3 Hours at RM55 fits best."
+    misleading = AIMessage(
+        content=(
+            "1. Hourly Care: RM20 per hour.\n"
+            "2. Daycare Above 3 Hours: RM55 for the day.\n"
+            "Would you like the full day at RM55, or the hourly option?"
+        )
     )
 
     grounded = ground_daycare_recommendation_response(
-        own_words,
-        "Which daycare service should I choose for four hours?",
+        misleading,
+        "i want to put it for daycare from next tuesday 9 to 4",
         trace,
         state,
     )
 
-    assert grounded is own_words
-    assert grounded.content == own_words.content
+    assert grounded.content != misleading.content
+    assert "Daycare Above 3 Hours — RM55" in grounded.content
+    assert "best direct match" in grounded.content
+    # The actual total for 7 hours (RM140), not the misleading raw rate.
+    assert "RM140" in grounded.content
+
+
+def test_daycare_recommendation_ranks_by_price_not_by_match_specificity():
+    """Regression: the ranking sort previously ordered by "how specifically
+    an option matched" (exact duration=0, tier=1, hourly=2) before price, so
+    a pricier exact-duration package could be called "the best direct
+    match" ahead of a cheaper eligible package for the same duration. Price
+    must decide "best" whenever more than one option is genuinely eligible."""
+    state = ConversationState(
+        phone_number="+60123456705",
+        company_id="1",
+        active_scenario="MAKE_BOOKING",
+        service_type="DAYCARE",
+        daycare_duration_minutes=180,
+    )
+    trace = [{
+        "tool": "get_booking_service_options",
+        "args": {"service_type": "DAYCARE", "pet_id": 7},
+        "result": json.dumps({
+            "status": "success",
+            "data": {
+                "service_options": [
+                    # Exact-duration match (rank 0) but pricier.
+                    {
+                        "service_name": "3-Hour Package",
+                        "price": 60,
+                        "pricing_unit": "flat",
+                        "duration_minutes": 180,
+                    },
+                    # Hourly (rank 2), cheaper for the same 3-hour stay: RM45.
+                    {
+                        "service_name": "Hourly Care",
+                        "price": 15,
+                        "pricing_unit": "hour",
+                    },
+                ]
+            },
+        }),
+    }]
+
+    grounded = ground_daycare_recommendation_response(
+        AIMessage(content="Here is the entire menu."),
+        "Which daycare package works for 3 hours?",
+        trace,
+        state,
+    )
+
+    assert "best direct match is Hourly Care — RM45" in grounded.content
+    assert "3-Hour Package — RM60" in grounded.content
 
 
 def test_daycare_recommendation_uses_duration_ranges_and_calculated_hourly_total():
@@ -966,6 +1031,95 @@ def test_latest_availability_result_deterministically_replaces_unverified_times(
     assert "17:30" in grounded.content
     assert "18:30" not in grounded.content
     assert "只有" in grounded.content
+
+
+def test_empty_availability_states_closed_reason_not_a_generic_guess():
+    response = AIMessage(content="I apologize, no slots due to scheduling conflicts.")
+    trace = [{
+        "tool": "check_availability",
+        "result": json.dumps({
+            "status": "success",
+            "data": {
+                "available_slots": [],
+                "closed_reason": "Public Holiday",
+            },
+        }),
+    }]
+
+    grounded = ground_latest_availability_response(
+        response, "Do you have grooming slots available tomorrow?", trace,
+        is_repeat_booking_request=PawfectOrchestrator._is_repeat_booking_request,
+    )
+
+    assert "Public Holiday" in grounded.content
+    assert "not operating" in grounded.content
+    assert "scheduling conflicts" not in grounded.content
+
+
+def test_empty_availability_without_closed_reason_says_fully_booked():
+    response = AIMessage(content="Sorry, closed that day.")
+    trace = [{
+        "tool": "check_availability",
+        "result": json.dumps({
+            "status": "success",
+            "data": {"available_slots": []},
+        }),
+    }]
+
+    grounded = ground_latest_availability_response(
+        response, "Do you have grooming slots available tomorrow?", trace,
+        is_repeat_booking_request=PawfectOrchestrator._is_repeat_booking_request,
+    )
+
+    assert "already booked" in grounded.content
+    assert "not operating" not in grounded.content
+
+
+def test_range_availability_all_closed_states_reasons_not_fully_booked():
+    response = AIMessage(content="Nothing available this week.")
+    trace = [{
+        "tool": "check_availability_range",
+        "result": json.dumps({
+            "status": "success",
+            "days": [
+                {"date": "2026-08-15", "available_slots": [], "closed_reason": "Closed"},
+                {"date": "2026-08-16", "available_slots": [], "closed_reason": "Public Holiday"},
+            ],
+        }),
+    }]
+
+    grounded = ground_latest_availability_response(
+        response, "Any slots next week?", trace,
+        is_repeat_booking_request=PawfectOrchestrator._is_repeat_booking_request,
+    )
+
+    assert "2026-08-15" in grounded.content
+    assert "Public Holiday" in grounded.content
+    assert "not operating" in grounded.content
+
+
+def test_range_availability_mixed_closed_and_full_falls_back_to_fully_booked():
+    response = AIMessage(content="Nothing available this week.")
+    trace = [{
+        "tool": "check_availability_range",
+        "result": json.dumps({
+            "status": "success",
+            "days": [
+                {"date": "2026-08-15", "available_slots": [], "closed_reason": "Closed"},
+                {"date": "2026-08-16", "available_slots": []},
+            ],
+        }),
+    }]
+
+    grounded = ground_latest_availability_response(
+        response, "Any slots next week?", trace,
+        is_repeat_booking_request=PawfectOrchestrator._is_repeat_booking_request,
+    )
+
+    # A mixed range (only some days closed) must never be misreported as
+    # "not operating" for the whole range.
+    assert "not operating" not in grounded.content
+    assert "fully booked" in grounded.content
 
 
 def test_repeat_availability_reply_names_validated_historical_package_not_full_catalogue():

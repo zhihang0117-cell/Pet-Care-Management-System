@@ -252,6 +252,11 @@ def ground_latest_availability_response(
             for day in days
             if day.get("available_slots")
         ]
+        closed_days = [
+            (str(day.get("date") or ""), str(day.get("closed_reason")))
+            for day in days
+            if not day.get("available_slots") and day.get("closed_reason")
+        ]
         if verified_days:
             lines = [f"- {date_value}: {', '.join(slots)}" for date_value, slots in verified_days]
             if chinese:
@@ -260,18 +265,30 @@ def ground_latest_availability_response(
                 content = "Selepas semakan penuh, hanya masa berikut tersedia:\n" + "\n".join(lines) + "\nSila pilih daripada masa di atas."
             else:
                 content = "After a complete availability check, these are the available times:\n" + "\n".join(lines) + "\nPlease choose only from the times above."
+        elif closed_days and len(closed_days) == len(days):
+            # Only two real reasons exist for zero choices on every day in
+            # range — every day closed means "not operating", never a
+            # generic "fully booked" guess.
+            reasons = "; ".join(f"{date_value} ({reason})" for date_value, reason in closed_days)
+            if chinese:
+                content = f"完整校验后，这个日期范围内每一天都不营业：{reasons}。你可以换一个日期范围，我会重新检查。"
+            elif malay:
+                content = f"Selepas semakan penuh, perniagaan tidak beroperasi pada setiap hari dalam julat ini: {reasons}. Sila berikan julat tarikh lain untuk saya semak semula."
+            else:
+                content = f"After a complete availability check, the business is not operating on any day in this range: {reasons}. Please give me a different date range and I’ll check again."
         elif chinese:
-            content = "完整校验后，这个日期范围目前没有能满足全部条件的可用时段。你可以更换日期或其他预约条件，我会重新检查。"
+            content = "完整校验后，这个日期范围目前没有能满足全部条件的可用时段（营业日的员工/房间均已订满）。你可以更换日期或其他预约条件，我会重新检查。"
         elif malay:
-            content = "Selepas semakan penuh, tiada masa dalam julat tarikh ini yang memenuhi semua syarat. Beri tarikh atau syarat lain untuk saya semak semula."
+            content = "Selepas semakan penuh, tiada masa dalam julat tarikh ini yang memenuhi semua syarat (staf/bilik pada hari beroperasi telah ditempah penuh). Beri tarikh atau syarat lain untuk saya semak semula."
         else:
-            content = "After a complete availability check, no times in this date range satisfy all booking conditions. Give me another date or condition and I’ll check again."
+            content = "After a complete availability check, no times in this date range satisfy all booking conditions — staff/rooms on the operating days are already fully booked. Give me another date or condition and I’ll check again."
         return response.model_copy(update={"content": with_repeat_context(content)})
 
     data = result.get("data") or {}
     check_out_mode = str(data.get("selection_target") or "").upper() == "CHECK_OUT"
     key = "available_check_out_times" if check_out_mode else "available_slots"
     choices = [display_time(slot) for slot in data.get(key) or []]
+    closed_reason = data.get("closed_reason")
     if choices:
         joined = ", ".join(choices)
         if chinese:
@@ -283,15 +300,24 @@ def ground_latest_availability_response(
         else:
             target = "pickup/check-out" if check_out_mode else "check-in/drop-off"
             content = f"After a complete availability check, the only available {target} times are: {joined}. Please choose from these times."
+    elif closed_reason:
+        # Only two real reasons exist for zero choices — closed_reason present
+        # means "not operating", never a generic "fully booked" guess.
+        if chinese:
+            content = f"完整校验后，这一天不营业（{closed_reason}），因此没有可选时间。你可以换一个日期，我会重新检查。"
+        elif malay:
+            content = f"Selepas semakan penuh, perniagaan tidak beroperasi pada hari ini ({closed_reason}), jadi tiada masa tersedia. Sila berikan tarikh lain untuk saya semak semula."
+        else:
+            content = f"After a complete availability check, the business is not operating that day ({closed_reason}), so no times are available. Please give me a different date and I’ll check again."
     elif chinese:
         target = "pickup/check-out" if check_out_mode else "check-in/drop-off"
-        content = f"完整校验后，目前没有能满足全部条件的 {target} 时间。你可以更换日期、服务时长、房型或员工偏好，我会重新检查。"
+        content = f"完整校验后，目前没有能满足全部条件的 {target} 时间（当天所有符合条件的员工/房间均已订满）。你可以更换日期、服务时长、房型或员工偏好，我会重新检查。"
     elif malay:
         target = "pickup/check-out" if check_out_mode else "check-in/drop-off"
-        content = f"Selepas semakan penuh, tiada masa {target} yang memenuhi semua syarat. Beri tarikh atau syarat lain untuk saya semak semula."
+        content = f"Selepas semakan penuh, tiada masa {target} yang memenuhi semua syarat (semua staf/bilik yang layak telah ditempah). Beri tarikh atau syarat lain untuk saya semak semula."
     else:
         target = "pickup/check-out" if check_out_mode else "check-in/drop-off"
-        content = f"After a complete availability check, no {target} time satisfies all booking conditions. Give me another date or condition and I’ll check again."
+        content = f"After a complete availability check, no {target} time satisfies all booking conditions — every qualified staff member/room for that day is already booked. Give me another date or condition and I’ll check again."
     return response.model_copy(update={"content": with_repeat_context(content)})
 
 
@@ -388,21 +414,24 @@ def ground_daycare_recommendation_response(
 
     if not ranked:
         return response
-    ranked.sort(key=lambda item: (item[0], item[1], str(item[2].get("service_name") or "")))
+    # Price first, not match-specificity first — an exact-duration package
+    # is not "the best direct match" if a broader eligible tier/hourly
+    # package actually costs less for this duration. rank only breaks a tie
+    # between two equally-priced eligible options (preferring the more
+    # specific match), and name is the final, fully deterministic tie-break.
+    ranked.sort(key=lambda item: (item[1], item[0], str(item[2].get("service_name") or "")))
     recommendations = ranked[:2]
 
-    # Trust the model's own phrasing when it already names one of the
-    # actually-eligible options — only fall back to the canned comparison
-    # sentence when its answer doesn't demonstrably reflect the real
-    # duration/price computation above (e.g. it named an ineligible
-    # package, or gave a generic non-answer).
-    content_so_far = str(response.content or "")
-    if any(
-        str(item[2].get("service_name") or "") in content_so_far
-        for item in recommendations
-    ):
-        return response
-
+    # Always render the computed comparison — never trust the model's own
+    # phrasing here, even if it names an eligible option. Confirmed live: a
+    # reply that named the right (cheapest) package and a real ineligible-
+    # looking one too can still mislead by listing the more expensive
+    # per-unit-rate option first and stating its raw rate ("RM20 per hour")
+    # instead of the actual total for the requested duration ("RM140"),
+    # making it look cheaper than the flat RM55 option that's actually
+    # the better deal. This is real money, not phrasing — unlike
+    # ground_direct_datetime_response, a "the name appears somewhere"
+    # check is not enough to catch a misleading price presentation.
     duration_text = (
         f"{duration // 60:g} 小时" if duration % 60 == 0 else f"{duration} 分钟"
     ) if chinese else (

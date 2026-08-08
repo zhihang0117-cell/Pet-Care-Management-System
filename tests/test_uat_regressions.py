@@ -121,6 +121,106 @@ def test_1730_can_be_a_daycare_pickup_without_being_a_late_start(monkeypatch):
     assert "17:30:00" not in late_starts["data"]["available_slots"]
 
 
+def test_daycare_period_check_in_with_fixed_checkout_offers_a_slot_near_closing(monkeypatch):
+    """Regression: "daycare tomorrow morning, pick up at 6pm" (time="morning",
+    a period word, plus a real check_out_time) previously ignored
+    check_out_time entirely whenever check-in wasn't already an exact clock
+    string, silently falling back to the flat 180-minute DAYCARE default.
+    A candidate close to closing (whose true, short duration to the fixed
+    checkout easily fits) was wrongly excluded because the fictitious
+    3-hour window overran business hours."""
+    monkeypatch.setattr(
+        relational_actions,
+        "_business_hours_for_date",
+        lambda company_id, target_date: ("09:00", "18:30", None),
+    )
+    monkeypatch.setattr(relational_actions, "get_supabase_client", lambda: object())
+    monkeypatch.setattr(relational_actions, "_shared_booking_holds", lambda client, company_id: None)
+    monkeypatch.setattr(
+        relational_actions,
+        "_staff_day_roster",
+        lambda client, company_id, target_date, service_type=None: [
+            {"staff_id": 7, "staff_name": "Ari"}
+        ],
+    )
+    monkeypatch.setattr(
+        relational_actions,
+        "_cross_service_staff_bookings",
+        lambda client, company_id, staff_ids, date_str: [],
+    )
+    context = CustomerContext(company_id=1)
+
+    result = check_available_slots(
+        context,
+        {
+            "service_type": "DAYCARE",
+            "entities": {
+                "preferred_date": "2026-08-10",
+                "preferred_time": "morning",
+                "check_out_time": "18:00",
+            },
+        },
+    )
+
+    assert result["status"] == "success"
+    # True duration for a 17:30 start to the fixed 18:00 checkout is only
+    # 30 minutes — well within business hours — so it must be offered.
+    assert "17:30:00" in result["data"]["available_slots"]
+
+
+def test_daycare_period_check_in_with_fixed_checkout_still_detects_a_real_conflict(monkeypatch):
+    """Flip side of the fix above: an early candidate's TRUE duration (to the
+    fixed checkout) must be checked for staff conflicts, not just a
+    fictitious 3-hour window — otherwise a real conflict outside that
+    3-hour window is missed and an unavailable start gets offered anyway."""
+    monkeypatch.setattr(
+        relational_actions,
+        "_business_hours_for_date",
+        lambda company_id, target_date: ("09:00", "18:30", None),
+    )
+    monkeypatch.setattr(relational_actions, "get_supabase_client", lambda: object())
+    monkeypatch.setattr(relational_actions, "_shared_booking_holds", lambda client, company_id: None)
+    monkeypatch.setattr(
+        relational_actions,
+        "_staff_day_roster",
+        lambda client, company_id, target_date, service_type=None: [
+            {"staff_id": 7, "staff_name": "Ari"}
+        ],
+    )
+    # Ari already has a 14:00-15:00 booking — outside the OLD fictitious
+    # 3-hour window for a 09:00 start (09:00-12:00), but well inside the
+    # TRUE full span to an 18:00 checkout (09:00-18:00).
+    monkeypatch.setattr(
+        relational_actions,
+        "_cross_service_staff_bookings",
+        lambda client, company_id, staff_ids, date_str: [{
+            "staff_id": 7,
+            "check_in_time": "14:00:00",
+            "check_out_time": "15:00:00",
+            "booking_status": "Scheduled",
+            "_service_type": "DAYCARE",
+        }],
+    )
+    context = CustomerContext(company_id=1)
+
+    result = check_available_slots(
+        context,
+        {
+            "service_type": "DAYCARE",
+            "entities": {
+                "preferred_date": "2026-08-10",
+                "preferred_time": "morning",
+                "check_out_time": "18:00",
+            },
+        },
+    )
+
+    assert result["status"] == "success"
+    assert "09:00:00" not in result["data"]["available_slots"]
+    # A start after the conflicting booking ends is still genuinely free.
+    assert "15:00:00" in result["data"]["available_slots"]
+
+
 def test_half_hour_slots_are_available_even_when_business_opens_on_the_hour():
     slots = _time_slots_for_day("09:00", "18:30")
 
@@ -322,6 +422,180 @@ def test_reschedule_exclusion_is_scoped_to_the_booking_service():
     remaining = relational_actions._without_excluded_booking(rows, "GROOMING", 5)
 
     assert remaining == [{"_service_type": "DAYCARE", "daycare_booking_id": 5}]
+
+
+def test_reschedule_probe_excludes_a_groomings_own_current_slot(monkeypatch):
+    """Regression: a GROOMING (or DAYCARE) reschedule's own pre-check probe
+    previously only excluded the booking's own row from the availability
+    check for BOARDING, so shifting a grooming appointment to a new time
+    that overlaps its OWN current slot (same staff, same day — the ordinary
+    "push my appointment back 15 minutes" case) saw that slot as already
+    taken by itself and was wrongly rejected, even though the atomic write
+    RPC already excludes the booking correctly and would accept it."""
+    booking = {
+        "booking_id": 501,
+        "service_type": "GROOMING",
+        "pet_id": 9,
+        "pet_name": "Milo",
+        "staff_id": 7,
+        "booking_date": "2026-08-10",
+        "booking_time": "10:00:00",
+    }
+    monkeypatch.setattr(
+        relational_actions, "_locate_active_customer_booking", lambda context, intent_json: (booking, None)
+    )
+    monkeypatch.setattr(relational_actions, "_verify_booking_belongs_to_customer", lambda context, b: True)
+
+    class _OkVaccination:
+        ok = True
+        errors: list[str] = []
+
+    monkeypatch.setattr(
+        "app.validation.validator.check_vaccination_eligibility",
+        lambda *a, **kw: _OkVaccination(),
+    )
+    monkeypatch.setattr(
+        relational_actions,
+        "_business_hours_for_date",
+        lambda company_id, target_date: ("09:00", "18:00", None),
+    )
+
+    captured_probes = []
+
+    def fake_slot_is_available(context, intent_json, *, booking_date, booking_time):
+        captured_probes.append(dict(intent_json["entities"]))
+        return True
+
+    monkeypatch.setattr(relational_actions, "_slot_is_available", fake_slot_is_available)
+    monkeypatch.setattr(
+        relational_actions, "_service_table", lambda service_type: "grooming_booking"
+    )
+
+    class _FakeTable:
+        def update(self, *_args, **_kwargs):
+            return self
+
+        def eq(self, *_args, **_kwargs):
+            return self
+
+        def execute(self):
+            return SimpleNamespace(data=[{**booking, "booking_date": "2026-08-10", "booking_time": "10:15:00"}])
+
+    class _FakeClient:
+        def table(self, _name):
+            return _FakeTable()
+
+    monkeypatch.setattr(relational_actions, "get_supabase_client", lambda: _FakeClient())
+
+    context = CustomerContext(company_id=1)
+    context.resolved_customer_id = 42
+
+    relational_actions.reschedule_booking(
+        context,
+        {
+            "entities": {
+                "confirm_pet_name": "milo",
+                "new_preferred_date": "2026-08-10",
+                "new_preferred_time": "10:15",
+            }
+        },
+    )
+
+    assert captured_probes, "expected the availability probe to run"
+    probe_entities = captured_probes[0]
+    assert probe_entities["exclude_booking_id"] == 501
+    assert probe_entities["pet_id"] == 9
+
+
+def test_boarding_reschedule_preserves_stay_length_when_checkout_date_is_not_restated(monkeypatch):
+    """Regression: "reschedule from 25 aug to 28 aug, remain the time" (a
+    customer keeping the same stay length while only shifting the check-in
+    date) previously had no server-side fallback — BOARDING reschedule
+    required new_check_out_date to be explicitly supplied, so the model
+    computed one itself (28 Aug + the original 3 nights = 31 Aug), which can
+    never pass resolve_datetime verification since the customer's own words
+    never named "31 Aug" — a dead end for a completely ordinary request.
+    Mirrors DAYCARE reschedule's existing duration-preserving fallback."""
+    booking = {
+        "booking_id": 701,
+        "service_type": "BOARDING",
+        "pet_id": 9,
+        "pet_name": "Milo",
+        "staff_id": None,
+        "room_type": "Sirius Room",
+        "check_in_date": "2026-08-25",
+        "check_out_date": "2026-08-28",
+        "check_in_time": "11:00",
+        "check_out_time": "12:00",
+    }
+    monkeypatch.setattr(
+        relational_actions, "_locate_active_customer_booking", lambda context, intent_json: (booking, None)
+    )
+    monkeypatch.setattr(relational_actions, "_verify_booking_belongs_to_customer", lambda context, b: True)
+
+    class _OkVaccination:
+        ok = True
+        errors: list[str] = []
+
+    monkeypatch.setattr(
+        "app.validation.validator.check_vaccination_eligibility",
+        lambda *a, **kw: _OkVaccination(),
+    )
+    monkeypatch.setattr(
+        relational_actions,
+        "_business_hours_for_date",
+        lambda company_id, target_date: ("09:00", "18:00", None),
+    )
+
+    captured_probes = []
+
+    def fake_slot_is_available(context, intent_json, *, booking_date, booking_time):
+        captured_probes.append(dict(intent_json["entities"]))
+        return True
+
+    monkeypatch.setattr(relational_actions, "_slot_is_available", fake_slot_is_available)
+    monkeypatch.setattr(
+        relational_actions, "_service_table", lambda service_type: "boarding_booking"
+    )
+
+    class _FakeTable:
+        def update(self, *_args, **_kwargs):
+            return self
+
+        def eq(self, *_args, **_kwargs):
+            return self
+
+        def execute(self):
+            return SimpleNamespace(data=[{**booking, "check_in_date": "2026-08-28", "check_out_date": "2026-08-31"}])
+
+    class _FakeClient:
+        def table(self, _name):
+            return _FakeTable()
+
+    monkeypatch.setattr(relational_actions, "get_supabase_client", lambda: _FakeClient())
+
+    context = CustomerContext(company_id=1)
+    context.resolved_customer_id = 42
+
+    result = relational_actions.reschedule_booking(
+        context,
+        {
+            "entities": {
+                "confirm_pet_name": "milo",
+                "new_preferred_date": "2026-08-28",
+                "new_preferred_time": "11:00",
+                # Deliberately no new_check_out_date/new_check_out_time —
+                # the customer only said "remain the time".
+            }
+        },
+    )
+
+    assert result.get("error") != "UNVERIFIED_DATE"
+    assert captured_probes, "expected the availability probe to run"
+    # Original stay was 3 nights (25th-28th); shifted to a 28th check-in,
+    # the preserved-length check-out must be the 31st — computed
+    # server-side, never passed through the model.
+    assert captured_probes[0]["check_out_date"] == "2026-08-31"
 
 
 def test_fresh_boarding_check_never_excludes_an_existing_booking_implicitly(monkeypatch):

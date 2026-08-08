@@ -1,11 +1,20 @@
-"""Deterministic guardrails that reject model-invented tool arguments.
+"""Deterministic guardrails: reject model-invented tool arguments, resolve
+customer-owned references, and manage scenario/confirmation state.
 
-Each function here answers one question: "did the customer actually say
-this, or did the model fill in a plausible-looking value?" None of these
-decide whether a tool call is a good idea — that's the model's job, guided
-by the system prompt. They only ever return None (argument accepted) or a
-rejection dict the tool-calling loop feeds back so the model can try again
-with real customer input instead of an invented one.
+None of this decides whether a tool call is a good idea — that's the
+model's job, guided by the system prompt. This module only ever answers
+narrow, mechanical questions ("did the customer actually say this, or did
+the model fill in a plausible-looking value?", "which pet/scenario does
+this session actually mean?") and returns either an accepted/corrected
+value or a rejection dict the tool-calling loop feeds back so the model can
+retry with real customer input instead of an invented one.
+
+Organized in five sections:
+  1. Pet/species resolution
+  2. Confirmation-phrase classification
+  3. Scenario state transitions
+  4. Customer-text/evidence matching helpers
+  5. Tool-argument scoping and rejection guardrails (the bulk of this file)
 """
 
 from __future__ import annotations
@@ -14,8 +23,482 @@ import re
 from collections.abc import Callable
 from typing import Any
 
-from app.agent.booking_authorization import customer_stated_value, recent_customer_text
-from app.agent.pet_resolution import CAT_WORDS_RE, DOG_WORDS_RE, known_pet_by_id, stated_species
+from app.scenarios.loader import load_scenario
+
+# =============================================================================
+# 1. Pet/species resolution — resolve customer-owned pet references without
+#    trusting a model-selected identifier.
+# =============================================================================
+
+DOG_WORDS_RE = re.compile(r"\b(?:dog|puppy|anjing)\b|犬|狗")
+CAT_WORDS_RE = re.compile(r"\b(?:cat|kitten|kucing)\b|猫|貓")
+
+
+def stated_species(user_message: str) -> str | None:
+    text = str(user_message or "").casefold()
+    has_dog = bool(DOG_WORDS_RE.search(text))
+    has_cat = bool(CAT_WORDS_RE.search(text))
+    if has_dog and not has_cat:
+        return "dog"
+    if has_cat and not has_dog:
+        return "cat"
+    return None
+
+
+def known_pet_by_id(state: Any, pet_id: object) -> dict | None:
+    """Return an owned roster entry, never a model-only pet identifier."""
+    if pet_id is None or str(pet_id).strip() == "":
+        return None
+    try:
+        target = int(pet_id)
+    except (TypeError, ValueError):
+        return None
+    return next(
+        (
+            pet
+            for pet in state.known_pets
+            if str(pet.get("pet_id")) == str(target)
+        ),
+        None,
+    )
+
+
+def match_named_pet(state: Any, user_message: str) -> None:
+    """Cache one unambiguous name, other-pet, or unique-species reference."""
+    if not state.known_pets or not user_message:
+        return
+    text = user_message.casefold()
+
+    def name_appears(name: object) -> bool:
+        normalized = str(name or "").strip().casefold()
+        if not normalized:
+            return False
+        if re.search(r"[㐀-鿿]", normalized):
+            return normalized in text
+        return bool(re.search(rf"\b{re.escape(normalized)}\b", text))
+
+    matches = [
+        pet for pet in state.known_pets if name_appears(pet.get("pet_name"))
+    ]
+    if not matches and len(state.known_pets) == 2 and re.search(
+        r"\b(?:the\s+)?other\s+(?:one|pet)\b|另一个|另一只|另外一个|另外一只|"
+        r"\b(?:yang\s+)?satu\s+lagi\b",
+        text,
+        re.IGNORECASE,
+    ):
+        previous = known_pet_by_id(state, state.pet_id)
+        if previous is not None:
+            matches = [
+                pet
+                for pet in state.known_pets
+                if str(pet.get("pet_id")) != str(previous.get("pet_id"))
+            ]
+    if not matches:
+        species = stated_species(user_message)
+        if species:
+            species_matches = [
+                pet
+                for pet in state.known_pets
+                if str(pet.get("pet_type") or "").strip().casefold() == species
+            ]
+            if len(species_matches) == 1:
+                matches = species_matches
+    if len(matches) != 1:
+        return
+
+    selected = matches[0]
+    state.pet_id = selected.get("pet_id")
+    state.pet_type = selected.get("pet_type")
+    state.pet_name = selected.get("pet_name")
+    state.pet_size = selected.get("pet_size")
+    state.pet_breed = selected.get("pet_breed")
+    state.pet_selected_turn = state.turn_counter
+
+
+# =============================================================================
+# 2. Confirmation-phrase classification — fail-closed natural-language
+#    affirmative/negative detection for standalone confirmation turns.
+# =============================================================================
+
+AFFIRMATIVE_RE = re.compile(
+    r"^(?:yes|y|correct|confirm(?:ed)?|proceed|continue|go\s+ahead|book\s+it|"
+    r"do\s+it|ok(?:ay)?|sure|ya|boleh|ya\s+boleh|teruskan|sahkan|可以|确认|"
+    r"確認|正确|正確|对|對|没错|沒錯|是的|好|好的|同意|继续|繼續|没问题|"
+    r"沒問題)$",
+    re.IGNORECASE,
+)
+NEGATIVE_RE = re.compile(
+    r"^(?:no(?:\s*no)?|n|none|cancel|stop|don't|do\s+not|tak|tidak|jangan|"
+    r"不要|取消|不用|不确认|不確認)$",
+    re.IGNORECASE,
+)
+
+
+def confirmation_intent(user_message: str) -> str | None:
+    """Classify only a standalone affirmative/negative authorization.
+
+    Politeness and repeated affirmative atoms are accepted, while any business
+    detail left after normalization makes the message non-standalone.
+    """
+    compact = re.sub(
+        r"[\s.!?,，。！？]+", " ", str(user_message or "").strip()
+    ).strip()
+    compact = re.sub(
+        r"\b(?:please|kindly)\b|请|請|麻烦|麻煩",
+        " ",
+        compact,
+        flags=re.IGNORECASE,
+    )
+    compact = re.sub(r"\s+", " ", compact).strip()
+    if AFFIRMATIVE_RE.fullmatch(compact):
+        return "affirmative"
+
+    affirmative_atom = (
+        r"(?:yes|y|correct|confirm(?:ed)?|proceed|continue|go\s+ahead|"
+        r"book\s+it|do\s+it|ok(?:ay)?|sure|ya|boleh|teruskan|sahkan)"
+    )
+    if re.fullmatch(
+        rf"{affirmative_atom}(?:\s+{affirmative_atom})+",
+        compact,
+        re.IGNORECASE,
+    ):
+        return "affirmative"
+
+    cjk_compact = re.sub(r"\s+", "", compact)
+    if re.fullmatch(
+        r"(?:(?:可以|确认|確認|正确|正確|对|對|没错|沒錯|是的|好|好的|"
+        r"同意|继续|繼續|没问题|沒問題)){1,4}(?:预约|預約)?",
+        cjk_compact,
+    ):
+        return "affirmative"
+
+    compact = re.sub(
+        r"\s+(?:thanks?|thank\s+you)$", "", compact, flags=re.IGNORECASE
+    ).strip()
+    if NEGATIVE_RE.fullmatch(compact):
+        return "negative"
+    return None
+
+
+# =============================================================================
+# 3. Scenario state transitions
+# =============================================================================
+
+SCENARIO_CONFIRMING_TOOLS = {
+    "create_booking": "MAKE_BOOKING",
+    "cancel_booking": "CANCEL_BOOKING",
+    "reschedule_booking": "RESCHEDULE_BOOKING",
+    "redeem_reward": "LOYALTY_QUERY",
+    "register_loyalty_member": "MEMBER",
+    "send_booking_confirmation": "BOOKING_DOCUMENT",
+}
+
+
+def set_objective_from_scenario(state, scenario_name: str | None) -> None:
+    if not scenario_name:
+        state.objective = None
+        return
+    try:
+        state.objective = load_scenario(scenario_name).get("goal")
+    except ValueError:
+        state.objective = None
+
+
+def apply_scenario_update(state, result: dict) -> None:
+    """Apply an observed update_conversation_state result to session state."""
+    if not isinstance(result, dict) or result.get("error"):
+        return
+
+    previous_scenario = state.active_scenario
+    requested_scenario = result.get("active_scenario")
+    preserve_main_goal_for_side_question = bool(
+        previous_scenario == "MAKE_BOOKING"
+        and requested_scenario in {"POLICY_QUERY", "MEMBER"}
+    )
+    if preserve_main_goal_for_side_question:
+        return
+
+    state.active_scenario = requested_scenario
+    state.current_step = result.get("current_step")
+    if result.get("service_type"):
+        state.service_type = result.get("service_type")
+    elif state.active_scenario != "MAKE_BOOKING":
+        state.service_type = None
+    if str(state.service_type or "").upper() != "DAYCARE":
+        state.daycare_duration_minutes = None
+        state.verified_facts.pop("daycare_duration_minutes", None)
+    if previous_scenario != state.active_scenario:
+        if state.active_scenario == "MAKE_BOOKING":
+            state.booking_flow_started_turn = state.turn_counter
+        elif previous_scenario == "MAKE_BOOKING":
+            state.booking_flow_started_turn = None
+        state.pending_actions = {}
+        state.pending_booking_confirmation = None
+        state.offered_options = []
+        state.offered_add_on_options = []
+        state.missing_information = []
+        state.missing_information_by_tool = {}
+        if (
+            state.active_scenario == "MAKE_BOOKING"
+            and len(state.known_pets) > 1
+            and state.pet_selected_turn != state.turn_counter
+        ):
+            state.pet_id = None
+            state.pet_type = None
+            state.pet_name = None
+            state.pet_size = None
+            state.pet_breed = None
+    if previous_scenario == "MAKE_BOOKING" and state.active_scenario != "MAKE_BOOKING":
+        state.preferred_staff = None
+        state.loyalty_decision = None
+        state.loyalty_offer_shown_turn = None
+        state.repeat_booking_template = None
+        state.pending_actions.pop("create_booking", None)
+        state.verified_availability_slots = []
+    set_objective_from_scenario(state, state.active_scenario)
+    state.completion_status = "in_progress" if state.active_scenario else None
+
+
+def sync_scenario_from_tool_call(state, tool_name: str, result: dict) -> None:
+    """Release scenario routing after its concrete action succeeds."""
+    confirmed = SCENARIO_CONFIRMING_TOOLS.get(tool_name)
+    if (
+        confirmed
+        and confirmed == state.active_scenario
+        and isinstance(result, dict)
+        and result.get("status") == "success"
+    ):
+        state.active_scenario = None
+        state.current_step = None
+        state.service_type = None
+        state.objective = None
+        state.offered_options = []
+        state.offered_add_on_options = []
+        state.missing_information = []
+        state.missing_information_by_tool = {}
+
+
+# =============================================================================
+# 4. Customer-text/evidence matching helpers
+# =============================================================================
+
+ADD_ON_REFERENCE_RE = re.compile(
+    r"\badd[\s-]?on(?:s)?\b|附加(?:服务|服務)?|加购|加購|额外(?:服务|服務)?|"
+    r"\b(?:tambahan|add-on)\b",
+    re.IGNORECASE,
+)
+
+
+def recent_customer_text(
+    state: Any, user_message: str, *, since_turn: int | None = None
+) -> str:
+    return " ".join(
+        [str(user_message or "")]
+        + [
+            str(turn.get("content") or "")
+            for turn in state.history
+            if turn.get("role") == "human"
+            and (
+                since_turn is None
+                or (
+                    turn.get("turn") is not None
+                    and int(turn.get("turn")) >= since_turn
+                )
+            )
+        ]
+    )
+
+
+def customer_stated_value(value: object, customer_text: str) -> bool:
+    def compact(item: object) -> str:
+        return re.sub(r"[^\w㐀-鿿]+", "", str(item or "").casefold())
+
+    needle = compact(value)
+    return bool(needle and needle in compact(customer_text))
+
+
+def reject_unconfirmed_optional_booking_fields(
+    state: Any,
+    args: dict,
+    user_message: str,
+    *,
+    detect_ordinal_index: Callable[[str], int | None],
+    normalize_option_label: Callable[[object], str],
+) -> dict | None:
+    """Reject staff/add-on values not authorized by this booking flow."""
+    customer_text = recent_customer_text(
+        state,
+        user_message,
+        since_turn=state.booking_flow_started_turn or state.turn_counter,
+    )
+    preferred_staff = str(args.get("preferred_staff") or "").strip()
+    no_staff_preference = bool(re.search(
+        r"\b(?:any|no\s+preferred|no\s+preference|whichever|whoever)\s+"
+        r"(?:available\s+)?staff\b|\banyone\s+(?:available|is\s+fine)\b|"
+        r"任何(?:员工|員工)|谁都可以|誰都可以|随便(?:哪位)?|隨便(?:哪位)?|"
+        r"\b(?:mana-mana|tiada\s+pilihan)\s+(?:staf|staff)\b",
+        str(user_message or ""),
+        re.IGNORECASE,
+    ))
+    if no_staff_preference:
+        state.preferred_staff = None
+    if (
+        preferred_staff
+        and not no_staff_preference
+        and str(state.preferred_staff or "").strip().casefold()
+        != preferred_staff.casefold()
+        and not customer_stated_value(preferred_staff, customer_text)
+    ):
+        return {
+            "error": "UNCONFIRMED_PREFERRED_STAFF",
+            "message": (
+                "preferred_staff was not named by the customer. Leave it blank so staff "
+                "assignment remains automatic, or ask for their preference."
+            ),
+        }
+    if preferred_staff and no_staff_preference:
+        return {
+            "error": "STAFF_PREFERENCE_DECLINED",
+            "message": (
+                "The customer explicitly said any available staff is acceptable for this "
+                "booking. Leave preferred_staff blank."
+            ),
+        }
+
+    add_on = str(args.get("add_on") or "").strip()
+    if not add_on:
+        return None
+    add_on_declined = bool(re.search(
+        r"\b(?:no|without|skip)\s+add[\s-]?ons?\b|"
+        r"\b(?:don['’]?t|do\s+not)\s+add\b|"
+        r"不要(?:附加|加购|加購)|不用(?:附加|加购|加購)|不需要附加|"
+        r"\b(?:tak|tidak)\s+(?:mahu|nak)\s+(?:tambahan|add[\s-]?on)\b",
+        str(user_message or ""),
+        re.IGNORECASE,
+    ))
+    if add_on_declined:
+        state.verified_facts["add_on_decision"] = {
+            "value": "declined",
+            "source": "customer_message",
+            "turn": state.turn_counter,
+        }
+        return {
+            "error": "ADD_ON_DECLINED",
+            "message": (
+                "The customer explicitly declined add-ons for this booking. "
+                "Leave add_on and add_on_price blank."
+            ),
+        }
+    if customer_stated_value(add_on, customer_text):
+        return None
+
+    selected_index = detect_ordinal_index(user_message)
+    add_on_reference = bool(ADD_ON_REFERENCE_RE.search(str(user_message or "")))
+    selected = (
+        state.offered_add_on_options[selected_index - 1]
+        if selected_index is not None
+        and add_on_reference
+        and 1 <= selected_index <= len(state.offered_add_on_options)
+        else None
+    )
+    if (
+        isinstance(selected, dict)
+        and str(selected.get("selection_kind") or "") == "add_on"
+        and normalize_option_label(
+            selected.get("service_name") or selected.get("label")
+        ) == normalize_option_label(add_on)
+    ):
+        return None
+
+    repeat = state.repeat_booking_template or {}
+    if (
+        repeat.get("catalogue_validated")
+        and normalize_option_label(repeat.get("add_on"))
+        == normalize_option_label(add_on)
+    ):
+        return None
+    return {
+        "error": "UNCONFIRMED_ADD_ON_SELECTION",
+        "message": (
+            "The add-on is real but the customer did not select it. Do not add optional "
+            "services automatically; ask for an explicit choice."
+        ),
+    }
+
+
+def service_options_evidence_matches(
+    state: Any,
+    user_message: str,
+    explicit_service_type: Callable[[str], str],
+) -> bool:
+    evidence = (state.verified_facts or {}).get("service_options")
+    if not isinstance(evidence, dict) or evidence.get("status") != "success":
+        return False
+    args = evidence.get("args")
+    if not isinstance(args, dict) or not args:
+        return False
+    requested_service = (
+        explicit_service_type(user_message)
+        or str(state.service_type or "").strip().upper()
+    )
+    evidence_service = str(args.get("service_type") or "").strip().upper()
+    if requested_service and evidence_service != requested_service:
+        return False
+    if (
+        state.pet_id is not None
+        and requested_service == "GROOMING"
+        and args.get("pet_id") in (None, "")
+    ):
+        return False
+    if state.pet_id is not None and args.get("pet_id") not in (None, ""):
+        try:
+            if int(args["pet_id"]) != int(state.pet_id):
+                return False
+        except (TypeError, ValueError):
+            return False
+    return True
+
+
+def policy_evidence_matches(state: Any, user_message: str) -> bool:
+    evidence = (state.verified_facts or {}).get("policy_knowledge")
+    if not isinstance(evidence, dict) or evidence.get("status") != "success":
+        return False
+    if evidence.get("turn") == state.turn_counter:
+        return True
+    args = evidence.get("args")
+    query = str((args or {}).get("query") or "") if isinstance(args, dict) else ""
+    if not query:
+        return False
+
+    def compact(value: str) -> str:
+        return re.sub(r"[^a-z0-9㐀-鿿]+", "", value.casefold())
+
+    current = compact(str(user_message or ""))
+    previous = compact(query)
+    if previous in current or current in previous:
+        return True
+
+    stop_words = {
+        "what", "whats", "your", "about", "policy", "policies",
+        "company", "please", "rule", "rules", "allowed", "required",
+        "polisi", "syarat",
+    }
+    current_terms = {
+        term
+        for term in re.findall(r"[a-z0-9]{4,}", str(user_message or "").casefold())
+        if term not in stop_words
+    }
+    previous_terms = {
+        term
+        for term in re.findall(r"[a-z0-9]{4,}", query.casefold())
+        if term not in stop_words
+    }
+    return bool(current_terms & previous_terms)
+
+
+# =============================================================================
+# 5. Tool-argument scoping and rejection guardrails
+# =============================================================================
 
 # Every date argument each date-sensitive tool takes — used to enforce that
 # it was actually produced by resolve_datetime (see reject_unverified_date)
@@ -27,6 +510,249 @@ DATE_ARG_NAMES = {
     "create_booking": ("date", "check_out_date"),
     "reschedule_booking": ("new_date", "new_check_out_date"),
 }
+
+
+def scope_repeat_history(
+    args: dict,
+    state: Any,
+    user_message: str,
+    *,
+    explicit_service_type: Callable[[str], str],
+) -> dict:
+    if state.pet_id is not None:
+        args = {**args, "pet_id": state.pet_id}
+    repeat_service = (
+        explicit_service_type(user_message)
+        or str(state.service_type or "").strip().upper()
+    )
+    if repeat_service:
+        args = {**args, "service_type": repeat_service}
+    return args
+
+
+def scope_catalogue_or_booking_pet(
+    tool_name: str,
+    args: dict,
+    state: Any,
+    user_message: str,
+    *,
+    known_pet_by_id: Callable[[Any, Any], dict | None],
+    is_repeat_booking_request: Callable[[str], bool],
+    explicit_service_type: Callable[[str], str],
+) -> tuple[dict, dict | None]:
+    """Bind catalogue/booking calls to one verified customer pet."""
+    if tool_name not in {"get_booking_service_options", "create_booking"}:
+        return args, None
+
+    if len(state.known_pets) > 1:
+        cached_pet = known_pet_by_id(state, state.pet_id)
+        model_pet = known_pet_by_id(state, args.get("pet_id"))
+        if state.pet_selected_turn == state.turn_counter:
+            known = cached_pet
+        elif cached_pet is not None and args.get("pet_id") in (None, ""):
+            known = cached_pet
+        elif (
+            cached_pet is not None
+            and model_pet is not None
+            and model_pet.get("pet_id") == cached_pet.get("pet_id")
+        ):
+            known = model_pet
+        else:
+            known = None
+        if known is None:
+            return args, {
+                "status": "missing_information",
+                "error_code": "PET_SELECTION_REQUIRED",
+                "message": (
+                    "Several pets are registered and the current message did not "
+                    "unambiguously select the pet represented by this tool call. "
+                    "Ask which pet; do not choose or switch pet_id yourself."
+                ),
+            }
+        args = {**args, "pet_id": known.get("pet_id")}
+    else:
+        known = known_pet_by_id(state, args.get("pet_id"))
+        if known is None and state.pet_id is not None:
+            args = {**args, "pet_id": state.pet_id}
+            known = known_pet_by_id(state, state.pet_id)
+
+    if tool_name == "create_booking" and known is not None:
+        args = {**args, "pet_name": known.get("pet_name")}
+        if state.service_type:
+            args = {**args, "service_type": state.service_type}
+    if tool_name == "get_booking_service_options" and is_repeat_booking_request(
+        user_message
+    ):
+        repeat_service = (
+            explicit_service_type(user_message)
+            or str(state.service_type or "").strip().upper()
+        )
+        if repeat_service:
+            args = {**args, "service_type": repeat_service}
+    return args, None
+
+
+def scope_availability_pet(
+    args: dict,
+    state: Any,
+    *,
+    known_pet_by_id: Callable[[Any, Any], dict | None],
+) -> tuple[dict, dict | None]:
+    if len(state.known_pets) > 1:
+        known = known_pet_by_id(state, state.pet_id)
+        if known is None:
+            return args, {
+                "status": "missing_information",
+                "error_code": "PET_SELECTION_REQUIRED",
+                "message": (
+                    "Several pets are registered and none was selected for this "
+                    "booking. Ask which pet before checking availability."
+                ),
+            }
+        return {**args, "pet_id": known.get("pet_id")}, None
+    if state.pet_id is not None:
+        known = known_pet_by_id(state, args.get("pet_id"))
+        args = {**args, "pet_id": (known or {}).get("pet_id") or state.pet_id}
+    return args, None
+
+
+def apply_repeat_availability_filters(
+    tool_name: str,
+    args: dict,
+    state: Any,
+    user_message: str,
+    *,
+    explicit_service_type: Callable[[str], str],
+) -> dict:
+    repeat_service = (
+        explicit_service_type(user_message)
+        or str(state.service_type or "").strip().upper()
+    )
+    resolved = state.current_datetime_resolution or {}
+    time_filter = resolved.get("time") or resolved.get("period") or ""
+    if tool_name == "check_availability":
+        return {
+            **args,
+            "service_type": repeat_service or args.get("service_type"),
+            "date": resolved.get("date") or args.get("date"),
+            "time": time_filter or args.get("time") or "",
+        }
+    date_range = resolved.get("date_range") or {}
+    return {
+        **args,
+        "service_type": repeat_service or args.get("service_type"),
+        "start_date": date_range.get("start") or args.get("start_date"),
+        "end_date": date_range.get("end") or args.get("end_date"),
+        "time": time_filter or args.get("time") or "",
+    }
+
+
+def infer_document_service_type(args: dict, state: Any) -> dict:
+    if not args.get("booking_id") or args.get("service_type"):
+        return args
+    try:
+        requested_booking_id = int(args["booking_id"])
+    except (TypeError, ValueError):
+        requested_booking_id = None
+    matching_booking = next(
+        (
+            booking
+            for booking in (state.last_created_booking, state.latest_booking)
+            if booking
+            and booking.get("booking_id") == requested_booking_id
+            and (booking.get("service_type") or booking.get("last_service_type"))
+        ),
+        None,
+    )
+    if not matching_booking:
+        return args
+    return {
+        **args,
+        "service_type": (
+            matching_booking.get("service_type")
+            or matching_booking.get("last_service_type")
+        ),
+    }
+
+
+def restore_pending_change_target(tool_name: str, args: dict, state: Any) -> dict:
+    pending = state.pending_booking_confirmation
+    if not (
+        tool_name in {"cancel_booking", "reschedule_booking"}
+        and not args.get("booking_id")
+        and args.get("confirm_pet_name")
+        and pending
+        and pending.get("tool") == tool_name
+    ):
+        return args
+    return {
+        **args,
+        "booking_id": pending["booking_id"],
+        "service_type": pending.get("service_type") or args.get("service_type"),
+    }
+
+
+def correct_change_service_type(tool_name: str, args: dict, state: Any) -> dict:
+    if tool_name not in {"cancel_booking", "reschedule_booking"} or not args.get(
+        "booking_id"
+    ):
+        return args
+    try:
+        target_booking_id = int(args["booking_id"])
+    except (TypeError, ValueError):
+        target_booking_id = None
+    if target_booking_id is None:
+        return args
+    match = next(
+        (
+            option
+            for option in state.offered_options
+            if option.get("booking_id") == target_booking_id
+            and option.get("service_type")
+        ),
+        None,
+    )
+    return {**args, "service_type": match["service_type"]} if match else args
+
+
+def reject_changed_reschedule(
+    tool_name: str,
+    args: dict,
+    state: Any,
+    *,
+    mutation_signature: Callable[[str, dict], str],
+) -> dict | None:
+    pending = state.pending_booking_confirmation
+    if not (
+        tool_name == "reschedule_booking"
+        and args.get("confirm_pet_name")
+        and pending
+        and pending.get("tool") == "reschedule_booking"
+    ):
+        return None
+    expected_signature = pending.get("change_signature")
+    if expected_signature and mutation_signature("reschedule_booking", args) != expected_signature:
+        return {
+            "error": "RESCHEDULE_DETAILS_CHANGED",
+            "message": (
+                "The booking/date/time details differ from the change the customer "
+                "was shown. No write occurred. Preview the new exact details and "
+                "ask for confirmation again."
+            ),
+        }
+    return None
+
+
+def scope_policy_pet(args: dict, state: Any) -> dict:
+    authoritative_species = str(state.pet_type or "").strip().lower()
+    if authoritative_species not in {"dog", "cat"}:
+        model_species = str(args.get("pet_type") or "").strip().lower()
+        authoritative_species = model_species if model_species in {"dog", "cat"} else ""
+    if authoritative_species:
+        args = {**args, "pet_type": authoritative_species}
+    if not args.get("pet_size") and state.pet_size:
+        args = {**args, "pet_size": state.pet_size}
+    return args
 
 
 def reject_unverified_date(state: Any, tool_name: str, args: dict) -> dict | None:
@@ -655,6 +1381,22 @@ def reject_unverified_booking_payload(
                     or normalize_clock(slot.get("check_out_time")) == requested_check_out_time
                 )
             )
+        if service_type == "GROOMING" and requested_duration is not None:
+            # Unlike DAYCARE, a GROOMING duration_minutes is often legitimately
+            # omitted (the server then defaults to 90) — only enforced when
+            # the model actually supplies one, and only against whatever
+            # duration was actually verified as available. Without this, a
+            # duration submitted to create_booking could silently diverge
+            # from the one shown as available (e.g. a package needing 150
+            # minutes booked under the 90-minute default), reserving too
+            # little staff time and letting the next customer's appointment
+            # be booked into a slot that's still physically in use.
+            try:
+                checked_duration = int(slot.get("duration_minutes"))
+            except (TypeError, ValueError):
+                checked_duration = None
+            if checked_duration is not None and checked_duration != requested_duration:
+                return False
         return True
 
     slot_verified = any(

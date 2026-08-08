@@ -4,9 +4,8 @@ import json
 from langchain_core.messages import AIMessage
 from langchain_core.utils.function_calling import convert_to_openai_tool
 
-from app.agent.confirmation_policy import confirmation_intent
-from app.agent.tool_execution_policy import mutation_signature
-from app.agent.tool_guardrails import reject_unverified_booking_payload
+from app.agent.guardrails import confirmation_intent, reject_unverified_booking_payload
+from app.agent.tool_loop import mutation_signature
 from app.context.state import ConversationState
 from app.db import relational_actions, supabase_client
 from app.orchestrator import (
@@ -514,6 +513,56 @@ def test_daycare_slot_evidence_must_match_visit_duration():
 
     blocked = reject_unverified_booking_payload(state, args)
     assert blocked["error"] == "UNVERIFIED_AVAILABILITY_SLOT"
+
+
+def test_grooming_slot_evidence_must_match_verified_duration():
+    """Regression: GROOMING duration_minutes was never cross-checked against
+    the verified availability slot's own duration (unlike DAYCARE, which
+    already had this check) — a package needing 150 minutes could be booked
+    under a mismatched duration with nothing rejecting it, under-reserving
+    the groomer's real time and letting the next appointment collide with
+    it in the real world."""
+    state = ConversationState(phone_number="+60123456705", company_id="1")
+    state.verified_service_options = [
+        {
+            "service_type": "GROOMING",
+            "pet_id": 9,
+            "service_name": "Full Groom",
+            "price": 80,
+        }
+    ]
+    state.verified_availability_slots = [
+        {
+            "service_type": "GROOMING",
+            "verified_turn": 0,
+            "date": "2026-08-10",
+            "time": "15:30",
+            "room_type": "",
+            "duration_minutes": 150,
+            "preferred_staff": "",
+        }
+    ]
+    args = {
+        "service_type": "GROOMING",
+        "pet_id": 9,
+        "package_name": "Full Groom",
+        "date": "2026-08-10",
+        "time": "15:30",
+        "duration_minutes": 90,
+        "price": 80,
+    }
+
+    blocked = reject_unverified_booking_payload(state, args)
+    assert blocked["error"] == "UNVERIFIED_AVAILABILITY_SLOT"
+
+    # The matching duration is accepted.
+    assert reject_unverified_booking_payload(state, {**args, "duration_minutes": 150}) is None
+
+    # Omitting duration_minutes entirely (server default applies) must
+    # still be accepted — this guardrail only catches an actual mismatch,
+    # it never newly requires a duration that wasn't there before.
+    no_duration_args = {k: v for k, v in args.items() if k != "duration_minutes"}
+    assert reject_unverified_booking_payload(state, no_duration_args) is None
 
 
 def test_hourly_daycare_catalogue_accepts_verified_rate_times_duration():

@@ -7,15 +7,17 @@ from pathlib import Path
 
 from langchain_core.messages import AIMessage
 
-from app.agent.booking_authorization import reject_unconfirmed_optional_booking_fields
-from app.agent.confirmation_policy import confirmation_intent
-from app.agent.pet_resolution import match_named_pet
+from app.agent.guardrails import (
+    confirmation_intent,
+    match_named_pet,
+    reject_unconfirmed_optional_booking_fields,
+)
 from app.agent.response_grounding import (
     ground_booking_preview_response,
     ground_document_delivery_response,
     ground_membership_response,
 )
-from app.agent.tool_execution_policy import trace_has_successful_document_delivery
+from app.agent.tool_loop import trace_has_successful_document_delivery
 from app.context.state import ConversationState
 from app.orchestrator import PawfectOrchestrator
 

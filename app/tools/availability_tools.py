@@ -334,6 +334,7 @@ def check_availability_range(
             "date": current.isoformat(),
             "weekday": current.strftime("%A"),
             "available_slots": filtered if filtered is not None else all_slots,
+            "closed_reason": data.get("closed_reason"),
             "preferred_staff": preferred_staff or None,
         }
         days.append(day_entry)

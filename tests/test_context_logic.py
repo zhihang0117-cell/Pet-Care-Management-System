@@ -8,8 +8,7 @@ multi-pet pet_id mixup found and fixed this session (see _known_pet_by_id and
 the get_booking_service_options/create_booking override in _run_tool).
 """
 
-from app.agent.pet_resolution import known_pet_by_id, match_named_pet
-from app.agent.tool_guardrails import reject_unconfirmed_breed
+from app.agent.guardrails import known_pet_by_id, match_named_pet, reject_unconfirmed_breed
 from app.context.state import ConversationState
 from app.orchestrator import PawfectOrchestrator, TOOLS_BY_NAME
 

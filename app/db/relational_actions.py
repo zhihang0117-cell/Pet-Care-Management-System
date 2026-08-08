@@ -2076,6 +2076,20 @@ def check_available_slots(context: CustomerContext, intent_json: dict) -> dict:
                 )
             if service_type in {"GROOMING", "DAYCARE"}:
                 duration_minutes = parsed_requested_duration
+        # Set only for DAYCARE when the customer's check-in time is still a
+        # period word (e.g. "morning") rather than an exact clock time but a
+        # real check_out_time is already known — every candidate start then
+        # has its OWN true duration to that fixed checkout, not one shared
+        # duration_minutes. Previously this case silently fell through to
+        # the flat DAYCARE default (180 min) and ignored check_out_time
+        # entirely, which is the documented, standard way this tool is
+        # called (system prompt: "pass check_out_time... so every offered
+        # start can fit the complete visit") — a candidate near closing was
+        # wrongly excluded (checked against a fictitious 3-hour occupancy
+        # that overran business hours) and a candidate far from closing was
+        # wrongly offered (checked against only 3 hours instead of its real,
+        # much longer span to the fixed checkout).
+        daycare_checkout_target_minutes: int | None = None
         if service_type == "DAYCARE":
             requested_start = _time_to_minutes(entities.get("preferred_time"))
             requested_end = _time_to_minutes(entities.get("check_out_time"))
@@ -2098,6 +2112,8 @@ def check_available_slots(context: CustomerContext, intent_json: dict) -> dict:
                 )
             if requested_start is not None and requested_end is not None and requested_end > requested_start:
                 duration_minutes = requested_end - requested_start
+            elif requested_start is None and requested_end is not None:
+                daycare_checkout_target_minutes = requested_end
         close_minutes = _time_to_minutes(close_time)
         if close_minutes is None or not open_time or not close_time:
             return _result(
@@ -2108,18 +2124,31 @@ def check_available_slots(context: CustomerContext, intent_json: dict) -> dict:
                 handoff_required=True,
                 handoff_reason=BUSINESS_HOURS_CONFIG_ERROR,
             )
-        all_slots = [
-            slot
-            for slot in _time_slots_for_day(open_time, close_time)
-            if (_time_to_minutes(slot) or 0) + duration_minutes <= close_minutes
-        ]
+
+        def _daycare_slot_duration(slot_start: int) -> int | None:
+            """Per-candidate duration when checkout is fixed but check-in is
+            still a period word; otherwise the one shared duration_minutes."""
+            if daycare_checkout_target_minutes is None:
+                return duration_minutes
+            remaining = daycare_checkout_target_minutes - slot_start
+            return remaining if remaining > 0 else None
+
+        all_slots = []
+        for slot in _time_slots_for_day(open_time, close_time):
+            slot_start = _time_to_minutes(slot) or 0
+            slot_duration = _daycare_slot_duration(slot_start)
+            if slot_duration is not None and slot_start + slot_duration <= close_minutes:
+                all_slots.append(slot)
         slot_staff_candidates: dict[str, list[dict]] = {}
         free_slots = []
         for slot in all_slots:
             slot_start = _time_to_minutes(slot)
             if slot_start is None:
                 continue
-            slot_end = slot_start + duration_minutes
+            slot_duration = _daycare_slot_duration(slot_start)
+            if slot_duration is None:
+                continue
+            slot_end = slot_start + slot_duration
             staff_for_slot = _staff_free_for_interval(
                 slot_start, slot_end, available_staff, bookings, date_str=date_str
             )
@@ -3274,13 +3303,27 @@ def create_booking(context: CustomerContext, intent_json: dict) -> dict:
                     {"missing_fields": ["check_out_time"]},
                     "BOARDING check_out_time is required; the data layer will not invent it.",
                 )
+            parsed_check_out = _parse_date(check_out_date)
+            if parsed_check_in and (parsed_check_out or parsed_check_in) <= parsed_check_in:
+                # Defense in depth: app/tools/booking_tools.py already rejects
+                # this before ever reaching the data layer, so this path is
+                # unreachable from the live AI flow today — but nights below
+                # would otherwise silently clamp a negative/zero-night stay
+                # to 1 via max(1, ...) instead of failing, for any other
+                # caller of this function.
+                return _result(
+                    "create_booking",
+                    "error",
+                    {"check_in_date": booking_date, "check_out_date": check_out_date},
+                    "BOARDING check_out_date must be strictly after the check-in date.",
+                )
             price_per_night = round(
                 float(entities.get("price_per_night") or numeric_price or 0), 2
             )
             nights = max(
                 1,
                 (
-                    (_parse_date(check_out_date) or parsed_check_in)
+                    (parsed_check_out or parsed_check_in)
                     - parsed_check_in
                 ).days
                 if parsed_check_in
@@ -3764,6 +3807,23 @@ def reschedule_booking(context: CustomerContext, intent_json: dict) -> dict:
     new_check_out_time = ""
     if service_type_hint == "BOARDING":
         if not new_check_out_date:
+            # The customer asked to keep the same stay length ("remain the
+            # time" / no new check-out date mentioned at all) — mirror
+            # DAYCARE reschedule's own duration-preserving fallback below
+            # instead of leaving the model to compute a new check-out date
+            # itself. A model-computed date is never verifiable by
+            # resolve_datetime (nothing in the customer's own wording names
+            # it), so it always fails the UNVERIFIED_DATE guardrail — this
+            # was a real dead end for a completely ordinary request. Derived
+            # server-side from the booking's own real nights, never trusted
+            # from the model.
+            old_check_in = _parse_date(str(booking.get("check_in_date") or ""))
+            old_check_out = _parse_date(str(booking.get("check_out_date") or ""))
+            new_date_value = _parse_date(new_date)
+            if old_check_in and old_check_out and new_date_value and old_check_out > old_check_in:
+                original_nights = (old_check_out - old_check_in).days
+                new_check_out_date = (new_date_value + timedelta(days=original_nights)).isoformat()
+        if not new_check_out_date:
             return _result(
                 "reschedule_booking",
                 "error",
@@ -3967,12 +4027,23 @@ def reschedule_booking(context: CustomerContext, intent_json: dict) -> dict:
         probe_entities["preferred_staff"] = str(booking["staff_id"])
     if new_check_out_time:
         probe_entities["check_out_time"] = new_check_out_time
+    # Exclude the booking's own still-unmodified row from every service
+    # type's availability probe, not only BOARDING — otherwise a reschedule
+    # that overlaps the booking's OWN current slot (the ordinary "shift my
+    # appointment by 15 minutes, same staff, same day" case) sees that slot
+    # as already taken by itself and is wrongly rejected as unavailable,
+    # even though the atomic write RPC (update_booking_atomic) already
+    # excludes it correctly and would have accepted it. Also carry pet_id so
+    # the same-pet cross-service conflict check (otherwise a silent no-op
+    # here without it) is genuinely exercised at this pre-check too.
+    probe_entities["exclude_booking_id"] = booking.get("booking_id")
+    if booking.get("pet_id") is not None:
+        probe_entities["pet_id"] = booking.get("pet_id")
     if service_type_hint == "BOARDING":
         # Otherwise a single-capacity room's own current (pre-reschedule)
         # stay counts against itself in the overlap check.
         probe_entities["room_type"] = booking.get("room_type") or booking.get("package_name")
         probe_entities["check_out_date"] = new_check_out_date
-        probe_entities["exclude_booking_id"] = booking.get("booking_id")
     probe["entities"] = probe_entities
     if not _slot_is_available(context, probe, booking_date=new_date, booking_time=new_time):
         return _result(
