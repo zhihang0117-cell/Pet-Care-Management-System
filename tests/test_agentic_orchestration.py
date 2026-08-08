@@ -1837,6 +1837,41 @@ def test_fabricated_no_availability_claim_is_caught_across_realistic_human_phras
         ), f"should NOT have caught: {reply!r}"
 
 
+def test_tool_repair_catches_a_positive_availability_claim_without_the_linking_verb():
+    """Confirmed live: "Yes, we have grooming slots available tomorrow!"
+    (followed by a full catalogue and a trailing question) passed straight
+    through with zero check_availability calls anywhere in the turn — the
+    old positive pattern required "slots IS/ARE available" and missed the
+    equally natural "slots available" phrasing with no linking verb."""
+    assert PawfectOrchestrator._needs_tool_repair(
+        ConversationState(phone_number="+60123456705", company_id="1"),
+        "Do you have grooming slots available tomorrow?",
+        "Yes, we have grooming slots available tomorrow! Here are some of the "
+        "grooming services you can choose from for Milo: ... Would you like "
+        "to book a grooming appointment for tomorrow?",
+        [],
+    )
+    assert PawfectOrchestrator._needs_tool_repair(
+        ConversationState(phone_number="+60123456705", company_id="1"),
+        "Any slots free tomorrow?",
+        "Yes, we do have availability tomorrow.",
+        [],
+    )
+
+    # A real check_availability call this turn still makes the same claim
+    # trustworthy.
+    real_trace = [{
+        "tool": "check_availability",
+        "result": '{"status":"success","data":{"available_slots":["10:00:00"]}}',
+    }]
+    assert not PawfectOrchestrator._needs_tool_repair(
+        ConversationState(phone_number="+60123456705", company_id="1"),
+        "Any slots free tomorrow?",
+        "Yes, we have slots available tomorrow.",
+        real_trace,
+    )
+
+
 def test_tool_repair_catches_a_booking_preview_stating_a_stale_unverified_time():
     """Confirmed live: "Here's the updated summary of your booking for Yoyo
     on August 13, 2026: ... Check-in Time: 16:00 ... Please confirm if you

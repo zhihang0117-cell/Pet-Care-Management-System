@@ -2034,7 +2034,14 @@ class PawfectOrchestrator:
         availability_value_claim = bool(re.search(
             r"\d{1,2}(?::\d{2})?\s*(?:am|pm)?\s+is\s+available|"
             r"available\s+(?:at|on)\s+\d|"
-            r"\bslots?\s+(?:is|are)\s+available\b|"
+            # "slots are available", but also the linking-verb-less "slots
+            # available" ("we have grooming slots available tomorrow") —
+            # confirmed live: that exact phrasing, with zero check_availability
+            # calls anywhere in the turn, slipped through because the old
+            # pattern required "is"/"are" between the two words.
+            r"\bslots?\s+(?:is|are\s+)?available\b|"
+            r"\bwe\s+(?:do\s+)?have\s+(?:slots?|availability|openings?|vacanc(?:y|ies)|times?|appointments?|rooms?)\b|"
+            r"\byes\b.{0,20}\b(?:slots?|availability|openings?)\b|"
             # negation word + availability noun: "no slots", "don't have any
             # openings", "nothing available", "zero vacancies".
             r"\b(?:no|not\s+any|zero|none|don'?t|doesn'?t|do\s+not|does\s+not)\b"
