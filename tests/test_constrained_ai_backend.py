@@ -4,6 +4,9 @@ import json
 from langchain_core.messages import AIMessage
 from langchain_core.utils.function_calling import convert_to_openai_tool
 
+from app.agent.confirmation_policy import confirmation_intent
+from app.agent.tool_execution_policy import mutation_signature
+from app.agent.tool_guardrails import reject_unverified_booking_payload
 from app.context.state import ConversationState
 from app.db import relational_actions, supabase_client
 from app.orchestrator import (
@@ -40,10 +43,10 @@ def test_natural_standalone_confirmation_phrases_are_accepted():
         "好的，请继续",
     ]
     for phrase in accepted:
-        assert PawfectOrchestrator._confirmation_intent(phrase) == "affirmative"
+        assert confirmation_intent(phrase) == "affirmative"
 
-    assert PawfectOrchestrator._confirmation_intent("yes, but change it to 3pm") is None
-    assert PawfectOrchestrator._confirmation_intent("no thanks") == "negative"
+    assert confirmation_intent("yes, but change it to 3pm") is None
+    assert confirmation_intent("no thanks") == "negative"
 
 
 def test_pet_specific_catalogue_requires_resolved_customer_ownership():
@@ -241,6 +244,11 @@ def test_every_openai_tool_schema_is_strict_compatible():
         assert_strict_objects(converted["parameters"])
 
 
+def test_booking_idempotency_key_is_server_injected_not_model_visible():
+    converted = convert_to_openai_tool(TOOLS_BY_NAME["create_booking"])["function"]
+    assert "idempotency_key" not in converted["parameters"]["properties"]
+
+
 def _booking_state():
     state = ConversationState(
         phone_number="+60123456705",
@@ -409,11 +417,14 @@ def test_correct_confirms_exact_preview_with_add_on_and_previous_turn_slot(monke
     )
 
     assert completed["status"] == "success"
-    assert capturing.calls == [{
+    assert len(capturing.calls) == 1
+    persisted_call = dict(capturing.calls[0])
+    assert len(persisted_call.pop("idempotency_key")) == 32
+    assert persisted_call == {
         **exact_args,
         "company_id": "1",
         "customer_id": 22,
-    }]
+    }
 
 
 def test_boarding_slot_evidence_must_match_room_and_full_stay():
@@ -446,7 +457,7 @@ def test_boarding_slot_evidence_must_match_room_and_full_stay():
             "room_type": "",
         }
     ]
-    blocked = PawfectOrchestrator._reject_unverified_booking_payload(state, args)
+    blocked = reject_unverified_booking_payload(state, args)
     assert blocked["error"] == "UNVERIFIED_AVAILABILITY_SLOT"
 
     state.verified_availability_slots = [
@@ -462,10 +473,10 @@ def test_boarding_slot_evidence_must_match_room_and_full_stay():
             "preferred_staff": "",
         }
     ]
-    assert PawfectOrchestrator._reject_unverified_booking_payload(state, args) is None
+    assert reject_unverified_booking_payload(state, args) is None
     state.turn_counter = 1
     assert (
-        PawfectOrchestrator._reject_unverified_booking_payload(state, args)["error"]
+        reject_unverified_booking_payload(state, args)["error"]
         == "UNVERIFIED_AVAILABILITY_SLOT"
     )
 
@@ -501,7 +512,7 @@ def test_daycare_slot_evidence_must_match_visit_duration():
         "price": 60,
     }
 
-    blocked = PawfectOrchestrator._reject_unverified_booking_payload(state, args)
+    blocked = reject_unverified_booking_payload(state, args)
     assert blocked["error"] == "UNVERIFIED_AVAILABILITY_SLOT"
 
 
@@ -538,8 +549,8 @@ def test_hourly_daycare_catalogue_accepts_verified_rate_times_duration():
         "price": 45,
     }
 
-    assert PawfectOrchestrator._reject_unverified_booking_payload(state, args) is None
-    assert PawfectOrchestrator._reject_unverified_booking_payload(
+    assert reject_unverified_booking_payload(state, args) is None
+    assert reject_unverified_booking_payload(
         state, {**args, "price": 15}
     )["error"] == "UNVERIFIED_SERVICE_OPTION"
 
@@ -579,7 +590,7 @@ def test_hourly_daycare_catalogue_rejects_visit_above_flat_tier_threshold():
         "price": 160,
     }
 
-    blocked = PawfectOrchestrator._reject_unverified_booking_payload(state, args)
+    blocked = reject_unverified_booking_payload(state, args)
     assert blocked["error"] == "PACKAGE_NOT_APPLICABLE_FOR_DURATION"
 
 
@@ -606,7 +617,7 @@ def test_reschedule_confirmation_is_bound_to_exact_new_details(monkeypatch):
         "tool": "reschedule_booking",
         "booking_id": 91,
         "service_type": "GROOMING",
-        "change_signature": PawfectOrchestrator._mutation_signature(
+        "change_signature": mutation_signature(
             "reschedule_booking", preview_args
         ),
     }
@@ -671,10 +682,10 @@ def test_pickup_choice_evidence_binds_fixed_checkin_and_selected_pickup():
         "price": 60,
     }
 
-    assert PawfectOrchestrator._reject_unverified_booking_payload(state, exact) is None
+    assert reject_unverified_booking_payload(state, exact) is None
     changed_pickup = {**exact, "check_out_time": "16:30"}
     assert (
-        PawfectOrchestrator._reject_unverified_booking_payload(state, changed_pickup)["error"]
+        reject_unverified_booking_payload(state, changed_pickup)["error"]
         == "UNVERIFIED_AVAILABILITY_SLOT"
     )
 
@@ -688,7 +699,7 @@ def test_membership_confirmation_cannot_be_inferred_from_unrelated_turn(monkeypa
     )
     args = {"confirmed": True}
     state.pending_actions["register_loyalty_member"] = {
-        "signature": orchestrator._mutation_signature("register_loyalty_member", args),
+        "signature": mutation_signature("register_loyalty_member", args),
         "args": args,
         "preview_turn": 1,
     }
@@ -720,7 +731,7 @@ def test_polite_membership_confirmation_executes_exact_pending_write(monkeypatch
     )
     exact_args = {"company_id": "7", "customer_id": 22, "confirmed": True}
     state.pending_actions["register_loyalty_member"] = {
-        "signature": orchestrator._mutation_signature(
+        "signature": mutation_signature(
             "register_loyalty_member", exact_args
         ),
         "args": exact_args,
@@ -744,9 +755,9 @@ def test_polite_membership_confirmation_executes_exact_pending_write(monkeypatch
 
 
 def test_confirmation_with_extra_request_is_not_standalone():
-    assert PawfectOrchestrator._confirmation_intent("yes please") == "affirmative"
-    assert PawfectOrchestrator._confirmation_intent("yes, please") == "affirmative"
-    assert PawfectOrchestrator._confirmation_intent("yes please, and book grooming") is None
+    assert confirmation_intent("yes please") == "affirmative"
+    assert confirmation_intent("yes, please") == "affirmative"
+    assert confirmation_intent("yes please, and book grooming") is None
 
 
 def test_membership_yes_forces_exact_pending_write_and_cannot_jump_to_greeting(monkeypatch):
@@ -811,7 +822,7 @@ def test_membership_yes_forces_exact_pending_write_and_cannot_jump_to_greeting(m
     )
     exact_args = {"company_id": "7", "customer_id": 22, "confirmed": True}
     state.pending_actions["register_loyalty_member"] = {
-        "signature": orchestrator._mutation_signature(
+        "signature": mutation_signature(
             "register_loyalty_member", exact_args
         ),
         "args": exact_args,
@@ -881,7 +892,7 @@ def test_nonrecoverable_membership_failure_is_executed_once_then_forces_final(mo
     )
     exact_args = {"company_id": "7", "customer_id": 22, "confirmed": True}
     state.pending_actions["register_loyalty_member"] = {
-        "signature": orchestrator._mutation_signature(
+        "signature": mutation_signature(
             "register_loyalty_member", exact_args
         ),
         "args": exact_args,

@@ -104,16 +104,18 @@ test("confirmation documents have a resend tool and a typed console attachment c
 
 test("Python tool trace records iteration, execution mode, tool id, and per-call duration", async () => {
   const orchestrator = await readFile(new URL("../../app/orchestrator.py", import.meta.url), "utf8");
-  assert.match(orchestrator, /"iteration": iteration_index \+ 1/);
-  assert.match(orchestrator, /"tool_call_id": tool_call\["id"\]/);
-  assert.match(orchestrator, /"execution_mode": execution_mode/);
-  assert.match(orchestrator, /"parallel_block_reason": parallel_block_reason/);
-  assert.match(orchestrator, /"batch_duration_ms": batch_duration_ms/);
-  assert.match(orchestrator, /_TOOL_EXECUTOR\.submit\(run_timed, tool_call\)/);
-  assert.match(orchestrator, /future\.result\(timeout=remaining_seconds\)/);
-  assert.match(orchestrator, /"executor_max_workers": TOOL_EXECUTOR_MAX_WORKERS/);
-  assert.match(orchestrator, /"execution_order": record\["execution_order"\]/);
-  assert.match(orchestrator, /"queue_wait_ms": record\["queue_wait_ms"\]/);
-  assert.match(orchestrator, /"duration_ms": record\["duration_ms"\]/);
-  assert.match(orchestrator, /time_module\.perf_counter\(\)/);
+  const batchExecution = await readFile(new URL("../../app/agent/tool_batch_execution.py", import.meta.url), "utf8");
+  const runtime = `${orchestrator}\n${batchExecution}`;
+  assert.match(runtime, /"iteration": iteration_index \+ 1/);
+  assert.match(runtime, /"tool_call_id": tool_call\["id"\]/);
+  assert.match(runtime, /"execution_mode": execution_mode/);
+  assert.match(runtime, /"parallel_block_reason": parallel_block_reason/);
+  assert.match(runtime, /"batch_duration_ms": batch_duration_ms/);
+  assert.match(runtime, /_TOOL_EXECUTOR\.submit\(run_timed, tool_call\)/);
+  assert.match(runtime, /future\.result\(timeout=remaining_seconds\)/);
+  assert.match(runtime, /"executor_max_workers": TOOL_EXECUTOR_MAX_WORKERS/);
+  assert.match(runtime, /"execution_order": record\["execution_order"\]/);
+  assert.match(runtime, /"queue_wait_ms": record\["queue_wait_ms"\]/);
+  assert.match(runtime, /"duration_ms": record\["duration_ms"\]/);
+  assert.match(runtime, /perf_counter\(\)/);
 });

@@ -4,6 +4,7 @@ from types import SimpleNamespace
 
 from langchain_core.messages import AIMessage
 
+from app.agent.response_grounding import ground_unavailable_profile_claims
 from app.context.state import ConversationState
 from app.db import relational_actions
 from app.db.customer_context import canonical_phone_number, phones_match, validate_phone_number
@@ -16,7 +17,7 @@ from app.db.relational_actions import (
     create_pet,
     register_loyalty_member,
 )
-from app.context.slot_holds import SlotHoldRegistry
+from app.db.slot_holds import SlotHoldRegistry
 from app.db.customer_context import CustomerContext
 from app.db.time_normalization import extract_duration_minutes, extract_time_from_message, extract_time_range
 from app.documents import service as document_service
@@ -597,7 +598,7 @@ def test_existing_booking_survives_beyond_first_turn(monkeypatch):
         def get_latest_booking(self, *_args):
             return {"status": "success", "data": latest}
 
-    monkeypatch.setattr("app.orchestrator.get_relational_repository", lambda: Repo())
+    monkeypatch.setattr("app.context.runtime_context.get_relational_repository", lambda: Repo())
     orchestrator = object.__new__(PawfectOrchestrator)
     state = ConversationState(phone_number="+60123456705", company_id="1")
     first = orchestrator._resolve_identity("1", state)
@@ -636,7 +637,7 @@ def test_profile_hydration_is_not_tied_to_greeting_and_retries_failed_pet_read(m
             return {"status": "not_found", "data": None}
 
     repo = Repo()
-    monkeypatch.setattr("app.orchestrator.get_relational_repository", lambda: repo)
+    monkeypatch.setattr("app.context.runtime_context.get_relational_repository", lambda: repo)
     orchestrator = object.__new__(PawfectOrchestrator)
     state = ConversationState(
         phone_number="+60123456705",
@@ -673,7 +674,7 @@ def test_failed_profile_read_cannot_be_rewritten_as_no_registered_pets():
         content="Hi Alicia! I see you don't have any pets registered yet."
     )
 
-    grounded = PawfectOrchestrator._ground_unavailable_profile_claims(
+    grounded = ground_unavailable_profile_claims(
         response,
         "next Saturday have booking?",
         {

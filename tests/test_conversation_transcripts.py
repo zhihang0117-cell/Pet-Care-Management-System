@@ -7,6 +7,15 @@ from pathlib import Path
 
 from langchain_core.messages import AIMessage
 
+from app.agent.booking_authorization import reject_unconfirmed_optional_booking_fields
+from app.agent.confirmation_policy import confirmation_intent
+from app.agent.pet_resolution import match_named_pet
+from app.agent.response_grounding import (
+    ground_booking_preview_response,
+    ground_document_delivery_response,
+    ground_membership_response,
+)
+from app.agent.tool_execution_policy import trace_has_successful_document_delivery
 from app.context.state import ConversationState
 from app.orchestrator import PawfectOrchestrator
 
@@ -20,7 +29,7 @@ CASES = json.loads(
 
 def test_confirmation_transcripts():
     for case in CASES["confirmation"]:
-        actual = PawfectOrchestrator._confirmation_intent(case["user"])
+        actual = confirmation_intent(case["user"])
         assert actual == case["expected"], case["id"]
 
 
@@ -31,7 +40,7 @@ def test_pet_resolution_transcripts():
         state.known_pets = case["pets"]
         state.pet_id = case["initial_pet_id"]
 
-        PawfectOrchestrator._match_named_pet(state, case["user"])
+        match_named_pet(state, case["user"])
 
         assert state.pet_id == case["expected_pet_id"], case["id"]
 
@@ -60,10 +69,12 @@ def test_optional_booking_transcripts():
         state.history = case["history"]
         state.preferred_staff = case.get("preferred_staff")
 
-        result = PawfectOrchestrator._reject_unconfirmed_optional_booking_fields(
+        result = reject_unconfirmed_optional_booking_fields(
             state,
             case["args"],
             case["user"],
+            detect_ordinal_index=PawfectOrchestrator._detect_ordinal_index,
+            normalize_option_label=PawfectOrchestrator._normalized_option_label,
         )
         actual_error = result.get("error") if isinstance(result, dict) else None
 
@@ -77,9 +88,14 @@ def test_response_grounding_transcripts():
         "document": "send_booking_confirmation",
     }
     grounder_by_kind = {
-        "booking_preview": PawfectOrchestrator._ground_booking_preview_response,
-        "membership": PawfectOrchestrator._ground_membership_response,
-        "document": PawfectOrchestrator._ground_document_delivery_response,
+        "booking_preview": ground_booking_preview_response,
+        "membership": ground_membership_response,
+        "document": lambda response, user_message, trace: ground_document_delivery_response(
+            response,
+            user_message,
+            trace,
+            trace_has_successful_delivery=trace_has_successful_document_delivery,
+        ),
     }
 
     for case in CASES["response_grounding"]:

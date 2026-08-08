@@ -8,6 +8,8 @@ multi-pet pet_id mixup found and fixed this session (see _known_pet_by_id and
 the get_booking_service_options/create_booking override in _run_tool).
 """
 
+from app.agent.pet_resolution import known_pet_by_id, match_named_pet
+from app.agent.tool_guardrails import reject_unconfirmed_breed
 from app.context.state import ConversationState
 from app.orchestrator import PawfectOrchestrator, TOOLS_BY_NAME
 
@@ -23,7 +25,7 @@ def _state_with_two_pets() -> ConversationState:
 
 def test_match_named_pet_resolves_the_pet_named_in_this_message():
     state = _state_with_two_pets()
-    PawfectOrchestrator._match_named_pet(state, "what grooming options for Lili?")
+    match_named_pet(state, "what grooming options for Lili?")
     assert state.pet_id == 25
     assert state.pet_name == "Lili"
 
@@ -31,7 +33,7 @@ def test_match_named_pet_resolves_the_pet_named_in_this_message():
 def test_match_named_pet_resolves_unambiguous_other_pet_reference():
     state = _state_with_two_pets()
     state.pet_id = 5  # simulate an earlier turn having resolved Simba
-    PawfectOrchestrator._match_named_pet(state, "and what about my other pet?")
+    match_named_pet(state, "and what about my other pet?")
     assert state.pet_id == 25
     assert state.pet_name == "Lili"
 
@@ -43,7 +45,7 @@ def test_match_named_pet_supports_cjk_names_without_word_boundaries():
         {"pet_id": 7, "pet_type": "Dog", "pet_name": "小白", "pet_size": "S"}
     ]
 
-    PawfectOrchestrator._match_named_pet(state, "帮小白预约美容")
+    match_named_pet(state, "帮小白预约美容")
 
     assert state.pet_id == 7
     assert state.pet_selected_turn == 3
@@ -58,7 +60,7 @@ def test_match_named_pet_resolves_unique_species_reference():
     ]
     state.pet_id = 5
 
-    PawfectOrchestrator._match_named_pet(state, "what about my cat?")
+    match_named_pet(state, "what about my cat?")
 
     assert state.pet_id == 25
     assert state.pet_selected_turn == 4
@@ -76,7 +78,7 @@ def test_multi_pet_tool_uses_unambiguous_other_pet_not_stale_state(monkeypatch):
     state.pet_name = "Simba"
     state.pet_selected_turn = 1
     state.turn_counter = 2
-    PawfectOrchestrator._match_named_pet(state, "and what about my other pet?")
+    match_named_pet(state, "and what about my other pet?")
 
     result = object.__new__(PawfectOrchestrator)._run_tool(
         {
@@ -158,7 +160,7 @@ def test_multi_pet_tool_rejects_model_only_pet_switch(monkeypatch):
 
 def test_known_pet_by_id_finds_a_real_pet():
     state = _state_with_two_pets()
-    pet = PawfectOrchestrator._known_pet_by_id(state, 25)
+    pet = known_pet_by_id(state, 25)
     assert pet is not None
     assert pet["pet_name"] == "Lili"
 
@@ -168,13 +170,13 @@ def test_known_pet_by_id_rejects_a_pet_id_the_customer_does_not_own():
     # mismatched pet_id the model supplied for get_booking_service_options/
     # create_booking.
     state = _state_with_two_pets()
-    assert PawfectOrchestrator._known_pet_by_id(state, 999) is None
+    assert known_pet_by_id(state, 999) is None
 
 
 def test_known_pet_by_id_handles_missing_or_blank_pet_id():
     state = _state_with_two_pets()
-    assert PawfectOrchestrator._known_pet_by_id(state, None) is None
-    assert PawfectOrchestrator._known_pet_by_id(state, "") is None
+    assert known_pet_by_id(state, None) is None
+    assert known_pet_by_id(state, "") is None
 
 
 def test_run_tool_overrides_model_company_id_with_session_tenant(monkeypatch):
@@ -459,13 +461,13 @@ def test_vaccination_update_rejects_model_computed_expiry_wording(monkeypatch):
 def test_create_pet_breed_guard_accepts_customer_wording_and_flexible_unknown_answers():
     state = ConversationState(phone_number="+60123456705", company_id="1")
 
-    assert PawfectOrchestrator._reject_unconfirmed_breed(
+    assert reject_unconfirmed_breed(
         state, {"breed": "Golden Retriever"}, "Milo is a golden"
     ) is None
-    assert PawfectOrchestrator._reject_unconfirmed_breed(
+    assert reject_unconfirmed_breed(
         state, {"breed": "unknown"}, "我不清楚它是什么品种"
     ) is None
-    assert PawfectOrchestrator._reject_unconfirmed_breed(
+    assert reject_unconfirmed_breed(
         state, {"breed": "mixed"}, "Dia anjing kacukan"
     ) is None
     args_schema = TOOLS_BY_NAME["create_pet"].args_schema
@@ -486,7 +488,7 @@ def test_create_pet_breed_guard_keeps_answers_from_the_full_profile_flow():
         {"role": "ai", "content": "Let me create the profile."},
     ]
 
-    assert PawfectOrchestrator._reject_unconfirmed_breed(
+    assert reject_unconfirmed_breed(
         state, {"breed": "British Shorthair"}, "yes"
     ) is None
 
@@ -541,15 +543,15 @@ def test_new_pet_prompt_requires_breed_in_addition_to_name_species_and_height():
 def test_create_pet_breed_guard_rejects_missing_invented_or_species_values():
     state = ConversationState(phone_number="+60123456705", company_id="1")
 
-    assert PawfectOrchestrator._reject_unconfirmed_breed(state, {"breed": ""}, "It is a dog")[
+    assert reject_unconfirmed_breed(state, {"breed": ""}, "It is a dog")[
         "error"
     ] == "MISSING_BREED"
-    assert PawfectOrchestrator._reject_unconfirmed_breed(
+    assert reject_unconfirmed_breed(
         state, {"breed": "Poodle"}, "It is a dog"
     )["error"] == "UNCONFIRMED_BREED"
-    assert PawfectOrchestrator._reject_unconfirmed_breed(
+    assert reject_unconfirmed_breed(
         state, {"breed": "dog"}, "It is a dog"
     )["error"] == "SPECIES_IS_NOT_BREED"
-    assert PawfectOrchestrator._reject_unconfirmed_breed(
+    assert reject_unconfirmed_breed(
         state, {"breed": "mixed"}, "I don't know the breed"
     )["error"] == "UNCONFIRMED_BREED"

@@ -1,8 +1,8 @@
-import re
+import uuid
 from datetime import date as date_cls
-from typing import Literal
+from typing import Annotated, Literal
 
-from langchain_core.tools import tool
+from langchain_core.tools import InjectedToolArg, tool
 
 from app.db.relational_provider import get_relational_repository
 from app.db.relational_repository import BookingCommand
@@ -15,159 +15,6 @@ def _repo():
 
 _GENERIC_PACKAGE_NAMES = {"", "grooming", "daycare", "boarding", "service", "general"}
 ServiceType = Literal["GROOMING", "DAYCARE", "BOARDING"]
-
-# A catalogue line naming a per-unit RATE ("RM15/hour") rather than a flat
-# total must never be trusted as ground truth for an hourly booking's actual
-# charged total (rate x hours) — only used to disqualify a matched
-# catalogue line in _verify_flat_price_against_catalogue below, never to
-# reject on its own.
-_RATE_MARKER_RE = re.compile(
-    r"/\s*hour\b|per\s+hour\b|/\s*hr\b|each\s+hour\b", re.IGNORECASE
-)
-
-
-def _find_catalogue_match(catalogue: list[dict], name: str) -> dict | None:
-    normalized_name = re.sub(r"\s+", " ", str(name or "")).strip().casefold()
-    return next(
-        (
-            opt for opt in catalogue
-            if re.sub(r"\s+", " ", str(opt.get("service_name") or "")).strip().casefold() == normalized_name
-        ),
-        None,
-    )
-
-
-def _price_mismatch_error(
-    field_label: str, submitted_price, match: dict,
-    *, duration_minutes: int | None = None,
-) -> dict | None:
-    if match is None:
-        return {
-            "error": "UNVERIFIED_SERVICE_OPTION",
-            "message": f"{field_label} could not be matched to an exact catalogue option.",
-        }
-    try:
-        catalogue_price = float(match["price"])
-        submitted = float(submitted_price)
-    except (TypeError, ValueError):
-        return {"error": "INVALID_PRICE", "message": f"{field_label} must be a valid amount."}
-    pricing_unit = str(match.get("pricing_unit") or "").casefold()
-    looks_hourly = pricing_unit == "hour" or bool(
-        _RATE_MARKER_RE.search(str(match.get("service_name") or ""))
-    )
-    if duration_minutes is not None:
-        exact = match.get("duration_minutes")
-        minimum = match.get("min_duration_minutes")
-        maximum = match.get("max_duration_minutes")
-        applicable = True
-        if exact not in (None, ""):
-            applicable = int(duration_minutes) == int(exact)
-        if minimum not in (None, ""):
-            applicable = applicable and (
-                duration_minutes > int(minimum)
-                if match.get("min_duration_exclusive")
-                else duration_minutes >= int(minimum)
-            )
-        if maximum not in (None, ""):
-            applicable = applicable and (
-                duration_minutes < int(maximum)
-                if match.get("max_duration_exclusive")
-                else duration_minutes <= int(maximum)
-            )
-        if not applicable:
-            return {
-                "error": "PACKAGE_NOT_APPLICABLE_FOR_DURATION",
-                "message": (
-                    f"{match['service_name']!r} is not applicable to a "
-                    f"{duration_minutes}-minute stay. Use the catalogue tier whose "
-                    "verified duration range contains the complete visit."
-                ),
-            }
-    expected_price = catalogue_price
-    if looks_hourly:
-        if duration_minutes is None or duration_minutes <= 0:
-            return {
-                "error": "MISSING_DURATION_FOR_PRICE",
-                "message": "An hourly package requires a verified visit duration before its total can be checked.",
-            }
-        expected_price = catalogue_price * duration_minutes / 60
-    if abs(submitted - expected_price) <= 0.01:
-        return None
-    return {
-        "error": "INVALID_PRICE",
-        "message": (
-            f"{field_label} ({submitted_price}) does not match {match['service_name']!r}'s verified "
-            f"total (RM{expected_price:g}) from get_booking_service_options. "
-            "Use its exact price, not a recalled, rounded, or guessed number."
-        ),
-    }
-
-
-def _verify_flat_price_against_catalogue(
-    company_id, service_type: str, package_name: str, price,
-    pet_type: str = "", pet_size: str = "",
-    add_on: str = "", add_on_price=None,
-    duration_minutes: int | None = None,
-) -> dict | None:
-    """
-    Fail-closed cross-check of a GROOMING/DAYCARE package (and, if
-    given, add-on) price against the same RAG catalogue
-    get_booking_service_options already parses for the model
-    (app.tools.customer_tools._extract_daycare_catalogue_options — genuinely
-    service-agnostic despite its name: it structures any RAG segment
-    containing exactly one RM amount, which is exactly what a
-    pet-size-narrowed grooming chunk, a daycare package line, or a grooming
-    add-on line (nail trim, ear cleaning, teeth brushing, ...) looks like).
-
-    Unlike BOARDING (a real per-night rate in the structured `room` table),
-    GROOMING/DAYCARE prices only ever exist as unstructured document text,
-    this path blocks the write when the catalogue cannot be retrieved or an
-    exact label cannot be matched. Hourly options are verified as rate times
-    the customer-approved duration; flat options and add-ons must match their
-    exact catalogue amount.
-    """
-    normalized_service = str(service_type or "").strip().upper()
-    if normalized_service not in {"GROOMING", "DAYCARE"}:
-        return None
-    try:
-        from app.rag.retriever import CompanyRAGRetriever
-        from app.tools.customer_tools import _extract_daycare_catalogue_options
-
-        if normalized_service == "GROOMING":
-            query = f"{pet_type or ''} grooming packages price by size".strip()
-            rag_rows = CompanyRAGRetriever().search(
-                company_id, query, service_type="grooming",
-                pet_type=(pet_type or None), pet_size=(pet_size or None),
-            )
-        else:
-            rag_rows = CompanyRAGRetriever().search(
-                company_id, "daycare packages and prices", service_type="daycare",
-            )
-        services, add_ons = _extract_daycare_catalogue_options(
-            rag_rows, pet_size=pet_size if normalized_service == "GROOMING" else ""
-        )
-    except Exception as exc:
-        return {
-            "error": "PRICE_VERIFICATION_UNAVAILABLE",
-            "message": (
-                "The catalogue price could not be verified, so no booking was written. "
-                f"Retry get_booking_service_options before creating the booking ({exc})."
-            ),
-        }
-
-    catalogue = services + add_ons
-    package_mismatch = _price_mismatch_error(
-        "price", price, _find_catalogue_match(catalogue, package_name),
-        duration_minutes=duration_minutes,
-    )
-    if package_mismatch:
-        return package_mismatch
-
-    if str(add_on or "").strip() and add_on_price is not None:
-        return _price_mismatch_error(
-            "add_on_price", add_on_price, _find_catalogue_match(catalogue, add_on)
-        )
-    return None
 
 
 @tool
@@ -187,6 +34,7 @@ def create_booking(
     add_on: str = "",
     add_on_price: float | None = None,
     duration_minutes: int | None = None,
+    idempotency_key: Annotated[str, InjectedToolArg] = "",
 ) -> dict:
     """
     Preview and, after server-authorized confirmation, create a booking. Make
@@ -395,43 +243,16 @@ def create_booking(
                     "server can derive it without relying on LLM time arithmetic."
                 ),
             }
-    if normalized_service in {"GROOMING", "DAYCARE"}:
-        verified_duration = duration_minutes
-        if normalized_service == "DAYCARE" and verified_duration in (None, ""):
-            from app.db.time_normalization import normalize_time
+    verified_duration = duration_minutes
+    if normalized_service == "DAYCARE" and verified_duration in (None, ""):
+        from app.db.time_normalization import normalize_time
 
-            try:
-                start_hour, start_minute = (int(part) for part in normalize_time(time).split(":"))
-                end_hour, end_minute = (int(part) for part in normalize_time(check_out_time).split(":"))
-                verified_duration = (end_hour * 60 + end_minute) - (start_hour * 60 + start_minute)
-            except (TypeError, ValueError):
-                verified_duration = None
-        catalogue_pet_type = ""
-        catalogue_pet_size = ""
-        if normalized_service == "GROOMING" and pet_id:
-            try:
-                from app.tools.customer_tools import _pet_details_for
-
-                catalogue_pet_type, catalogue_pet_size = _pet_details_for(
-                    int(company_id), int(customer_id), int(pet_id)
-                )
-            except Exception as exc:
-                return {
-                    "error": "PET_OWNERSHIP_UNVERIFIED",
-                    "message": (
-                        "The selected pet could not be verified as belonging to this customer; "
-                        "no booking was written."
-                    ),
-                    "_internal_error": str(exc),
-                }
-        price_mismatch = _verify_flat_price_against_catalogue(
-            company_id, normalized_service, package_name, price,
-            pet_type=catalogue_pet_type, pet_size=catalogue_pet_size,
-            add_on=add_on, add_on_price=add_on_price,
-            duration_minutes=int(verified_duration) if verified_duration else None,
-        )
-        if price_mismatch:
-            return price_mismatch
+        try:
+            start_hour, start_minute = (int(part) for part in normalize_time(time).split(":"))
+            end_hour, end_minute = (int(part) for part in normalize_time(check_out_time).split(":"))
+            verified_duration = (end_hour * 60 + end_minute) - (start_hour * 60 + start_minute)
+        except (TypeError, ValueError):
+            verified_duration = None
     command = BookingCommand(
         company_id=int(company_id),
         customer_id=int(customer_id),
@@ -448,6 +269,7 @@ def create_booking(
         add_on=add_on,
         add_on_price=add_on_price,
         duration_minutes=int(verified_duration) if verified_duration else None,
+        idempotency_key=str(idempotency_key or "").strip() or uuid.uuid4().hex,
     )
     return _repo().create_booking(int(company_id), command)
 

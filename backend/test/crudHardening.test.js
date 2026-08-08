@@ -24,6 +24,15 @@ test("booking and payment CRUD uses atomic database functions", async () => {
   assert.match(sql, /Reject or refund the linked point redemption/);
 });
 
+test("AI booking retries reuse the original atomic booking result", async () => {
+  const sql = await read("../sql/booking_idempotency_migration.sql");
+  assert.match(sql, /function public\.create_booking_idempotent/);
+  assert.match(sql, /primary key \(company_id, operation, idempotency_key\)/);
+  assert.match(sql, /pg_advisory_xact_lock/);
+  assert.match(sql, /return v_existing\.result/);
+  assert.match(sql, /public\.create_booking_atomic/);
+});
+
 test("protected state transitions cannot use generic CRUD updates", async () => {
   const leave = await read("../src/routes/leaveRequests.js");
   const enquiry = await read("../src/routes/chatMessages.js");

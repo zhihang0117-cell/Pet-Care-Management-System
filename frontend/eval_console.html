@@ -648,28 +648,10 @@ function appendBubble(role, text, opts) {
 }
 
 function documentsFromResponse(data) {
-  if (Array.isArray(data?.documents) && data.documents.length) return data.documents;
-  // Backward-compatible fallback for an older backend response contract.
-  const documents = [];
-  for (const t of (data?.tool_trace || [])) {
-    let parsed;
-    try { parsed = typeof t.result === 'object' ? t.result : JSON.parse(t.result); }
-    catch (e) { continue; }
-    const details = parsed?.data || {};
-    const url = details._internal_document_url || details._internal_confirmation_url;
-    if (!url) continue;
-    const deliveryStatus = details.delivery_status || details.confirmation_delivery_status || '';
-    documents.push({
-      kind: 'document',
-      document_type: 'booking_confirmation',
-      label: 'Booking confirmation',
-      url,
-      delivery_status: deliveryStatus,
-      delivered: ['sent', 'sent_console'].includes(deliveryStatus),
-      source_tool: t.tool,
-    });
-  }
-  return documents;
+  // main.py's /chat always returns this field (see _documents_from_trace,
+  // "Typed attachment contract for the authenticated eval console") — no
+  // older contract to fall back to.
+  return Array.isArray(data?.documents) ? data.documents : [];
 }
 
 function appendDocumentCards(bubble, documents) {
@@ -957,6 +939,11 @@ function flowStepHtml(state, dotContent, title, subHtml) {
   </div>`;
 }
 
+function step1Html(phone, message) {
+  return flowStepHtml('done', '1', '📥 Message Received',
+    `<code>POST /chat</code> · phone <code>${escapeHtml(phone || '(none)')}</code><br>"${escapeHtml(message)}"`);
+}
+
 function toolStepHtml(t, i) {
   let argsResult = '';
   try {
@@ -979,8 +966,7 @@ function startFlow(phone, message) {
   const stepsEl = document.getElementById('flowSteps');
   stepsEl.style.display = '';
   stepsEl.innerHTML =
-    flowStepHtml('done', '1', '📥 Message Received',
-      `<code>POST /chat</code> · phone <code>${escapeHtml(phone || '(none)')}</code><br>"${escapeHtml(message)}"`) +
+    step1Html(phone, message) +
     flowStepHtml('active', '2', '🔑 Resolving company, session &amp; identity',
       'get_relational_company_id() · ConversationMemory.get() · _resolve_identity() …');
 }
@@ -1014,10 +1000,7 @@ function finishFlow(phone, message, data, latency) {
   const step6 = flowStepHtml('done', '6', '📤 Response returned to console',
     `<code>tool_trace</code> (${trace.length}) + <code>latency_ms</code> sent back in the HTTP response.`);
 
-  stepsEl.innerHTML =
-    flowStepHtml('done', '1', '📥 Message Received',
-      `<code>POST /chat</code> · phone <code>${escapeHtml(phone || '(none)')}</code><br>"${escapeHtml(message)}"`) +
-    step2 + step3 + step4 + step5 + step6;
+  stepsEl.innerHTML = step1Html(phone, message) + step2 + step3 + step4 + step5 + step6;
 
   const latencyEl = document.getElementById('flowLatency');
   latencyEl.textContent = Math.round(latency) + ' ms';
@@ -1027,8 +1010,7 @@ function finishFlow(phone, message, data, latency) {
 function errorFlow(phone, message, e) {
   const stepsEl = document.getElementById('flowSteps');
   stepsEl.innerHTML =
-    flowStepHtml('done', '1', '📥 Message Received',
-      `<code>POST /chat</code> · phone <code>${escapeHtml(phone || '(none)')}</code><br>"${escapeHtml(message)}"`) +
+    step1Html(phone, message) +
     flowStepHtml('error', '2', '⚠️ Request failed before reaching the backend',
       escapeHtml((e && e.message) || String(e)) + '<br>Check the API base URL and that the backend is running.');
 }

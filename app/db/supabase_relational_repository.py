@@ -151,6 +151,7 @@ class SupabaseRelationalRepository:
             "add_on": booking_command.add_on,
             "add_on_price": booking_command.add_on_price,
             "duration_minutes": booking_command.duration_minutes,
+            "idempotency_key": booking_command.idempotency_key,
         }
         payload["_draft_booking"] = {
             "pet_id": booking_command.pet_id,

@@ -52,6 +52,7 @@ class BookingCommand:
     # one. Grooming falls back to 90 minutes only when no verified duration
     # exists; daycare normally derives this from its pickup endpoint.
     duration_minutes: int | None = None
+    idempotency_key: str = ""
 
 
 class RelationalRepository(Protocol):

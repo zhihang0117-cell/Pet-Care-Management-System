@@ -7,7 +7,19 @@ import os
 import requests
 
 
-REQUIRED_POSTGREST_PATHS = frozenset({"/rpc/register_loyalty_member_atomic"})
+REQUIRED_POSTGREST_PATHS = frozenset(
+    {
+        "/ai_mutation_idempotency",
+        "/booking_slot_hold",
+        "/rpc/acquire_booking_hold",
+        "/rpc/cancel_booking_atomic",
+        "/rpc/create_booking_idempotent",
+        "/rpc/match_chunks_bge_large",
+        "/rpc/register_loyalty_member_atomic",
+        "/rpc/request_redemption",
+        "/rpc/update_booking_atomic",
+    }
+)
 
 
 def missing_required_paths(openapi_document: dict) -> list[str]:
@@ -52,6 +64,6 @@ def verify_required_supabase_schema(
         joined = ", ".join(missing)
         raise RuntimeError(
             "Required Supabase schema capabilities are missing from the PostgREST "
-            f"schema cache: {joined}. Apply backend/sql/loyalty_member_registration_migration.sql "
-            "before deploying."
+            f"schema cache: {joined}. Apply the migrations listed in "
+            "backend/sql/README.md before deploying."
         )

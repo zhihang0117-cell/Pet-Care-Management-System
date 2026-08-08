@@ -1,4 +1,6 @@
 import json
+import time
+from concurrent.futures import TimeoutError as FutureTimeoutError
 from pathlib import Path
 
 from langchain_core.messages import AIMessage
@@ -9,12 +11,40 @@ from app.orchestrator import (
     PawfectOrchestrator,
     TOOLS_BY_NAME,
     ToolLoopError,
+    _sanitize_model_value,
     _tools_for_scenario,
 )
+from app.context.runtime_context import build_runtime_context, customer_context_for_state
 from app.prompts.system_prompt import SYSTEM_PROMPT
+from app.agent.booking_authorization import reject_unconfirmed_optional_booking_fields
+from app.agent.confirmation_policy import confirmation_intent
+from app.agent.response_grounding import (
+    ground_daycare_recommendation_response,
+    ground_direct_datetime_response,
+    ground_document_delivery_response,
+    ground_latest_availability_response,
+)
+from app.agent.scenario_state import sync_scenario_from_tool_call
+from app.agent.tool_batch_execution import (
+    await_tool_future_result,
+    plan_tool_batch,
+)
+from app.agent.tool_call_runtime import restore_confirmed_pending_args
+from app.agent.tool_execution_policy import (
+    compact_evidence_result,
+    mutation_signature,
+    ordered_tool_calls,
+    successful_trace_tools,
+    tool_result_status,
+    trace_has_successful_document_delivery,
+)
+from app.agent.tool_loop_outcomes import (
+    batch_has_duplicate_suppression,
+    booking_availability_repair,
+    reused_failed_mutation,
+)
 from app.tools.document_tools import send_booking_confirmation
 from app.tools.customer_tools import _extract_daycare_catalogue_options
-from app.tools.booking_tools import _verify_flat_price_against_catalogue
 
 
 def _call(name, call_id, **args):
@@ -36,9 +66,54 @@ def test_dependency_order_resolves_dates_before_availability():
         _call("check_availability", "availability", date="2026-08-08"),
         _call("resolve_datetime", "date", text="this Saturday"),
     ]
-    ordered, has_dependency = PawfectOrchestrator._ordered_tool_calls(calls)
+    ordered, has_dependency = ordered_tool_calls(calls)
     assert has_dependency is True
     assert [call["name"] for call in ordered] == ["resolve_datetime", "check_availability"]
+
+
+def test_confirmed_booking_reuses_server_idempotency_key_without_changing_signature():
+    state = ConversationState(
+        phone_number="+60123456705",
+        company_id="1",
+        customer_id=7,
+        active_scenario="MAKE_BOOKING",
+    )
+    state.turn_counter = 4
+    args = {
+        "company_id": "1",
+        "customer_id": 7,
+        "pet_id": 9,
+        "service_type": "GROOMING",
+        "package_name": "Basic Bath",
+        "date": "2026-08-10",
+        "time": "10:00",
+        "price": 45,
+    }
+
+    preview = PawfectOrchestrator._authorize_pending_action(
+        state, "create_booking", args, "book this"
+    )
+    pending = state.pending_actions["create_booking"]
+    assert preview["status"] == "confirmation_required"
+    assert len(pending["idempotency_key"]) == 32
+    assert "idempotency_key" not in pending["args"]
+    assert mutation_signature("create_booking", args) == (
+        mutation_signature(
+            "create_booking", {**args, "idempotency_key": pending["idempotency_key"]}
+        )
+    )
+
+    state.turn_counter = 5
+    restored, preview_turn = restore_confirmed_pending_args(
+        "create_booking",
+        {**args, "idempotency_key": "model-authored-key"},
+        state,
+        "yes please",
+        confirmation_intent=confirmation_intent,
+        pending_scenario_matches=PawfectOrchestrator._pending_scenario_matches,
+    )
+    assert restored["idempotency_key"] == pending["idempotency_key"]
+    assert preview_turn == 4
 
 
 def test_state_update_runs_before_sibling_business_tools():
@@ -46,7 +121,7 @@ def test_state_update_runs_before_sibling_business_tools():
         _call("get_booking_service_options", "options", service_type="GROOMING"),
         _call("update_conversation_state", "state", active_scenario="MAKE_BOOKING"),
     ]
-    ordered, has_dependency = PawfectOrchestrator._ordered_tool_calls(calls)
+    ordered, has_dependency = ordered_tool_calls(calls)
     assert has_dependency is True
     assert ordered[0]["name"] == "update_conversation_state"
 
@@ -58,7 +133,7 @@ def test_repeat_booking_dependencies_finish_history_and_catalogue_before_availab
         _call("get_last_completed_booking", "history", service_type="GROOMING"),
     ]
 
-    ordered, has_dependency = PawfectOrchestrator._ordered_tool_calls(calls)
+    ordered, has_dependency = ordered_tool_calls(calls)
 
     assert has_dependency is True
     assert [call["name"] for call in ordered] == [
@@ -66,6 +141,100 @@ def test_repeat_booking_dependencies_finish_history_and_catalogue_before_availab
         "get_booking_service_options",
         "check_availability",
     ]
+
+
+def test_tool_batch_plan_keeps_parallelism_rules_simple_and_deterministic():
+    state = ConversationState(
+        phone_number="+60123456705", company_id="1", customer_id=7
+    )
+    parallel_reads = [
+        _call("get_pets", "pets"),
+        _call("get_loyalty_balance", "loyalty"),
+    ]
+
+    _, run_parallel, mode, reason = plan_tool_batch(
+        parallel_reads,
+        state,
+        ordered_tool_calls=ordered_tool_calls,
+        mutation_signature=mutation_signature,
+        cacheable_read_tools={"get_pets", "get_loyalty_balance", "resolve_datetime"},
+        company_scoped_tools={"get_pets", "get_loyalty_balance"},
+        customer_scoped_tools={"get_pets", "get_loyalty_balance"},
+    )
+
+    assert (run_parallel, mode, reason) == (True, "parallel", None)
+
+    duplicate_reads = [_call("get_pets", "pets-1"), _call("get_pets", "pets-2")]
+    _, run_parallel, mode, reason = plan_tool_batch(
+        duplicate_reads,
+        state,
+        ordered_tool_calls=ordered_tool_calls,
+        mutation_signature=mutation_signature,
+        cacheable_read_tools={"get_pets"},
+        company_scoped_tools={"get_pets"},
+        customer_scoped_tools={"get_pets"},
+    )
+
+    assert (run_parallel, mode, reason) == (
+        False,
+        "sequential",
+        "contains_duplicate_read_calls",
+    )
+
+
+def test_mutation_timeout_is_reported_as_unknown_and_not_recoverable():
+    class TimedOutFuture:
+        cancelled = False
+
+        def result(self, timeout):
+            raise FutureTimeoutError
+
+        def cancel(self):
+            self.cancelled = True
+
+    future = TimedOutFuture()
+    result, _, _ = await_tool_future_result(
+        future,
+        _call("create_booking", "booking"),
+        execution_mode="sequential",
+        batch_started_at=time.perf_counter(),
+        submitted_at={},
+        timeout_seconds=20,
+        mutating_tool_names={"create_booking"},
+    )
+
+    assert future.cancelled is True
+    assert result["error_code"] == "TOOL_TIMEOUT_OUTCOME_UNKNOWN"
+    assert result["recoverable"] is False
+    assert result["handoff_required"] is True
+
+
+def test_tool_loop_outcomes_preserve_exact_repair_and_failure_payloads():
+    required_args = {"date": "2026-08-10", "time": "10:00"}
+    retry_args = {"pet_id": 7, "date": "2026-08-10", "time": "10:00"}
+    records = {
+        "booking": {
+            "tool_call": _call("create_booking", "booking"),
+            "result": {
+                "error": "UNVERIFIED_AVAILABILITY_SLOT",
+                "_internal_required_args": required_args,
+                "_internal_retry_args": retry_args,
+            },
+        },
+        "read": {
+            "tool_call": _call("get_pets", "pets"),
+            "result": {"_internal_duplicate_read_suppressed": True},
+        },
+    }
+
+    assert booking_availability_repair(records) == (required_args, retry_args)
+    assert batch_has_duplicate_suppression(records) is True
+
+    failure = {"status": "error", "handoff_required": True}
+    reused = reused_failed_mutation("create_booking", {"create_booking": failure})
+    assert reused["status"] == "error"
+    assert reused["_internal_duplicate_mutation_suppressed"] is True
+    assert reused_failed_mutation("cancel_booking", {"create_booking": failure}) is None
 
 
 def test_make_booking_toolset_keeps_side_policy_but_excludes_latest_booking_read():
@@ -113,22 +282,24 @@ def test_runtime_context_refreshes_scenario_and_business_clock():
     state = ConversationState(phone_number="+60123456705", company_id="7")
     customer = {"found": True, "customer_id": 10, "full_name": "Alicia Lee"}
 
-    before = orchestrator._runtime_context(
+    before = build_runtime_context(
         {"company_id": "7", "company_name": "Pawfect", "timezone": "Asia/Kuala_Lumpur"},
         customer,
         state,
         available_tools=[],
+        sanitize_model_value=_sanitize_model_value,
     )
     orchestrator._apply_tool_result_state(
         state,
         _call("update_conversation_state", "state"),
         {"active_scenario": "MAKE_BOOKING", "current_step": None, "service_type": "DAYCARE"},
     )
-    after = orchestrator._runtime_context(
+    after = build_runtime_context(
         {"company_id": "7", "company_name": "Pawfect", "timezone": "Asia/Kuala_Lumpur"},
         customer,
         state,
         available_tools=[],
+        sanitize_model_value=_sanitize_model_value,
     )
 
     assert before["scenario_definition"] is None
@@ -264,7 +435,7 @@ def test_nono_declines_add_ons_without_reopening_stale_loyalty_flow():
     PawfectOrchestrator._capture_explicit_add_on_decision(state, "nono")
     names = {tool.name for tool in PawfectOrchestrator._tools_for_turn(state, "nono")}
 
-    assert PawfectOrchestrator._confirmation_intent("nono") == "negative"
+    assert confirmation_intent("nono") == "negative"
     assert state.verified_facts["add_on_decision"]["value"] == "declined"
     assert not names & {
         "get_loyalty_balance",
@@ -387,6 +558,86 @@ def test_daycare_hourly_rate_ends_when_above_three_hour_flat_tier_begins():
     assert hourly["max_duration_exclusive"] is False
 
 
+def test_direct_datetime_response_trusts_model_when_it_states_the_correct_date():
+    state = ConversationState(phone_number="+60123456705", company_id="1")
+    state.current_datetime_resolution = {"date": "2026-08-15"}  # a Saturday
+
+    own_words = AIMessage(content="It's Saturday, 2026-08-15 today — how can I help?")
+    grounded = ground_direct_datetime_response(
+        own_words, state, "today?",
+        is_staff_handoff_request=lambda _text: False,
+    )
+
+    assert grounded is own_words
+    assert grounded.content == own_words.content
+
+
+def test_direct_datetime_response_falls_back_when_model_gets_the_date_wrong():
+    state = ConversationState(phone_number="+60123456705", company_id="1")
+    state.current_datetime_resolution = {"date": "2026-08-15"}  # a Saturday
+
+    wrong = AIMessage(content="Today is 2026-08-10.")
+    grounded = ground_direct_datetime_response(
+        wrong, state, "today?",
+        is_staff_handoff_request=lambda _text: False,
+    )
+
+    assert grounded.content == "The date is 2026-08-15 (Saturday)."
+
+
+def test_direct_datetime_response_falls_back_on_a_vague_non_answer():
+    state = ConversationState(phone_number="+60123456705", company_id="1")
+    state.current_datetime_resolution = {"date": "2026-08-15"}  # a Saturday
+
+    vague = AIMessage(content="Processed per the system date.")
+    grounded = ground_direct_datetime_response(
+        vague, state, "today?",
+        is_staff_handoff_request=lambda _text: False,
+    )
+
+    assert grounded.content == "The date is 2026-08-15 (Saturday)."
+
+
+def test_daycare_recommendation_trusts_model_when_it_already_names_eligible_option():
+    state = ConversationState(
+        phone_number="+60123456705",
+        company_id="1",
+        service_type="DAYCARE",
+        daycare_duration_minutes=240,
+    )
+    trace = [{
+        "tool": "get_booking_service_options",
+        "args": {"service_type": "DAYCARE", "pet_id": 7},
+        "result": json.dumps({
+            "status": "success",
+            "data": {
+                "service_options": [
+                    {
+                        "service_name": "Daycare Above 3 Hours",
+                        "price": 55,
+                        "pricing_unit": "flat",
+                        "min_duration_minutes": 180,
+                        "min_duration_exclusive": True,
+                    },
+                ]
+            },
+        }),
+    }]
+    own_words = AIMessage(
+        content="For four hours, Daycare Above 3 Hours at RM55 fits best."
+    )
+
+    grounded = ground_daycare_recommendation_response(
+        own_words,
+        "Which daycare service should I choose for four hours?",
+        trace,
+        state,
+    )
+
+    assert grounded is own_words
+    assert grounded.content == own_words.content
+
+
 def test_daycare_recommendation_uses_duration_ranges_and_calculated_hourly_total():
     state = ConversationState(
         phone_number="+60123456705",
@@ -426,7 +677,7 @@ def test_daycare_recommendation_uses_duration_ranges_and_calculated_hourly_total
         }),
     }]
 
-    grounded = PawfectOrchestrator._ground_daycare_recommendation_response(
+    grounded = ground_daycare_recommendation_response(
         AIMessage(content="Here is the entire menu."),
         "Which daycare service should I choose for four hours?",
         trace,
@@ -481,40 +732,8 @@ def test_grooming_catalogue_uses_only_selected_size_and_inherits_add_on_section(
     assert all(item["selection_kind"] == "add_on" for item in add_ons)
 
 
-def test_booking_price_verifier_accepts_s_grooming_package_and_teeth_add_on(monkeypatch):
-    rows = [
-        {
-            "content": (
-                "Dog Bathing Packages:\n"
-                "For S size - Standard Short Fur is RM43; Premium Long Fur is RM88."
-            ),
-            "metadata": {"section_title": "Dog Bathing Packages"},
-        },
-        {
-            "content": "Basic Grooming Add-ons:\nTeeth Brushing is priced at RM10.",
-            "metadata": {"main_header": "Grooming Add-on Price"},
-        },
-    ]
-
-    monkeypatch.setattr(
-        "app.rag.retriever.CompanyRAGRetriever.search",
-        lambda *_args, **_kwargs: rows,
-    )
-
-    assert _verify_flat_price_against_catalogue(
-        1,
-        "GROOMING",
-        "Premium Long Fur",
-        88,
-        pet_type="dog",
-        pet_size="S",
-        add_on="Teeth Brushing",
-        add_on_price=10,
-    ) is None
-
-
 def test_evidence_is_bounded_and_internal_delivery_fields_are_removed():
-    compact = PawfectOrchestrator._compact_evidence_result(
+    compact = compact_evidence_result(
         {
             "status": "success",
             "data": {"booking_id": 8, "_internal_confirmation_url": "signed-secret"},
@@ -567,20 +786,26 @@ def test_fresh_empty_coupon_lookup_clears_stale_eligibility():
 def test_optional_booking_fields_must_be_selected_by_customer():
     state = ConversationState(phone_number="+60123456705", company_id="1")
 
-    invented_staff = PawfectOrchestrator._reject_unconfirmed_optional_booking_fields(
+    invented_staff = reject_unconfirmed_optional_booking_fields(
         state,
         {"preferred_staff": "Sarah Wong"},
         "any staff is fine",
+        detect_ordinal_index=PawfectOrchestrator._detect_ordinal_index,
+        normalize_option_label=PawfectOrchestrator._normalized_option_label,
     )
-    invented_add_on = PawfectOrchestrator._reject_unconfirmed_optional_booking_fields(
+    invented_add_on = reject_unconfirmed_optional_booking_fields(
         state,
         {"add_on": "Teeth Brushing"},
         "standard bath only",
+        detect_ordinal_index=PawfectOrchestrator._detect_ordinal_index,
+        normalize_option_label=PawfectOrchestrator._normalized_option_label,
     )
-    selected_add_on = PawfectOrchestrator._reject_unconfirmed_optional_booking_fields(
+    selected_add_on = reject_unconfirmed_optional_booking_fields(
         state,
         {"add_on": "Teeth Brushing"},
         "please add Teeth Brushing",
+        detect_ordinal_index=PawfectOrchestrator._detect_ordinal_index,
+        normalize_option_label=PawfectOrchestrator._normalized_option_label,
     )
 
     assert invented_staff["error"] == "STAFF_PREFERENCE_DECLINED"
@@ -597,16 +822,20 @@ def test_old_booking_preferences_do_not_authorize_current_booking_fields():
         {"role": "ai", "content": "That earlier booking is complete.", "turn": 2},
     ]
 
-    stale_add_on = PawfectOrchestrator._reject_unconfirmed_optional_booking_fields(
+    stale_add_on = reject_unconfirmed_optional_booking_fields(
         state,
         {"add_on": "Teeth Brushing"},
         "No add-ons for this booking",
+        detect_ordinal_index=PawfectOrchestrator._detect_ordinal_index,
+        normalize_option_label=PawfectOrchestrator._normalized_option_label,
     )
     state.preferred_staff = "Alice"
-    stale_staff = PawfectOrchestrator._reject_unconfirmed_optional_booking_fields(
+    stale_staff = reject_unconfirmed_optional_booking_fields(
         state,
         {"preferred_staff": "Alice"},
         "Any staff is fine this time",
+        detect_ordinal_index=PawfectOrchestrator._detect_ordinal_index,
+        normalize_option_label=PawfectOrchestrator._normalized_option_label,
     )
 
     assert stale_add_on["error"] == "ADD_ON_DECLINED"
@@ -729,8 +958,9 @@ def test_latest_availability_result_deterministically_replaces_unverified_times(
         }
     ]
 
-    grounded = PawfectOrchestrator._ground_latest_availability_response(
-        response, "我可以几点接？", trace
+    grounded = ground_latest_availability_response(
+        response, "我可以几点接？", trace,
+        is_repeat_booking_request=PawfectOrchestrator._is_repeat_booking_request,
     )
 
     assert "17:30" in grounded.content
@@ -762,11 +992,12 @@ def test_repeat_availability_reply_names_validated_historical_package_not_full_c
         }
     ]
 
-    grounded = PawfectOrchestrator._ground_latest_availability_response(
+    grounded = ground_latest_availability_response(
         AIMessage(content="Here is every grooming package..."),
         "grooming like last time for Milo next Saturday afternoon",
         trace,
         state,
+        is_repeat_booking_request=PawfectOrchestrator._is_repeat_booking_request,
     )
 
     assert "Milo's last visit" in grounded.content
@@ -785,7 +1016,7 @@ def test_stale_repeat_template_does_not_leak_into_unrelated_availability_reply()
         "price": 80,
         "catalogue_validated": True,
     }
-    grounded = PawfectOrchestrator._ground_latest_availability_response(
+    grounded = ground_latest_availability_response(
         AIMessage(content="model text"),
         "Is daycare available tomorrow?",
         [{
@@ -793,6 +1024,7 @@ def test_stale_repeat_template_does_not_leak_into_unrelated_availability_reply()
             "result": {"status": "success", "data": {"available_slots": ["10:00"]}},
         }],
         state,
+        is_repeat_booking_request=PawfectOrchestrator._is_repeat_booking_request,
     )
 
     assert "Old Bath" not in grounded.content
@@ -800,8 +1032,8 @@ def test_stale_repeat_template_does_not_leak_into_unrelated_availability_reply()
 
 
 def test_empty_rag_list_is_not_successful_policy_evidence():
-    assert PawfectOrchestrator._tool_result_status([]) == "not_found"
-    assert "retrieve_policy" not in PawfectOrchestrator._successful_trace_tools([
+    assert tool_result_status([]) == "not_found"
+    assert "retrieve_policy" not in successful_trace_tools([
         {"tool": "retrieve_policy", "result": "[]"}
     ])
 
@@ -891,10 +1123,11 @@ def test_failed_document_lookup_cannot_be_rendered_as_sent():
         }),
     }]
 
-    grounded = PawfectOrchestrator._ground_document_delivery_response(
+    grounded = ground_document_delivery_response(
         response,
         "Please send my confirmation document",
         trace,
+        trace_has_successful_delivery=trace_has_successful_document_delivery,
     )
 
     assert "not sent" in grounded.content
@@ -954,7 +1187,7 @@ def test_created_booking_immediately_becomes_available_runtime_context():
     }
 
     orchestrator._apply_tool_result_state(state, _call("create_booking", "create"), result)
-    customer = orchestrator._customer_context_for_state({"found": True}, state)
+    customer = customer_context_for_state({"found": True}, state)
 
     assert state.booking_context_status == "available"
     assert customer["latest_booking"]["booking_id"] == 92
@@ -997,7 +1230,7 @@ def test_membership_success_does_not_end_active_booking_side_flow():
         active_scenario="MAKE_BOOKING",
         service_type="GROOMING",
     )
-    PawfectOrchestrator._sync_scenario_from_tool_call(
+    sync_scenario_from_tool_call(
         state, "register_loyalty_member", {"status": "success"}
     )
     assert state.active_scenario == "MAKE_BOOKING"
@@ -1032,10 +1265,11 @@ def test_runtime_context_recursively_removes_internal_tool_fields():
             "nested": {"_internal_confirmation_url": "private"},
         },
     }
-    context = orchestrator._runtime_context(
+    context = build_runtime_context(
         {"company_id": "1", "timezone": "Asia/Kuala_Lumpur"},
         {"found": True},
         state,
+        sanitize_model_value=_sanitize_model_value,
     )
     serialized = json.dumps(context)
     assert "_internal_payment_id" not in serialized

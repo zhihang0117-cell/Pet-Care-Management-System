@@ -1,6 +1,6 @@
 import pytest
 
-from app.db.schema_preflight import verify_required_supabase_schema
+from app.db.schema_preflight import REQUIRED_POSTGREST_PATHS, verify_required_supabase_schema
 
 
 class _Response:
@@ -25,13 +25,13 @@ def _get_for(document, captured):
     return get
 
 
-def test_schema_preflight_is_read_only_and_accepts_registration_rpc():
+def test_schema_preflight_is_read_only_and_accepts_required_capabilities():
     captured = {}
     verify_required_supabase_schema(
         supabase_url="https://example.supabase.co/",
         service_role_key="secret-test-key",
         get=_get_for(
-            {"paths": {"/rpc/register_loyalty_member_atomic": {"post": {}}}},
+            {"paths": {path: {"post": {}} for path in REQUIRED_POSTGREST_PATHS}},
             captured,
         ),
     )
@@ -41,10 +41,12 @@ def test_schema_preflight_is_read_only_and_accepts_registration_rpc():
     assert captured["headers"]["Accept"] == "application/openapi+json"
 
 
-def test_schema_preflight_fails_when_registration_migration_is_missing():
-    with pytest.raises(RuntimeError, match="loyalty_member_registration_migration.sql"):
+def test_schema_preflight_lists_missing_capability_and_migration_guide():
+    paths = {path: {"post": {}} for path in REQUIRED_POSTGREST_PATHS}
+    paths.pop("/rpc/create_booking_idempotent")
+    with pytest.raises(RuntimeError, match="create_booking_idempotent.*backend/sql/README.md"):
         verify_required_supabase_schema(
             supabase_url="https://example.supabase.co",
             service_role_key="secret-test-key",
-            get=_get_for({"paths": {}}, {}),
+            get=_get_for({"paths": paths}, {}),
         )

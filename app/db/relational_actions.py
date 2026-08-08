@@ -18,7 +18,7 @@ from .customer_context import (
     phones_match,
 )
 from .supabase_client import get_supabase_client
-from app.context.slot_holds import SLOT_HOLDS
+from app.db.slot_holds import SLOT_HOLDS
 from app.tools.booking_window import today_business
 
 READ_ONLY_SCENARIOS = {
@@ -2263,7 +2263,7 @@ def check_available_slots(context: CustomerContext, intent_json: dict) -> dict:
 
         # A slot another customer is actively being asked to confirm right
         # now is provisionally unavailable to everyone else (see
-        # app.context.slot_holds) — filter those out same as a real booking.
+        # app.db.slot_holds) — filter those out same as a real booking.
         # Keyed by resolved customer_id, not phone_number — this repo path
         # never resolves a phone (check_availability's CustomerContext is
         # built without one); entities.customer_id is threaded in from
@@ -2785,6 +2785,14 @@ def create_booking(context: CustomerContext, intent_json: dict) -> dict:
     customer_id = context.resolved_customer_id
     if customer_id is None:
         return missing_identity_result("create_booking")
+    idempotency_key = str(entities.get("idempotency_key") or "").strip()
+    if not 16 <= len(idempotency_key) <= 128:
+        return _result(
+            "create_booking",
+            "error",
+            {"missing_fields": ["idempotency_key"]},
+            "A server-generated booking idempotency key is required.",
+        )
 
     pet_id_raw = entities.get("pet_id") or draft.get("pet_id")
     pet_name = str(entities.get("pet_name") or draft.get("pet_name") or "").strip()
@@ -2872,6 +2880,62 @@ def create_booking(context: CustomerContext, intent_json: dict) -> dict:
             "error",
             {"pet_id": pet_id},
             "Pet does not belong to this customer",
+        )
+
+    # A previous HTTP/tool attempt may have committed even though its result
+    # never reached the agent. Check the server-issued key before availability
+    # and staff selection, because the newly committed booking now makes its
+    # own slot look unavailable.
+    client = get_supabase_client()
+    replay_rows = (
+        client.table("ai_mutation_idempotency")
+        .select("result")
+        .eq("company_id", context.company_id)
+        .eq("operation", "create_booking")
+        .eq("idempotency_key", idempotency_key)
+        .limit(1)
+        .execute()
+        .data
+        or []
+    )
+    if replay_rows:
+        atomic = dict(replay_rows[0].get("result") or {})
+        record = dict(atomic.get("booking") or {})
+        table, _ = _booking_table_meta(service_type)
+        serialized = _serialize_booking_row(table, record)
+        replay_matches = (
+            int(serialized.get("pet_id") or 0) == pet_id
+            and str(serialized.get("booking_date") or "") == booking_date
+            and str(serialized.get("booking_time") or serialized.get("check_in_time") or "")
+            == booking_time
+            and str(serialized.get("package_name") or "").strip().casefold()
+            == service_name.casefold()
+        )
+        if not replay_matches:
+            return _result(
+                "create_booking",
+                "error",
+                {},
+                "Booking idempotency key was reused with different details.",
+                handoff_required=True,
+                handoff_reason="IDEMPOTENCY_KEY_MISMATCH",
+            )
+        payment = dict(atomic.get("payment") or {})
+        serialized["payment_status"] = payment.get("status") or "Pending"
+        return _result(
+            "create_booking",
+            "success",
+            {
+                **serialized,
+                "customer_id": customer_id,
+                "pet_id": pet_id,
+                "_internal_payment_id": record.get("payment_id"),
+                "confirmation_delivery_status": "unknown_after_retry",
+                "verified": True,
+                "idempotency_replayed": True,
+            },
+            handoff_required=True,
+            handoff_reason="DOCUMENT_DELIVERY_STATUS_UNKNOWN",
         )
 
     from app.validation.validator import check_vaccination_eligibility
@@ -3137,6 +3201,7 @@ def create_booking(context: CustomerContext, intent_json: dict) -> dict:
         if staff_id is None:
             staff_id = select_staff_id(free_staff)
 
+    committed_booking_id: int | None = None
     try:
         client = get_supabase_client()
         table, _ = _booking_table_meta(service_type)
@@ -3260,21 +3325,23 @@ def create_booking(context: CustomerContext, intent_json: dict) -> dict:
         }
         booking_type = service_type.lower()
         atomic = client.rpc(
-            "create_booking_atomic",
+            "create_booking_idempotent",
             {
                 "p_company_id": context.company_id,
                 "p_booking_type": booking_type,
                 "p_booking": row,
                 "p_payment": payment,
+                "p_idempotency_key": idempotency_key,
             },
         ).execute().data or {}
         if not atomic.get("booking"):
             raise RuntimeError(
-                "create_booking_atomic returned no booking; apply the required booking migrations"
+                "create_booking_idempotent returned no booking; apply the required booking migrations"
             )
         record = dict(atomic["booking"])
         serialized = _serialize_booking_row(table, record)
         booking_id = int(serialized.get("booking_id"))
+        committed_booking_id = booking_id
         expected = {
             "pet_id": pet_id,
             "booking_date": booking_date,
@@ -3322,13 +3389,14 @@ def create_booking(context: CustomerContext, intent_json: dict) -> dict:
                 "error",
                 {
                     "booking_id": booking_id,
+                    "committed": True,
                     "mismatches": mismatches,
                     "inserted": serialized,
                     "record": persisted,
                 },
-                "Booking verification failed after insert",
+                "Booking was committed, but its read-back verification failed.",
                 handoff_required=True,
-                handoff_reason="DATABASE_ERROR",
+                handoff_reason="BOOKING_COMMITTED_VERIFICATION_FAILED",
             )
         # The slot is now a real booking (which itself blocks availability
         # going forward) — the temporary hold has done its job.
@@ -3371,6 +3439,15 @@ def create_booking(context: CustomerContext, intent_json: dict) -> dict:
             handoff_reason=None if confirmation_delivered else "DOCUMENT_DELIVERY_ERROR",
         )
     except Exception as exc:
+        if committed_booking_id is not None:
+            return _result(
+                "create_booking",
+                "error",
+                {"booking_id": committed_booking_id, "committed": True},
+                f"Booking was committed, but post-booking processing failed: {exc}",
+                handoff_required=True,
+                handoff_reason="BOOKING_COMMITTED_POSTPROCESSING_FAILED",
+            )
         return _result(
             "create_booking",
             "error",
