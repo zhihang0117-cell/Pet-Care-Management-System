@@ -294,8 +294,8 @@ begin
   end if;
 
   v_payment.final_amount := coalesce(p_final_amount, v_payment.final_amount);
-  if v_payment.final_amount is null or v_payment.final_amount <= 0 then
-    raise exception 'Final payment amount must be greater than zero' using errcode = 'P0001';
+  if v_payment.final_amount is null or v_payment.final_amount < 0 then
+    raise exception 'Final payment amount must be zero or greater' using errcode = 'P0001';
   end if;
 
   -- A payment with a linked redemption cannot be verified until that exact
@@ -317,6 +317,20 @@ begin
     v_spend := coalesce(v_redemption.loyalty_spend, 0);
   elsif p_coupon_id is not null then
     raise exception 'No approved point redemption for this payment' using errcode = 'P0001';
+  end if;
+
+  -- A zero amount is only legitimate when it's actually covered by a
+  -- verified, approved redemption (checked above — p_coupon_id not null
+  -- here means it already matched v_payment's own approved redemption, or
+  -- the block above already raised). Any other zero amount is a data
+  -- error, not a real free service, and must still be rejected. This was
+  -- previously an unconditional "> 0" check that blocked a booking fully
+  -- covered by loyalty points/a 100% discount from EVER being marked Paid
+  -- — the 'Loyalty Redemption' payment_method branch further below already
+  -- assumed this exact case (final_amount = 0 and p_coupon_id is not null)
+  -- was reachable, but it never was until now.
+  if v_payment.final_amount = 0 and p_coupon_id is null then
+    raise exception 'Final payment amount must be greater than zero unless a fully-covering redemption is verified' using errcode = 'P0001';
   end if;
 
   -- A non-member can pay normally. Lock member after payment/redemption,

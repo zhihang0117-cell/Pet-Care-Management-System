@@ -1915,7 +1915,9 @@ class PawfectOrchestrator:
         scoped_service_options = service_options_evidence_matches(
             state, user_message, cls._explicit_service_type
         )
-        scoped_policy_knowledge = policy_evidence_matches(state, user_message)
+        scoped_policy_knowledge = policy_evidence_matches(
+            state, user_message, cls._explicit_service_type
+        )
         action_claim = bool(
             re.search(
                 r"\b(?:booked|booking confirmed|cancelled|canceled|rescheduled|redeemed)\b"

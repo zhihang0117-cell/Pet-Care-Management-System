@@ -596,12 +596,14 @@ def test_direct_datetime_response_falls_back_on_a_vague_non_answer():
     assert grounded.content == "The date is 2026-08-15 (Saturday)."
 
 
-def test_daycare_recommendation_never_trusts_model_even_when_naming_right_option():
-    """Regression test: naming the right option is not enough — a reply can
-    still mislead by stating a raw per-unit rate instead of the actual total
-    for the requested duration (confirmed live: "RM20 per hour" for Hourly
-    Care listed ahead of a flat RM55 option that's actually cheaper for a
-    7-hour stay). This must always be replaced by the computed comparison."""
+def test_daycare_recommendation_rejects_an_unexplained_raw_hourly_rate():
+    """Naming the right option (name + correct computed total) is not
+    enough on its own — a reply can still mislead by ALSO stating another
+    eligible option's raw per-unit rate without ever computing its total
+    (confirmed live: "RM20 per hour" for Hourly Care listed ahead of a flat
+    RM55 option that's actually cheaper for a 7-hour stay). This must still
+    fall back to the computed comparison even though the top pick's own
+    name+total are stated correctly."""
     state = ConversationState(
         phone_number="+60123456705",
         company_id="1",
@@ -652,6 +654,49 @@ def test_daycare_recommendation_never_trusts_model_even_when_naming_right_option
     assert "best direct match" in grounded.content
     # The actual total for 7 hours (RM140), not the misleading raw rate.
     assert "RM140" in grounded.content
+
+
+def test_daycare_recommendation_trusts_model_when_it_states_name_and_computed_total():
+    state = ConversationState(
+        phone_number="+60123456705",
+        company_id="1",
+        active_scenario="MAKE_BOOKING",
+        service_type="DAYCARE",
+        daycare_duration_minutes=420,
+    )
+    trace = [{
+        "tool": "get_booking_service_options",
+        "args": {"service_type": "DAYCARE", "pet_id": 7},
+        "result": json.dumps({
+            "status": "success",
+            "data": {
+                "service_options": [
+                    {"service_name": "Hourly Care", "price": 20, "pricing_unit": "hour"},
+                    {
+                        "service_name": "Daycare Above 3 Hours",
+                        "price": 55,
+                        "pricing_unit": "flat",
+                        "min_duration_minutes": 180,
+                        "min_duration_exclusive": True,
+                    },
+                ]
+            },
+        }),
+    }]
+    honest = AIMessage(
+        content=(
+            "For a 7-hour stay, Daycare Above 3 Hours is your best option at RM55 flat."
+        )
+    )
+
+    grounded = ground_daycare_recommendation_response(
+        honest,
+        "i want to put it for daycare from next tuesday 9 to 4",
+        trace,
+        state,
+    )
+
+    assert grounded.content == honest.content
 
 
 def test_daycare_recommendation_ranks_by_price_not_by_match_specificity():
@@ -878,6 +923,50 @@ def test_optional_booking_fields_must_be_selected_by_customer():
     assert selected_add_on is None
 
 
+def test_standalone_yes_confirms_the_add_on_the_assistant_just_asked_about():
+    """Regression: a customer replying "yes! confirm!!!!!!!!" (or any plain
+    affirmative) to the assistant's own "Would you like to include the
+    add-on ... Please confirm!" question was rejected on every retry,
+    because customer_text never literally contained the add-on's name —
+    an unbreakable confirmation loop the customer could never escape."""
+    state = ConversationState(phone_number="+60123456705", company_id="1")
+    state.history = [{
+        "role": "ai",
+        "content": (
+            "It seems that I need your explicit confirmation for the add-on "
+            "\"Poodle Leg\" before proceeding with the booking.\n\n"
+            "Would you like to include the add-on for Yoyo's grooming service? "
+            "Please confirm!"
+        ),
+        "turn": 16,
+    }]
+
+    accepted = reject_unconfirmed_optional_booking_fields(
+        state,
+        {"add_on": "Poodle Leg"},
+        "yes! confirm!!!!!!!!",
+        detect_ordinal_index=PawfectOrchestrator._detect_ordinal_index,
+        normalize_option_label=PawfectOrchestrator._normalized_option_label,
+    )
+
+    assert accepted is None
+
+    # An affirmative with no preceding add-on question still isn't enough —
+    # this must not become a blanket "any yes confirms any add-on" bypass.
+    unrelated_state = ConversationState(phone_number="+60123456705", company_id="1")
+    unrelated_state.history = [{
+        "role": "ai", "content": "Your booking is confirmed for 3pm.", "turn": 5,
+    }]
+    still_rejected = reject_unconfirmed_optional_booking_fields(
+        unrelated_state,
+        {"add_on": "Poodle Leg"},
+        "yes",
+        detect_ordinal_index=PawfectOrchestrator._detect_ordinal_index,
+        normalize_option_label=PawfectOrchestrator._normalized_option_label,
+    )
+    assert still_rejected["error"] == "UNCONFIRMED_ADD_ON_SELECTION"
+
+
 def test_old_booking_preferences_do_not_authorize_current_booking_fields():
     state = ConversationState(phone_number="+60123456705", company_id="1")
     state.turn_counter = 6
@@ -1033,6 +1122,53 @@ def test_latest_availability_result_deterministically_replaces_unverified_times(
     assert "只有" in grounded.content
 
 
+def test_availability_trusts_model_when_it_states_exactly_the_verified_time():
+    response = AIMessage(content="The only pickup time I can offer is 17:30 today.")
+    trace = [{
+        "tool": "check_availability",
+        "result": json.dumps({
+            "status": "success",
+            "data": {
+                "selection_target": "CHECK_OUT",
+                "available_slots": [],
+                "available_check_out_times": ["17:30:00"],
+            },
+        }),
+    }]
+
+    grounded = ground_latest_availability_response(
+        response, "what time can I pick up?", trace,
+        is_repeat_booking_request=PawfectOrchestrator._is_repeat_booking_request,
+    )
+
+    assert grounded.content == response.content
+
+
+def test_availability_falls_back_when_model_names_an_extra_unverified_time():
+    # 17:30 is real; 18:30 is not — even naming the real one correctly must
+    # not let an invented extra time slip through.
+    response = AIMessage(content="You can pick up at 17:30 or 18:30 today.")
+    trace = [{
+        "tool": "check_availability",
+        "result": json.dumps({
+            "status": "success",
+            "data": {
+                "selection_target": "CHECK_OUT",
+                "available_slots": [],
+                "available_check_out_times": ["17:30:00"],
+            },
+        }),
+    }]
+
+    grounded = ground_latest_availability_response(
+        response, "what time can I pick up?", trace,
+        is_repeat_booking_request=PawfectOrchestrator._is_repeat_booking_request,
+    )
+
+    assert grounded.content != response.content
+    assert "18:30" not in grounded.content
+
+
 def test_empty_availability_states_closed_reason_not_a_generic_guess():
     response = AIMessage(content="I apologize, no slots due to scheduling conflicts.")
     trace = [{
@@ -1120,6 +1256,52 @@ def test_range_availability_mixed_closed_and_full_falls_back_to_fully_booked():
     # "not operating" for the whole range.
     assert "not operating" not in grounded.content
     assert "fully booked" in grounded.content
+
+
+def test_range_availability_trusts_model_when_every_verified_slot_is_stated():
+    response = AIMessage(
+        content="On 2026-08-15 you can come at 10:00 or 14:00; on 2026-08-16, only 09:00."
+    )
+    trace = [{
+        "tool": "check_availability_range",
+        "result": json.dumps({
+            "status": "success",
+            "days": [
+                {"date": "2026-08-15", "available_slots": ["10:00:00", "14:00:00"]},
+                {"date": "2026-08-16", "available_slots": ["09:00:00"]},
+            ],
+        }),
+    }]
+
+    grounded = ground_latest_availability_response(
+        response, "Any slots next week?", trace,
+        is_repeat_booking_request=PawfectOrchestrator._is_repeat_booking_request,
+    )
+
+    assert grounded.content == response.content
+
+
+def test_range_availability_falls_back_when_a_days_slot_is_missing():
+    # 14:00 on the 15th is never mentioned — an incomplete listing must not
+    # be trusted as-is, even though nothing false was stated.
+    response = AIMessage(content="On 2026-08-15 you can come at 10:00.")
+    trace = [{
+        "tool": "check_availability_range",
+        "result": json.dumps({
+            "status": "success",
+            "days": [
+                {"date": "2026-08-15", "available_slots": ["10:00:00", "14:00:00"]},
+            ],
+        }),
+    }]
+
+    grounded = ground_latest_availability_response(
+        response, "Any slots next week?", trace,
+        is_repeat_booking_request=PawfectOrchestrator._is_repeat_booking_request,
+    )
+
+    assert grounded.content != response.content
+    assert "14:00" in grounded.content
 
 
 def test_repeat_availability_reply_names_validated_historical_package_not_full_catalogue():

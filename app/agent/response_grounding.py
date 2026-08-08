@@ -1,18 +1,19 @@
 """Truthful rendering for consequential tool outcomes.
 
-Most functions here unconditionally replace (part of) the model's own reply
-with a hand-composed string — a deliberate, narrow exception to letting the
-model phrase things, reserved for cases where an earlier live failure showed
-the model stating a price, a time slot, or a completion that the tool trace
-did not actually support (financial/booking correctness, not phrasing).
+The default shape here is "verify, don't rewrite": trust the model's own
+wording whenever it demonstrably states the correct, verified value(s), and
+only fall back to a hand-composed sentence when an element is missing or
+wrong. Full unconditional replacement — never even checking what the model
+said — is reserved for the narrow spots where free phrasing has already
+caused a real incident (ground_latest_availability_response's own refusal
+branches, where no valid time exists at all) or where the write's other
+side effects need a specific, unambiguous customer-facing prompt.
 
-ground_direct_datetime_response and ground_daycare_recommendation_response
-are the lower-stakes exception: they trust the model's own wording whenever
-it demonstrably states the correct verified value, and only fall back to a
-canned sentence when it doesn't (wrong, or no checkable answer at all). That
-"verify, don't rewrite" shape is the preferred default for anything new —
-full unconditional replacement should stay reserved for genuine
-financial/booking-correctness risk.
+ground_daycare_recommendation_response is the one place this has bitten us
+before: a reply that named the right package could still mislead by quoting
+its raw per-unit rate instead of the computed total for the requested
+duration. Its trust check therefore requires the exact computed total
+string, not just the package name, as a required element.
 """
 
 from __future__ import annotations
@@ -61,6 +62,27 @@ def _response_confirms_resolved_date(content: str, value: str, weekday: str) -> 
         return True
     chinese_weekday = _WEEKDAY_EN_ZH.get(weekday, "")
     return bool(weekday) and (weekday in content or (bool(chinese_weekday) and chinese_weekday in content))
+
+
+_TIME_TOKEN_RE = re.compile(r"\b\d{1,2}:\d{2}\b")
+
+
+def _content_confirms_elements(content: str, required: list[Any]) -> bool:
+    """True only if every required value is demonstrably present, verbatim,
+    in the model's own text. None/"" entries are skipped (that element
+    wasn't applicable to this booking, e.g. no add-on or no checkout time),
+    not silently treated as satisfied."""
+    return all(str(item) in content for item in required if item not in (None, ""))
+
+
+def _content_has_no_unlisted_times(content: str, allowed: set[str]) -> bool:
+    """True if every HH:MM-looking token in the model's text is one of the
+    verified allowed times. Guards against the model naming an extra,
+    unverified time even while correctly listing the real ones — the same
+    "an unavailable time cannot leak into customer-facing text" guarantee
+    ground_latest_availability_response exists for, just no longer requiring
+    the whole sentence to be hand-composed to get it."""
+    return set(_TIME_TOKEN_RE.findall(content)) <= set(allowed)
 
 
 def _latest_result(trace: list[dict], tool_names: set[str]) -> tuple[str, dict] | None:
@@ -142,12 +164,21 @@ def ground_latest_availability_response(
     *,
     is_repeat_booking_request: Callable[[str], bool],
 ):
-    """Render choices from the latest availability result, never model prose.
+    """Render choices from the latest availability result.
 
     This is intentionally limited to turns whose last substantive tool is
     an availability read. A later booking/price/policy action keeps its own
-    response, while a slot-selection turn gets a deterministic allow-list
-    so an unavailable time cannot leak into customer-facing text.
+    response.
+
+    When real choices exist, the model's own phrasing is trusted if (and
+    only if) it states every verified time and no other HH:MM-looking token
+    — an unavailable/invented time still can never leak into customer-facing
+    text, it just no longer requires hand-composed prose to say so. The
+    "nothing is available" branches (missing info, closed, no match) stay
+    fully deterministic regardless of what the model wrote — there's no
+    real value in letting the model phrase a refusal differently, and it
+    keeps this function's one job simple: never say yes when the answer is
+    no.
     """
     latest = None
     for item in reversed(trace):
@@ -258,6 +289,14 @@ def ground_latest_availability_response(
             if not day.get("available_slots") and day.get("closed_reason")
         ]
         if verified_days:
+            model_text = str(response.content or "")
+            all_verified_slots = {slot for _, slots in verified_days for slot in slots}
+            elements_present = all(
+                date_value in model_text and _content_confirms_elements(model_text, slots)
+                for date_value, slots in verified_days
+            )
+            if elements_present and _content_has_no_unlisted_times(model_text, all_verified_slots):
+                return response
             lines = [f"- {date_value}: {', '.join(slots)}" for date_value, slots in verified_days]
             if chinese:
                 content = "完整校验后，目前可选择的时段只有：\n" + "\n".join(lines) + "\n请从以上时段中选择。"
@@ -290,6 +329,11 @@ def ground_latest_availability_response(
     choices = [display_time(slot) for slot in data.get(key) or []]
     closed_reason = data.get("closed_reason")
     if choices:
+        model_text = str(response.content or "")
+        if _content_confirms_elements(model_text, choices) and _content_has_no_unlisted_times(
+            model_text, set(choices)
+        ):
+            return response
         joined = ", ".join(choices)
         if chinese:
             target = "pickup/check-out" if check_out_mode else "check-in/drop-off"
@@ -422,16 +466,33 @@ def ground_daycare_recommendation_response(
     ranked.sort(key=lambda item: (item[1], item[0], str(item[2].get("service_name") or "")))
     recommendations = ranked[:2]
 
-    # Always render the computed comparison — never trust the model's own
-    # phrasing here, even if it names an eligible option. Confirmed live: a
-    # reply that named the right (cheapest) package and a real ineligible-
-    # looking one too can still mislead by listing the more expensive
-    # per-unit-rate option first and stating its raw rate ("RM20 per hour")
-    # instead of the actual total for the requested duration ("RM140"),
-    # making it look cheaper than the flat RM55 option that's actually
-    # the better deal. This is real money, not phrasing — unlike
-    # ground_direct_datetime_response, a "the name appears somewhere"
-    # check is not enough to catch a misleading price presentation.
+    # Trust the model's own phrasing only if it states the top option's name
+    # AND its computed total — never just the name. Confirmed live: a reply
+    # that named the right (cheapest) package could still mislead by quoting
+    # its raw per-unit rate ("RM20 per hour") instead of the actual total for
+    # the requested duration ("RM140"), making it look cheaper than the flat
+    # RM55 option that's actually the better deal. Requiring the exact
+    # computed total string closes that hole for the top pick itself.
+    #
+    # That's not sufficient on its own, though: a reply can state the right
+    # top pick's name+total correctly and STILL mislead by also quoting an
+    # eligible per-hour option's raw rate ("RM20 per hour") without ever
+    # computing what that actually totals to for this duration — inviting
+    # the customer to (wrongly) do that comparison themselves. So any
+    # eligible per-hour option's raw rate is only allowed to appear if its
+    # own computed total appears alongside it.
+    content = str(response.content or "")
+    unexplained_raw_rate = any(
+        str(option.get("pricing_unit") or "").casefold() == "hour"
+        and f"RM{float(option.get('price')):g}" in content
+        and f"RM{total:g}" not in content
+        for _rank, total, option in ranked
+    )
+    top_name = str(recommendations[0][2].get("service_name") or "")
+    top_total = f"RM{recommendations[0][1]:g}"
+    if not unexplained_raw_rate and _content_confirms_elements(content, [top_name, top_total]):
+        return response
+
     duration_text = (
         f"{duration // 60:g} 小时" if duration % 60 == 0 else f"{duration} 分钟"
     ) if chinese else (
@@ -497,7 +558,9 @@ def ground_document_delivery_response(
 def ground_membership_response(
     response: Any, user_message: str, trace: list[dict], state: Any = None
 ):
-    """Render membership completion only from an observed successful write."""
+    """Trust the model's own phrasing whenever it already states the real
+    tier and points balance from an observed successful write; only fall
+    back to a canned sentence when either element is missing or wrong."""
     observed = _latest_result(trace, {"register_loyalty_member"})
     if observed is None:
         return response
@@ -509,6 +572,8 @@ def ground_membership_response(
     tier = data.get("tier") or data.get("membership_status") or "Bronze"
     points = data.get("points_balance")
     points = 0 if points is None else points
+    if _content_confirms_elements(str(response.content or ""), [tier, points]):
+        return response
     chinese = contains_chinese(user_message)
     if data.get("already_member"):
         truthful = (
@@ -529,8 +594,18 @@ def ground_membership_response(
     return response.model_copy(update={"content": truthful})
 
 
+_CONFIRMATION_ASK_RE = re.compile(
+    r"confirm|reply\s+yes|yes\s+to\s+(?:create|proceed|book)|确认|回复.{0,4}(?:确认|yes)",
+    re.IGNORECASE,
+)
+
+
 def ground_booking_preview_response(response: Any, user_message: str, trace: list[dict]):
-    """Render the exact observed booking preview instead of model prose."""
+    """Trust the model's own phrasing whenever it already states every
+    preview element (pet, package, date, time, price) AND still explicitly
+    asks the customer to confirm — this step exists to get an unambiguous
+    yes before create_booking commits, so the confirmation ask itself is
+    never optional. Falls back to the exact observed preview otherwise."""
     observed = _latest_result(trace, {"create_booking"})
     if observed is None:
         return response
@@ -549,6 +624,10 @@ def ground_booking_preview_response(response: Any, user_message: str, trace: lis
     duration = preview.get("duration_minutes")
     price = preview.get("price")
     price_text = f"RM{float(price):g}" if price not in (None, "") else ""
+    content = str(response.content or "")
+    required = [pet, package, date_value, start, checkout, price_text]
+    if _content_confirms_elements(content, required) and _CONFIRMATION_ASK_RE.search(content):
+        return response
     chinese = contains_chinese(user_message)
     if chinese:
         timing = f"{start} 至 {checkout}" if checkout else (

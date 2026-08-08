@@ -4,7 +4,7 @@ import json
 from langchain_core.messages import AIMessage
 from langchain_core.utils.function_calling import convert_to_openai_tool
 
-from app.agent.guardrails import confirmation_intent, reject_unverified_booking_payload
+from app.agent.guardrails import confirmation_intent, policy_evidence_matches, reject_unverified_booking_payload
 from app.agent.tool_loop import mutation_signature
 from app.context.state import ConversationState
 from app.db import relational_actions, supabase_client
@@ -1098,11 +1098,42 @@ def test_redemption_requires_verified_ids_and_separate_confirmation(monkeypatch)
     args = {"payment_id": 92, "coupon_id": 5}
 
     state.turn_counter = 1
-    no_ids = orchestrator._run_tool(_call("redeem_reward", **args), state, "redeem it")
-    assert no_ids["error"] == "NO_VERIFIED_PAYMENT_ID"
+    # No create_booking this session AND no verified coupon eligibility yet —
+    # the coupon check (a genuinely missing piece of evidence) is what
+    # correctly blocks this, not a same-session payment_id technicality.
+    no_coupon_evidence = orchestrator._run_tool(_call("redeem_reward", **args), state, "redeem it")
+    assert no_coupon_evidence["error"] == "NO_VERIFIED_COUPON"
 
     state.last_created_payment_id = 92
     state.known_coupons = [{"coupon_id": 5, "reward_name": "RM10 Voucher", "discount_value": 10}]
+    preview = orchestrator._run_tool(_call("redeem_reward", **args), state, "redeem it")
+    assert preview["status"] == "confirmation_required"
+    assert capturing.calls == []
+
+    state.turn_counter = 2
+    completed = orchestrator._run_tool(_call("redeem_reward", **args), state, "teruskan")
+    assert completed["status"] == "success"
+    assert len(capturing.calls) == 1
+
+
+def test_redemption_against_an_earlier_sessions_payment_is_allowed(monkeypatch):
+    """Regression: reject_unverified_payment_id previously blocked EVERY
+    redemption whose payment wasn't created in the CURRENT session, even
+    though its own docstring says that's the ordinary, legitimate case (a
+    customer returning in a new chat to redeem points on an older unpaid
+    booking). state.last_created_payment_id is only ever set by this
+    session's own create_booking, so it's None here — this must no longer
+    be treated as a rejection; only a genuine ID *mismatch* still is."""
+    capturing = _CapturingTool({"status": "success", "data": {"redemption_id": 77}})
+    monkeypatch.setitem(TOOLS_BY_NAME, "redeem_reward", capturing)
+    orchestrator = object.__new__(PawfectOrchestrator)
+    state = ConversationState(
+        phone_number="+60123456705", company_id="7", active_scenario="LOYALTY_QUERY", customer_id=22
+    )
+    state.known_coupons = [{"coupon_id": 5, "reward_name": "RM10 Voucher", "discount_value": 10}]
+    args = {"payment_id": 501, "coupon_id": 5}
+
+    state.turn_counter = 1
     preview = orchestrator._run_tool(_call("redeem_reward", **args), state, "redeem it")
     assert preview["status"] == "confirmation_required"
     assert capturing.calls == []
@@ -1646,6 +1677,28 @@ def test_invoice_boundary_rejects_unpaid_and_accepts_paid(monkeypatch):
     assert len(generated) == 1
 
 
+def test_booking_status_notice_reports_delivery_failed_when_whatsapp_not_configured(monkeypatch):
+    import main
+
+    monkeypatch.setattr(
+        main,
+        "build_booking_status_notice",
+        lambda *_args: {"phone_number": "+60123456705", "message": "Your booking is now Pending."},
+    )
+    monkeypatch.setattr(main, "_seed_notice_into_history", lambda *_args: None)
+    monkeypatch.setattr(main, "send_whatsapp_text", lambda *_args: {"status": "not_configured"})
+
+    result = main.documents_booking_status_notice(
+        main.BookingStatusNoticeRequest(
+            company_id=7, service_type="GROOMING", booking_id=1, old_status="Scheduled", new_status="Pending"
+        )
+    )
+
+    assert result["status"] == "delivery_failed"
+    # The notice text is still surfaced to staff even though delivery failed.
+    assert result["message"] == "Your booking is now Pending."
+
+
 def test_outbound_notice_history_uses_request_tenant(monkeypatch):
     import main
 
@@ -1702,3 +1755,65 @@ def test_conversation_memory_sweeps_expired_store_and_lock_entries():
     assert len(memory._store) <= 1
     assert len(memory._last_seen) <= 1
     assert len(memory._locks) <= 1
+
+
+def test_rag_search_drops_chunks_below_minimum_similarity(monkeypatch):
+    from app.rag import retriever as retriever_module
+
+    monkeypatch.setattr(retriever_module, "embed_query", lambda _query: [0.0])
+
+    class _RPC:
+        def __init__(self, rows):
+            self._rows = rows
+
+        def execute(self):
+            return type("Result", (), {"data": self._rows})()
+
+    class _Client:
+        def __init__(self, rows):
+            self._rows = rows
+
+        def rpc(self, _name, _params):
+            return _RPC(self._rows)
+
+    # An off-topic query still gets rows back from the RPC (it has no
+    # relevance cutoff) — the closest row is only weakly related, the
+    # second is genuinely on-topic.
+    rows = [
+        {"chunk_id": "1", "content": "Unrelated boilerplate paragraph about something else entirely, padded out.", "metadata": {}, "similarity": 0.22},
+        {"chunk_id": "2", "content": "Grooming price list: Standard Bath - Groomers Choice RM45.", "metadata": {}, "similarity": 0.61},
+    ]
+    monkeypatch.setattr(retriever_module, "get_supabase_client", lambda: _Client(rows))
+
+    results = retriever_module.CompanyRAGRetriever().search("7", "irrelevant question")
+
+    assert len(results) == 1
+    assert "RM45" in results[0]["content"]
+
+
+def test_policy_evidence_reuse_rejects_cross_service_word_overlap():
+    state = ConversationState(phone_number="+60123456705", customer_id=1, company_id="7")
+    state.turn_counter = 5
+    state.verified_facts["policy_knowledge"] = {
+        "status": "success",
+        "turn": 3,
+        "args": {"query": "What are your grooming pickup hours?"},
+    }
+
+    # Same words ("pickup", "hours") but a different, explicitly named
+    # service — the cached grooming-policy chunk must not be reused as
+    # evidence for a daycare question.
+    assert policy_evidence_matches(
+        state, "What are your daycare pickup hours?", PawfectOrchestrator._explicit_service_type
+    ) is False
+
+    # An on-topic follow-up for the SAME explicit service still reuses it.
+    assert policy_evidence_matches(
+        state, "And what about grooming drop-off hours?", PawfectOrchestrator._explicit_service_type
+    ) is True
+
+    # Neither turn names a service explicitly — stays ambiguous-but-permitted.
+    state.verified_facts["policy_knowledge"]["args"]["query"] = "What are your cancellation rules?"
+    assert policy_evidence_matches(
+        state, "What about your cancellation policy?", PawfectOrchestrator._explicit_service_type
+    ) is True

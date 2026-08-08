@@ -135,7 +135,7 @@ def build_booking_confirmation_pdf(
     daycare_booking_id/boarding_booking_id — never a made-up number),
     "service_type", "package_name", "pet_name", "staff_name",
     "date"/"check_in_date", "time"/"check_in_time", "check_out_date",
-    "check_out_time", "price"/"total_price", "booking_status"}
+    "check_out_time", "price"/"total_price", "payment_status"}
     """
     buffer = io.BytesIO()
     doc = SimpleDocTemplate(
@@ -219,8 +219,12 @@ def build_booking_confirmation_pdf(
     )
     elements.append(table)
     elements.append(Spacer(1, 8 * mm))
+    # payment_status ("Pending"/"Paid"/etc), not booking_status — every new
+    # booking is "Pending"/"Scheduled" at the moment this is generated
+    # regardless of path, so that tells the customer nothing new; whether
+    # they still need to pay is the actual open question this line answers.
     elements.append(
-        Paragraph(f"<b>Status:</b> {booking.get('booking_status') or 'Pending'}", _STYLES["Normal"])
+        Paragraph(f"<b>Payment Status:</b> {booking.get('payment_status') or 'Pending'}", _STYLES["Normal"])
     )
     elements.append(Spacer(1, 4 * mm))
     elements.append(

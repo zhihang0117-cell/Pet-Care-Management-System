@@ -392,6 +392,28 @@ def reject_unconfirmed_optional_booking_fields(
     if customer_stated_value(add_on, customer_text):
         return None
 
+    # A standalone "yes"/"confirm" directly answering the assistant's own
+    # immediately-preceding add-on question IS an explicit selection — the
+    # customer is not expected to retype the add-on's name back verbatim
+    # just to agree to a yes/no question the assistant itself asked.
+    # Confirmed live: a customer replying "yes! confirm!!!!!!!!" to "Would
+    # you like to include the add-on... Please confirm!" was rejected on
+    # every retry because customer_text never literally contained the
+    # add-on's name, trapping the conversation in an unbreakable loop.
+    previous_reply = next(
+        (
+            str(turn.get("content") or "")
+            for turn in reversed(state.history)
+            if turn.get("role") == "ai"
+        ),
+        "",
+    )
+    if (
+        ADD_ON_REFERENCE_RE.search(previous_reply)
+        and confirmation_intent(user_message) == "affirmative"
+    ):
+        return None
+
     selected_index = detect_ordinal_index(user_message)
     add_on_reference = bool(ADD_ON_REFERENCE_RE.search(str(user_message or "")))
     selected = (
@@ -459,7 +481,11 @@ def service_options_evidence_matches(
     return True
 
 
-def policy_evidence_matches(state: Any, user_message: str) -> bool:
+def policy_evidence_matches(
+    state: Any,
+    user_message: str,
+    explicit_service_type: Callable[[str], str] = lambda _text: "",
+) -> bool:
     evidence = (state.verified_facts or {}).get("policy_knowledge")
     if not isinstance(evidence, dict) or evidence.get("status") != "success":
         return False
@@ -468,6 +494,17 @@ def policy_evidence_matches(state: Any, user_message: str) -> bool:
     args = evidence.get("args")
     query = str((args or {}).get("query") or "") if isinstance(args, dict) else ""
     if not query:
+        return False
+
+    # A word-overlap match below can be right for the wrong reason: "pickup"
+    # and "hours" are shared by "grooming pickup hours" and "daycare pickup
+    # hours", but those are two different services' policies. Only reject
+    # when BOTH turns name an explicit, DIFFERENT service — an unstated
+    # service on either side stays ambiguous-but-permitted, same as
+    # service_options_evidence_matches above.
+    current_service = explicit_service_type(user_message)
+    previous_service = explicit_service_type(query)
+    if current_service and previous_service and current_service != previous_service:
         return False
 
     def compact(value: str) -> str:
@@ -1154,14 +1191,20 @@ def reject_unverified_payment_id(state: Any, args: dict) -> dict | None:
     already says never to guess this; this is the deterministic backstop
     for when that gets ignored anyway.
     """
+    # This is only a same-session cross-check: if create_booking hasn't run
+    # this session, there is no cached payment_id to compare against, and
+    # that's the ordinary, legitimate case of a customer redeeming against a
+    # booking from an EARLIER session (as the docstring above says) — not
+    # something to block. Confirmed live: this used to reject every such
+    # redemption ("No payment_id from a successful create_booking exists in
+    # this session"), trapping a customer who wanted to redeem points on an
+    # older unpaid booking with no way through. The real ownership/validity
+    # check for payment_id still happens at the data layer (redeem_reward
+    # only accepts a payment_id that actually belongs to this customer); this
+    # guardrail's own job is narrower — only catch the model substituting a
+    # DIFFERENT id than the one it just verified this exact turn.
     if state.last_created_payment_id is None:
-        return {
-            "error": "NO_VERIFIED_PAYMENT_ID",
-            "message": (
-                "No payment_id from a successful create_booking exists in this session. "
-                "The AI may only redeem against the exact payment it just created; do not guess an older ID."
-            ),
-        }
+        return None
     try:
         given = int(args.get("payment_id"))
     except (TypeError, ValueError):

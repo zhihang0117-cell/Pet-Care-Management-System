@@ -988,6 +988,53 @@ def test_pdf_paths_do_not_collide_across_service_tables(monkeypatch):
     assert uploaded == ["grooming-7.pdf", "daycare-7.pdf"]
 
 
+def test_booking_confirmation_reports_delivery_failed_when_whatsapp_send_fails(monkeypatch):
+    monkeypatch.setattr(document_service, "_fill_pet_name", lambda _company, booking: booking)
+    monkeypatch.setattr(document_service, "get_billing_profile", lambda _company: {"company_name": "P", "currency": "RM"})
+    monkeypatch.setattr(document_service, "_customer_for_pet", lambda *_args: {"customer_id": 1, "customer_name": "A", "phone_number": "+60123456705"})
+    monkeypatch.setattr(document_service, "_staff_name", lambda *_args: "Sam")
+    monkeypatch.setattr(document_service, "_loyalty_snapshot", lambda *_args: None)
+    monkeypatch.setattr(document_service, "build_booking_confirmation_pdf", lambda *_args: b"pdf")
+    monkeypatch.setattr(
+        document_service,
+        "upload_customer_document",
+        lambda *_args: "https://example/grooming-7.pdf",
+    )
+    # The PDF was generated and stored fine, but WhatsApp was never
+    # configured for this company — the actual failure mode this bug hid.
+    monkeypatch.setattr(document_service, "send_whatsapp_document", lambda *_args: {"status": "not_configured"})
+
+    result = document_service.generate_and_send_booking_confirmation(
+        1, {"booking_id": 7, "service_type": "GROOMING", "pet_id": 1}
+    )
+
+    assert result["status"] == "delivery_failed"
+
+
+def test_invoice_reports_delivery_failed_when_whatsapp_send_errors(monkeypatch):
+    monkeypatch.setattr(document_service, "_fill_pet_name", lambda _company, booking: booking)
+    monkeypatch.setattr(document_service, "get_billing_profile", lambda _company: {"company_name": "P", "currency": "RM", "invoice_prefix": "INV"})
+    monkeypatch.setattr(document_service, "_customer_for_pet", lambda *_args: {"customer_id": 1, "customer_name": "A", "phone_number": "+60123456705"})
+    monkeypatch.setattr(document_service, "_staff_name", lambda *_args: "Sam")
+    monkeypatch.setattr(document_service, "_loyalty_snapshot", lambda *_args: None)
+    monkeypatch.setattr(document_service, "_redemption_for_payment", lambda *_args: None)
+    monkeypatch.setattr(document_service, "build_invoice_pdf", lambda *_args: b"pdf")
+    monkeypatch.setattr(
+        document_service,
+        "upload_customer_document",
+        lambda *_args: "https://example/invoice-9.pdf",
+    )
+    monkeypatch.setattr(document_service, "send_whatsapp_document", lambda *_args: {"status": "error", "error": "provider timeout"})
+
+    result = document_service.generate_and_send_invoice(
+        1, {"payment_id": 9}, {"booking_id": 7, "service_type": "GROOMING", "pet_id": 1}, send=True
+    )
+
+    assert result["status"] == "delivery_failed"
+    # The document was still generated/stored — only delivery failed.
+    assert result["document_url"] == "https://example/invoice-9.pdf"
+
+
 def test_daycare_add_on_is_exposed_to_pdf_and_payment_layers():
     serialized = _serialize_daycare_booking(
         {
@@ -1055,3 +1102,67 @@ def test_sql_blocks_full_daycare_interval_and_links_redemption_to_payment():
     assert "v_checkout + interval '30 minutes'" in conflict_sql
     assert "b.check_in_date <= p_date and p_date < b.check_out_date" in conflict_sql
     assert "set redemption_id = v_redemption_id" in redemption_sql
+
+
+def test_payment_status_for_reads_linked_payment_when_not_already_present(monkeypatch):
+    class _Query:
+        def __init__(self, rows):
+            self.rows = rows
+
+        def select(self, *_args):
+            return self
+
+        def eq(self, *_args):
+            return self
+
+        def limit(self, *_args):
+            return self
+
+        def execute(self):
+            return type("Result", (), {"data": self.rows})()
+
+    class _Client:
+        def __init__(self, rows):
+            self.rows = rows
+
+        def table(self, _name):
+            return _Query(self.rows)
+
+    monkeypatch.setattr(
+        document_service, "get_supabase_client", lambda: _Client([{"status": "Paid"}])
+    )
+    assert document_service._payment_status_for(1, {"payment_id": 9}) == "Paid"
+
+    # Already resolved upstream (create_booking's own result) — used as-is,
+    # no extra DB round-trip.
+    assert document_service._payment_status_for(1, {"payment_status": "Refunded"}) == "Refunded"
+
+    # No payment linked at all — fails safe to "Pending" rather than raising.
+    assert document_service._payment_status_for(1, {}) == "Pending"
+
+
+def test_booking_confirmation_shows_payment_status_not_booking_status(monkeypatch):
+    monkeypatch.setattr(document_service, "_fill_pet_name", lambda _company, booking: booking)
+    monkeypatch.setattr(document_service, "get_billing_profile", lambda _company: {"company_name": "P", "currency": "RM"})
+    monkeypatch.setattr(document_service, "_customer_for_pet", lambda *_args: {"customer_id": 1, "customer_name": "A", "phone_number": "+60123456705"})
+    monkeypatch.setattr(document_service, "_staff_name", lambda *_args: "Sam")
+    monkeypatch.setattr(document_service, "_loyalty_snapshot", lambda *_args: None)
+    monkeypatch.setattr(document_service, "_payment_status_for", lambda *_args: "Pending")
+    monkeypatch.setattr(document_service, "upload_customer_document", lambda *_args: "https://example/grooming-7.pdf")
+    monkeypatch.setattr(document_service, "send_whatsapp_document", lambda *_args: {"status": "sent"})
+
+    captured = {}
+
+    def fake_build_pdf(_profile, booking, *_rest):
+        captured.update(booking)
+        return b"pdf"
+
+    monkeypatch.setattr(document_service, "build_booking_confirmation_pdf", fake_build_pdf)
+
+    # A reschedule-style booking dict: booking_status is "Scheduled", but no
+    # payment_status was ever attached by the caller.
+    document_service.generate_and_send_booking_confirmation(
+        1, {"booking_id": 7, "service_type": "GROOMING", "pet_id": 1, "booking_status": "Scheduled"}
+    )
+
+    assert captured["payment_status"] == "Pending"

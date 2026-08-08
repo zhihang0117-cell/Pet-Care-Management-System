@@ -566,6 +566,22 @@ def documents_invoice(request: InvoiceRequest):
     return generate_and_send_invoice(request.company_id, payment, booking, send=request.send)
 
 
+def _delivery_succeeded(send_result: dict) -> bool:
+    """True only for send_whatsapp_text/send_whatsapp_document's real
+    success statuses ("sent" from the live provider, "sent_console" from
+    the local test outbox) — "error" and "not_configured" are failures.
+
+    The three notice endpoints below, and /documents/invoice, previously
+    returned a hard-coded {"status": "success"} regardless of this value —
+    the real outcome was buried in an unread send_result sub-object, so a
+    staff dashboard reading only the top-level status (the convention used
+    everywhere else in this API) would report a refund/status/redemption
+    notice or invoice as delivered even when WhatsApp genuinely failed or
+    was never configured. Matches the same guardrail already applied to
+    booking-confirmation delivery."""
+    return str((send_result or {}).get("status") or "") in {"sent", "sent_console"}
+
+
 def _seed_notice_into_history(company_id: int | str, phone_number: str, message: str) -> None:
     """
     So that if the customer replies to this outbound notice, the next /chat
@@ -614,7 +630,11 @@ def documents_booking_status_notice(request: BookingStatusNoticeRequest):
         return {"status": "no_notice_needed"}
     _seed_notice_into_history(request.company_id, notice["phone_number"], notice["message"])
     send_result = send_whatsapp_text(notice["phone_number"], notice["message"])
-    return {"status": "success", "message": notice["message"], "send_result": send_result}
+    return {
+        "status": "success" if _delivery_succeeded(send_result) else "delivery_failed",
+        "message": notice["message"],
+        "send_result": send_result,
+    }
 
 
 class RedemptionNoticeRequest(BaseModel):
@@ -632,7 +652,11 @@ def documents_redemption_notice(request: RedemptionNoticeRequest):
         return {"status": "no_notice_needed"}
     _seed_notice_into_history(request.company_id, notice["phone_number"], notice["message"])
     send_result = send_whatsapp_text(notice["phone_number"], notice["message"])
-    return {"status": "success", "message": notice["message"], "send_result": send_result}
+    return {
+        "status": "success" if _delivery_succeeded(send_result) else "delivery_failed",
+        "message": notice["message"],
+        "send_result": send_result,
+    }
 
 
 class RefundNoticeRequest(BaseModel):
@@ -649,7 +673,11 @@ def documents_refund_notice(request: RefundNoticeRequest):
         return {"status": "no_notice_needed"}
     _seed_notice_into_history(request.company_id, notice["phone_number"], notice["message"])
     send_result = send_whatsapp_text(notice["phone_number"], notice["message"])
-    return {"status": "success", "message": notice["message"], "send_result": send_result}
+    return {
+        "status": "success" if _delivery_succeeded(send_result) else "delivery_failed",
+        "message": notice["message"],
+        "send_result": send_result,
+    }
 
 
 _SAMPLE_BOOKING = {
