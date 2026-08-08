@@ -703,14 +703,36 @@ class PawfectOrchestrator:
     def _is_data_deletion_request(cls, user_message: str) -> bool:
         return bool(cls._DATA_DELETION_RE.search(user_message or ""))
 
+    # Confirmed live: "I want toalk to tour staff" (typos and all) only got
+    # escalated because the model happened to catch it that turn, not
+    # because this regex matched at all — it didn't, and 16 of 18 other
+    # completely ordinary human phrasings ("get me a human", "human please",
+    # "找客服", "escalate this", "Can someone call me back?") also missed.
+    # Broadened verb/noun vocabulary plus a few strong standalone phrases
+    # ("real person", "真人", "客服") that don't need a co-occurring verb —
+    # checked against realistic phrasings + a benign set (ordinary vet/staff/
+    # manager mentions with no escalation intent) to confirm no new false
+    # positives. Kept as a narrower same-turn backstop now that
+    # apply_and_escalate (below) also fires off the model's own
+    # current_step="STAFF_HANDOFF" declaration, which understands any
+    # wording without needing a phrase list at all.
     _STAFF_HANDOFF_RE = re.compile(
-        r"\b(?:talk|speak|chat|contact|connect|transfer|escalate|complain|complaint)\b.{0,35}"
-        r"\b(?:human|person|staff|agent|manager|vet|veterinarian)\b"
-        r"|\b(?:human|staff|agent|manager|vet|veterinarian)\b.{0,35}"
-        r"\b(?:talk|speak|contact|help|follow\s*up|call\s*me)\b"
-        r"|(?:我要|想找|请找|請找|转接|轉接|联系|聯繫|投诉|投訴).{0,10}(?:人工|员工|員工|客服|经理|經理|兽医|獸醫)"
-        r"|(?:人工|员工|員工|客服|经理|經理|兽医|獸醫).{0,10}(?:联系|聯繫|跟进|跟進|处理|處理|回复|回覆)"
-        r"|\b(?:nak|mahu|boleh)\b.{0,30}\b(?:cakap|hubungi|jumpa)\b.{0,20}\b(?:staf|pegawai|pengurus|doktor\s+haiwan)\b",
+        r"\b(?:talk|speak|chat|contact|connect|transfer|escalate|complain(?:t)?|"
+        r"want|need|get\s+me|give\s+me|put\s+me\s+through|"
+        r"can\s+i\s+(?:get|speak|talk)|is\s+there)\b.{0,40}"
+        r"\b(?:human|person|someone|staff|agent|manager|supervisor|vet|veterinarian|"
+        r"representative)\b"
+        r"|\b(?:human|person|someone|staff|agent|manager|supervisor|vet|veterinarian|"
+        r"representative)\b.{0,40}"
+        r"\b(?:talk|speak|contact|help|follow\s*up|call\s*me|please)\b"
+        r"|\breal\s+(?:person|human)\b|\bactual\s+(?:person|human)\b|\bnot\s+a\s+bot\b|"
+        r"\bhuman\s+please\b|\bmanager\s+please\b"
+        r"|\bescalate\b|\bfile\s+a\s+complaint\b"
+        r"|(?:我要|想找|请找|請找|转接|轉接|联系|聯繫|投诉|投訴).{0,10}"
+        r"(?:人工|员工|員工|客服|经理|經理|兽医|獸醫|真人)"
+        r"|(?:人工|员工|員工|客服|经理|經理|兽医|獸醫|真人).{0,10}(?:联系|聯繫|跟进|跟進|处理|處理|回复|回覆|客服)"
+        r"|真人|客服"
+        r"|\b(?:nak|mahu|boleh)\b.{0,30}\b(?:cakap|hubungi|jumpa)\b.{0,20}\b(?:staf|pegawai|pengurus|doktor\s+haiwan|manusia)\b",
         re.IGNORECASE,
     )
 
@@ -729,6 +751,32 @@ class PawfectOrchestrator:
     @classmethod
     def _is_document_request(cls, user_message: str) -> bool:
         return bool(cls._DOCUMENT_REQUEST_RE.search(user_message or ""))
+
+    # The model's own admission that it doesn't understand the request —
+    # deliberately about genuine confusion over INTENT, not a routine
+    # clarifying question for one missing booking detail ("which pet?",
+    # "what date?" never match this). Applies uniformly across every
+    # scenario/intent, not just an explicit staff-handoff ask — see
+    # _is_low_confidence_response's one caller in invoke_with_trace.
+    _LOW_CONFIDENCE_RE = re.compile(
+        r"\bi'?m\s+not\s+sure\s+(?:i\s+)?understand|"
+        r"\bi\s+don'?t\s+(?:quite\s+)?understand\b|"
+        r"\bcould\s+you\s+(?:please\s+)?(?:clarify|rephrase)\b|"
+        r"\bi'?m\s+having\s+trouble\s+understanding\b|"
+        r"\bi'?m\s+not\s+sure\s+(?:what|how)\b|"
+        r"\bi\s+didn'?t\s+(?:quite\s+)?(?:catch|get)\s+that\b|"
+        r"\bi'?m\s+unable\s+to\s+understand\b|"
+        r"\bnot\s+sure\s+what\s+you'?re\s+asking\b|"
+        r"不(?:太|大)?(?:明白|清楚|理解).{0,10}(?:意思|你说|你想|問題|问题)?|"
+        r"听不(?:太)?懂|聽不(?:太)?懂|"
+        r"无法理解|無法理解|"
+        r"请再说清楚|請再說清楚|可以再说清楚",
+        re.IGNORECASE,
+    )
+
+    @classmethod
+    def _is_low_confidence_response(cls, response_content: str) -> bool:
+        return bool(cls._LOW_CONFIDENCE_RE.search(str(response_content or "")))
 
     @staticmethod
     def _capture_explicit_daycare_duration(state, user_message: str) -> None:
@@ -2735,6 +2783,64 @@ class PawfectOrchestrator:
 
         def apply_and_escalate(tool_call: dict, result) -> None:
             nonlocal escalation_saved, escalation_failed
+            # Primary signal: the model's OWN judgment that this customer
+            # wants a human, expressed by actually declaring
+            # current_step="STAFF_HANDOFF" — this understands any wording,
+            # in any language, with no hand-maintained phrase list at all.
+            # _is_staff_handoff_request (checked before the model even runs,
+            # above) stays as a narrower same-turn backstop for the case
+            # where the model doesn't declare the step but the customer's
+            # own words were still an explicit, literal ask.
+            if (
+                tool_call["name"] == "update_conversation_state"
+                and isinstance(result, dict)
+                and result.get("current_step") == "STAFF_HANDOFF"
+                and not escalation_saved
+            ):
+                try:
+                    self._save_escalation_message(
+                        company_context.get("company_id"),
+                        state.customer_id,
+                        user_message,
+                        "CUSTOMER_REQUESTED_STAFF_HANDOFF",
+                    )
+                    escalation_saved = True
+                    state.verified_facts["staff_enquiry"] = {
+                        "source": "model_declared_staff_handoff",
+                        "turn": state.turn_counter,
+                        "saved": True,
+                    }
+                except Exception as exc:
+                    escalation_failed = True
+                    logging.getLogger(__name__).exception(
+                        "Could not persist model-declared staff handoff for customer_id=%s: %s",
+                        state.customer_id,
+                        exc,
+                    )
+            # Same shape for data-deletion/privacy requests — same reasoning
+            # as STAFF_HANDOFF above. _is_data_deletion_request (checked
+            # before the model runs) stays as the narrower backstop.
+            if (
+                tool_call["name"] == "update_conversation_state"
+                and isinstance(result, dict)
+                and result.get("current_step") == "DATA_DELETION"
+                and not escalation_saved
+            ):
+                try:
+                    self._save_escalation_message(
+                        company_context.get("company_id"),
+                        state.customer_id,
+                        user_message,
+                        "DATA_DELETION_REQUEST",
+                    )
+                    escalation_saved = True
+                except Exception as exc:
+                    escalation_failed = True
+                    logging.getLogger(__name__).exception(
+                        "Could not persist model-declared data-deletion request for customer_id=%s: %s",
+                        state.customer_id,
+                        exc,
+                    )
             if tool_call["name"] in CACHEABLE_READ_TOOL_NAMES:
                 read_signature = mutation_signature(
                     tool_call["name"], tool_call.get("args") or {}
@@ -2930,6 +3036,50 @@ class PawfectOrchestrator:
                     repair_used = True
                     force_tool_once = True
                     continue
+
+                # Low-confidence backstop: when the model itself admits it
+                # doesn't understand the request (not a false claim to
+                # repair via a tool — genuine confusion about intent), don't
+                # leave the customer stuck on a vague "could you clarify?"
+                # loop. Applies to any intent, not just an explicit staff
+                # request — same deterministic escalation-save as an
+                # explicit ask, so staff actually see it, plus an explicit
+                # "this has been escalated" line so the customer isn't left
+                # guessing whether anything happened.
+                if (
+                    not escalation_saved
+                    and customer.get("found")
+                    and self._is_low_confidence_response(response.content)
+                ):
+                    try:
+                        self._save_escalation_message(
+                            company_context.get("company_id"),
+                            state.customer_id,
+                            user_message,
+                            "LOW_CONFIDENCE_UNCLEAR_INTENT",
+                        )
+                        escalation_saved = True
+                        state.verified_facts["staff_enquiry"] = {
+                            "source": "low_confidence_escalation",
+                            "turn": state.turn_counter,
+                            "saved": True,
+                        }
+                        notice = (
+                            "我已经把这个问题记录下来，交给员工跟进处理。"
+                            if contains_chinese(user_message) else
+                            "I've noted this and escalated it to our staff for follow-up."
+                        )
+                        existing = str(response.content or "").strip()
+                        response = response.model_copy(
+                            update={"content": "\n\n".join(part for part in (existing, notice) if part)}
+                        )
+                    except Exception as exc:
+                        escalation_failed = True
+                        logging.getLogger(__name__).exception(
+                            "Could not persist low-confidence escalation for customer_id=%s: %s",
+                            state.customer_id,
+                            exc,
+                        )
 
                 response = finalize_customer_response(
                     self,

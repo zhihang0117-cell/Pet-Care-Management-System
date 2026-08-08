@@ -598,6 +598,131 @@ def test_boarding_reschedule_preserves_stay_length_when_checkout_date_is_not_res
     assert captured_probes[0]["check_out_date"] == "2026-08-31"
 
 
+def test_boarding_does_not_require_the_same_staff_at_check_in_and_check_out(monkeypatch):
+    """Regression: BOARDING availability required ONE staff member to be
+    free for BOTH the check-in AND check-out events, even though a stay can
+    span days/weeks — a normal weekly rest day landing on the checkout date
+    made an otherwise fully-staffable stay show as completely unbookable.
+    Business need is just "someone qualified is on duty each day", same as
+    GROOMING/DAYCARE, not "the same someone both days"."""
+    class _Query:
+        def __init__(self, rows):
+            self.rows = rows
+
+        def select(self, *_a, **_k): return self
+        def eq(self, *_a, **_k): return self
+        def in_(self, *_a, **_k): return self
+        def execute(self):
+            return SimpleNamespace(data=self.rows)
+
+    class _Client:
+        def __init__(self, tables):
+            self.tables = tables
+
+        def table(self, name):
+            return _Query(self.tables.get(name, []))
+
+    ari = {"staff_id": 7, "staff_name": "Ari", "status": "active", "off_days_json": [],
+           "provides_service": True, "service_types_json": ["GROOMING", "DAYCARE", "BOARDING"]}
+    ben = {"staff_id": 9, "staff_name": "Ben", "status": "active", "off_days_json": [],
+           "provides_service": True, "service_types_json": ["GROOMING", "DAYCARE", "BOARDING"]}
+    tables = {
+        "staff": [ari, ben],
+        # Ari off on the checkout day; Ben off on the check-in day — disjoint
+        # rosters, nobody works both ends, but each day is itself staffed.
+        "leave": [
+            {"staff_id": 7, "start_date": "2026-08-12", "end_date": "2026-08-12", "status": "Approved"},
+            {"staff_id": 9, "start_date": "2026-08-10", "end_date": "2026-08-10", "status": "Approved"},
+        ],
+        "grooming_booking": [], "daycare_booking": [], "boarding_booking": [],
+        "room": [{"capacity": 2, "room_type": "Mars Room"}],
+    }
+    monkeypatch.setattr(relational_actions, "get_supabase_client", lambda: _Client(tables))
+    monkeypatch.setattr(
+        relational_actions, "_business_hours_for_date", lambda company_id, target_date: ("09:00", "18:00", None)
+    )
+    monkeypatch.setattr(relational_actions, "_shared_booking_holds", lambda client, company_id: None)
+
+    context = CustomerContext(company_id=1)
+    result = check_available_slots(
+        context,
+        {
+            "service_type": "BOARDING",
+            "entities": {
+                "preferred_date": "2026-08-10",
+                "room_type": "Mars Room",
+                "check_out_date": "2026-08-12",
+            },
+        },
+    )
+
+    assert result["status"] == "success"
+    assert result["data"]["available_slots"], "a fully-staffable stay must not show as fully booked"
+
+
+def test_boarding_checkout_selection_does_not_require_the_same_staff_either(monkeypatch):
+    """Same bug, the OTHER (parallel, duplicated) BOARDING code path: when
+    the customer already has a fixed check-in time and is picking a
+    check-out time (selection_target=CHECK_OUT), a separate implementation
+    had the identical "same staff must do both ends" requirement — fixing
+    only the CHECK_IN-selection branch left this one broken."""
+    class _Query:
+        def __init__(self, rows):
+            self.rows = rows
+
+        def select(self, *_a, **_k): return self
+        def eq(self, *_a, **_k): return self
+        def in_(self, *_a, **_k): return self
+        def execute(self):
+            return SimpleNamespace(data=self.rows)
+
+    class _Client:
+        def __init__(self, tables):
+            self.tables = tables
+
+        def table(self, name):
+            return _Query(self.tables.get(name, []))
+
+    ari = {"staff_id": 7, "staff_name": "Ari", "status": "active", "off_days_json": [],
+           "provides_service": True, "service_types_json": ["GROOMING", "DAYCARE", "BOARDING"]}
+    ben = {"staff_id": 9, "staff_name": "Ben", "status": "active", "off_days_json": [],
+           "provides_service": True, "service_types_json": ["GROOMING", "DAYCARE", "BOARDING"]}
+    tables = {
+        "staff": [ari, ben],
+        "leave": [
+            {"staff_id": 7, "start_date": "2026-08-12", "end_date": "2026-08-12", "status": "Approved"},
+            {"staff_id": 9, "start_date": "2026-08-10", "end_date": "2026-08-10", "status": "Approved"},
+        ],
+        "grooming_booking": [], "daycare_booking": [], "boarding_booking": [],
+        "room": [{"capacity": 2, "room_type": "Mars Room"}],
+    }
+    monkeypatch.setattr(relational_actions, "get_supabase_client", lambda: _Client(tables))
+    monkeypatch.setattr(
+        relational_actions, "_business_hours_for_date", lambda company_id, target_date: ("09:00", "18:00", None)
+    )
+    monkeypatch.setattr(relational_actions, "_shared_booking_holds", lambda client, company_id: None)
+
+    context = CustomerContext(company_id=1)
+    result = check_available_slots(
+        context,
+        {
+            "service_type": "BOARDING",
+            "entities": {
+                "preferred_date": "2026-08-10",
+                "room_type": "Mars Room",
+                "check_out_date": "2026-08-12",
+                "selection_target": "CHECK_OUT",
+                "check_in_time": "10:00",
+            },
+        },
+    )
+
+    assert result["status"] == "success"
+    assert result["data"]["available_check_out_times"], (
+        "a fully-staffable stay must not show as fully booked"
+    )
+
+
 def test_fresh_boarding_check_never_excludes_an_existing_booking_implicitly(monkeypatch):
     exclusions = []
     monkeypatch.setattr(

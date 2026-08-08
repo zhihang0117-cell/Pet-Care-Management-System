@@ -2000,3 +2000,75 @@ def test_confirmation_resend_never_claims_success_when_delivery_failed(monkeypat
     assert result["status"] == "error"
     assert result["handoff_required"] is True
     assert result["data"]["delivery_status"] == "not_configured"
+
+
+def test_staff_handoff_request_is_recognized_across_realistic_human_phrasings():
+    """Confirmed live: "I want toalk to tour staff" (typos and all) only got
+    escalated because the model happened to catch it that turn — the
+    deterministic detector itself missed it, along with 16 of 18 other
+    completely ordinary ways of asking for a human (no exotic wording)."""
+    should_trigger = [
+        "I want to talk to your staff",
+        "Can I get a real person?",
+        "This isn't helping, let me speak to someone.",
+        "Can someone call me back?",
+        "This bot is useless, get me a human.",
+        "I want a human.",
+        "human please",
+        "get me your manager",
+        "Not helpful, human please.",
+        "I don't want to talk to a bot, give me a real person.",
+        "Put me through to a staff member.",
+        "Can I speak to a real human, not a bot?",
+        "escalate this",
+        "我要找人工",
+        "帮我转真人",
+        "我不要跟AI说话，我要真人",
+        "可以找真人吗",
+        "找客服",
+        "I want to file a complaint",
+    ]
+    for text in should_trigger:
+        assert PawfectOrchestrator._is_staff_handoff_request(text), f"should have caught: {text!r}"
+
+    # Ordinary vet/staff/manager/price mentions with no escalation intent
+    # must never be swept up by the broadened vocabulary.
+    should_not_trigger = [
+        "The vet said Milo needs a vaccine booster.",
+        "What time does the vet clinic close?",
+        "I spoke to my manager at work about it.",
+        "Does the price include a vet checkup?",
+        "Which package do you recommend?",
+        "What's the price for a bath?",
+        "我的猫需要打疫苗",
+    ]
+    for text in should_not_trigger:
+        assert not PawfectOrchestrator._is_staff_handoff_request(text), f"should NOT have caught: {text!r}"
+
+
+def test_low_confidence_response_is_recognized_across_realistic_phrasings():
+    should_trigger = [
+        "I'm not sure I understand what you mean. Could you clarify?",
+        "Sorry, I don't understand your request.",
+        "I'm having trouble understanding that — could you rephrase?",
+        "I'm not sure what you're asking for. Can you explain more?",
+        "Sorry, I didn't quite catch that.",
+        "不好意思，我不太明白你的意思。",
+        "抱歉，听不太懂，可以再说清楚一点吗？",
+        "无法理解您的问题，请再说清楚。",
+    ]
+    for text in should_trigger:
+        assert PawfectOrchestrator._is_low_confidence_response(text), f"should have caught: {text!r}"
+
+    # Routine clarifying questions for one missing detail are confident, not
+    # confused — must never be swept up as "low confidence".
+    should_not_trigger = [
+        "Which pet is this booking for?",
+        "What date would you like to book?",
+        "Sure! What time works best for you?",
+        "Your booking is confirmed for tomorrow.",
+        "I understand — let me check that for you.",
+        "请问您想预约哪个服务？",
+    ]
+    for text in should_not_trigger:
+        assert not PawfectOrchestrator._is_low_confidence_response(text), f"should NOT have caught: {text!r}"

@@ -1520,6 +1520,49 @@ def _match_preferred_staff(preferred: str, staff_list: list[dict]) -> dict | Non
     return None
 
 
+def _boarding_checkout_roster_and_bookings(
+    client, context: CustomerContext, checkout_date: date, service_type: str,
+    preferred_staff: str,
+) -> tuple[list[dict], list[dict]]:
+    """(roster, bookings) of staff qualified/on-duty on the checkout date,
+    scoped to preferred_staff the same way the check-in roster already is.
+
+    Shared by BOTH of BOARDING's availability code paths in
+    check_available_slots (selecting a check-in time with checkout
+    computed automatically, and selecting a check-out time against an
+    already-fixed check-in) — these used to duplicate this fetch
+    independently, which is exactly how the "same staff must do both ends"
+    bug got fixed in one path and silently left broken in the other.
+    """
+    checkout_roster = _staff_day_roster(
+        client, context.company_id, checkout_date, service_type=service_type
+    )
+    if preferred_staff:
+        matched = _match_preferred_staff(preferred_staff, checkout_roster)
+        checkout_roster = [matched] if matched is not None else []
+    checkout_staff_ids = [
+        row["staff_id"] for row in checkout_roster if row.get("staff_id") is not None
+    ]
+    checkout_bookings = _cross_service_staff_bookings(
+        client, context.company_id, checkout_staff_ids, checkout_date.isoformat()
+    )
+    return checkout_roster, checkout_bookings
+
+
+def _boarding_window_is_staffed(
+    start_minutes: int, width: int, roster: list[dict], bookings: list[dict], *, date_str: str
+) -> bool:
+    """True if ANY qualified staff member — not necessarily a specific one
+    — is free for this width-minute boarding check-in/check-out window.
+    Business need is "someone qualified is on duty", same as GROOMING/
+    DAYCARE; never "the same specific person on both ends of the stay"."""
+    return bool(
+        _staff_free_for_interval(
+            start_minutes, start_minutes + width, roster, bookings, date_str=date_str
+        )
+    )
+
+
 def _shared_booking_holds(client, company_id: int) -> list[dict] | None:
     """Active DB-backed holds, or None when the migration is not installed."""
     try:
@@ -1877,43 +1920,22 @@ def check_available_slots(context: CustomerContext, intent_json: dict) -> dict:
                 ):
                     check_out_choices = []
                 else:
-                    checkout_roster = _staff_day_roster(
-                        client,
-                        context.company_id,
-                        parsed_check_out_date,
-                        service_type=service_type,
-                    )
-                    if preferred_staff:
-                        matched_checkout_staff = _match_preferred_staff(
-                            preferred_staff, checkout_roster
-                        )
-                        checkout_roster = (
-                            [matched_checkout_staff]
-                            if matched_checkout_staff is not None
-                            else []
-                        )
-                    checkout_staff_ids = [
-                        row["staff_id"]
-                        for row in checkout_roster
-                        if row.get("staff_id") is not None
-                    ]
-                    checkout_bookings = _cross_service_staff_bookings(
-                        client,
-                        context.company_id,
-                        checkout_staff_ids,
-                        checkout_date_value,
+                    checkout_roster, checkout_bookings = _boarding_checkout_roster_and_bookings(
+                        client, context, parsed_check_out_date, service_type, preferred_staff
                     )
                     width = service_duration_minutes("BOARDING")
-                    checkin_staff_ids = {
-                        row.get("staff_id")
-                        for row in _staff_free_for_interval(
-                            checkin_minutes,
-                            checkin_minutes + width,
-                            available_staff,
-                            bookings,
-                            date_str=date_str,
-                        )
-                    }
+                    # ANY qualified staff free for check-in AND ANY qualified
+                    # staff (not necessarily the same one) free for
+                    # check-out — see _boarding_window_is_staffed. This is
+                    # the CHECK_OUT-selection path; the parallel CHECK_IN-
+                    # selection path below shares the same two helpers now,
+                    # after having the identical same-staff bug independently
+                    # (requiring one person free on both, sometimes days/
+                    # weeks apart, when this business only ever needed
+                    # someone qualified on duty each day).
+                    checkin_staffed = _boarding_window_is_staffed(
+                        checkin_minutes, width, available_staff, bookings, date_str=date_str
+                    )
                     check_out_choices = []
                     for candidate in _time_slots_for_day(checkout_open, checkout_close):
                         checkout_minutes = _time_to_minutes(candidate)
@@ -1922,17 +1944,11 @@ def check_available_slots(context: CustomerContext, intent_json: dict) -> dict:
                             or checkout_minutes + width > checkout_close_minutes
                         ):
                             continue
-                        checkout_staff_ids_free = {
-                            row.get("staff_id")
-                            for row in _staff_free_for_interval(
-                                checkout_minutes,
-                                checkout_minutes + width,
-                                checkout_roster,
-                                checkout_bookings,
-                                date_str=checkout_date_value,
-                            )
-                        }
-                        if checkin_staff_ids & checkout_staff_ids_free:
+                        checkout_staffed = _boarding_window_is_staffed(
+                            checkout_minutes, width, checkout_roster, checkout_bookings,
+                            date_str=checkout_date_value,
+                        )
+                        if checkin_staffed and checkout_staffed:
                             check_out_choices.append(candidate)
 
                 exclude_booking_id_raw = str(
@@ -2172,10 +2188,16 @@ def check_available_slots(context: CustomerContext, intent_json: dict) -> dict:
                 free_slots.append(slot)
                 slot_staff_candidates[slot] = staff_for_slot
 
-        # A boarding slot is valid only when the SAME qualified staff member
-        # can perform both events.  When checkout time has not been selected,
-        # prove that at least one real checkout endpoint exists instead of
-        # inventing a checkout at the same clock time as check-in.
+        # A boarding slot is valid once ANY qualified staff member is free
+        # for check-in AND ANY qualified staff member (not necessarily the
+        # same one) is free for check-out — a stay can span days or weeks,
+        # so requiring one single staff member to be rostered on both the
+        # start and end date is far stronger than this business actually
+        # needs (a normal weekly rest day landing on the checkout date used
+        # to make an otherwise fully-staffable stay show as fully booked).
+        # When checkout time has not been selected, prove that at least one
+        # real checkout endpoint exists instead of inventing a checkout at
+        # the same clock time as check-in.
         if service_type == "BOARDING" and parsed_check_out_date is not None:
             checkout_open, checkout_close, checkout_closed_reason = _business_hours_for_date(
                 context.company_id, parsed_check_out_date
@@ -2185,28 +2207,13 @@ def check_available_slots(context: CustomerContext, intent_json: dict) -> dict:
             if checkout_closed_reason or checkout_open_minutes is None or checkout_close_minutes is None:
                 free_slots = []
             else:
-                if parsed_check_out_date == preferred_date:
-                    checkout_roster = available_staff
-                    checkout_bookings = bookings
-                else:
-                    checkout_roster = _staff_day_roster(
-                        client,
-                        context.company_id,
-                        parsed_check_out_date,
-                        service_type=service_type,
-                    )
-                    if preferred_staff:
-                        matched_checkout_staff = _match_preferred_staff(preferred_staff, checkout_roster)
-                        checkout_roster = [matched_checkout_staff] if matched_checkout_staff is not None else []
-                    checkout_staff_ids = [
-                        row["staff_id"] for row in checkout_roster if row.get("staff_id") is not None
-                    ]
-                    checkout_bookings = _cross_service_staff_bookings(
-                        client,
-                        context.company_id,
-                        checkout_staff_ids,
-                        parsed_check_out_date.isoformat(),
-                    )
+                # check_out_date is always strictly after check_in_date for
+                # BOARDING (validated earlier in this function), so the
+                # checkout date is never the same calendar day as
+                # preferred_date — always a real separate day-roster lookup.
+                checkout_roster, checkout_bookings = _boarding_checkout_roster_and_bookings(
+                    client, context, parsed_check_out_date, service_type, preferred_staff
+                )
 
                 boarding_width = service_duration_minutes("BOARDING")
                 if requested_check_out_time:
@@ -2220,16 +2227,10 @@ def check_available_slots(context: CustomerContext, intent_json: dict) -> dict:
                     checkin_start = _time_to_minutes(slot)
                     if checkin_start is None:
                         continue
-                    checkin_ids = {
-                        row.get("staff_id")
-                        for row in _staff_free_for_interval(
-                            checkin_start,
-                            checkin_start + boarding_width,
-                            available_staff,
-                            bookings,
-                            date_str=date_str,
-                        )
-                    }
+                    # free_slots already guarantees at least one qualified
+                    # staff member is free for check-in (that's how it was
+                    # built above) — only the check-out side still needs
+                    # proving here.
                     for checkout_candidate in checkout_candidates:
                         checkout_start = _time_to_minutes(checkout_candidate)
                         if (
@@ -2238,17 +2239,11 @@ def check_available_slots(context: CustomerContext, intent_json: dict) -> dict:
                             or checkout_start + boarding_width > checkout_close_minutes
                         ):
                             continue
-                        checkout_ids = {
-                            row.get("staff_id")
-                            for row in _staff_free_for_interval(
-                                checkout_start,
-                                checkout_start + boarding_width,
-                                checkout_roster,
-                                checkout_bookings,
-                                date_str=parsed_check_out_date.isoformat(),
-                            )
-                        }
-                        if checkin_ids & checkout_ids and _pet_free_for_boarding_stay(
+                        checkout_staff_free = _boarding_window_is_staffed(
+                            checkout_start, boarding_width, checkout_roster, checkout_bookings,
+                            date_str=parsed_check_out_date.isoformat(),
+                        )
+                        if checkout_staff_free and _pet_free_for_boarding_stay(
                             pet_bookings,
                             preferred_date,
                             parsed_check_out_date,

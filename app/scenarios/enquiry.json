@@ -1,8 +1,8 @@
 {
   "scenario": "ENQUIRY",
-  "goal": "Answer a general enquiry from verified company knowledge or hand an explicit human-follow-up request to staff.",
+  "goal": "Answer a general enquiry from verified company knowledge, hand an explicit human-follow-up request to staff, or record an explicit data-deletion/privacy request for staff.",
   "required_evidence": ["verified_company_context_or_policy_retrieval"],
   "completion_condition": "The enquiry is answered, or the deterministic staff-enquiry save is confirmed.",
   "flow_policy": "Do not claim staff were notified unless RUNTIME_CONTEXT contains verified staff_enquiry evidence.",
-  "step_vocabulary": ["ANSWER_ENQUIRY", "STAFF_HANDOFF"]
+  "step_vocabulary": ["ANSWER_ENQUIRY", "STAFF_HANDOFF", "DATA_DELETION"]
 }

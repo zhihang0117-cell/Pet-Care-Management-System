@@ -22,6 +22,23 @@
 -- for every company's query, while a real company_id row still only ever
 -- matches that one company (unchanged behavior — this migration ADDS
 -- visibility for shared rows only, it never narrows anything).
+--
+-- Second, independent gap found in the same function (2026-08-09): the
+-- shared rows are only tagged metadata.knowledge_scope = "shared" — they
+-- have no metadata.service_type at all (they're general veterinary/
+-- emergency/species knowledge, not grooming/daycare/boarding-specific).
+-- `c.metadata @> filter_metadata` (jsonb containment) requires every key
+-- in filter_metadata to actually be present in c.metadata to match — a
+-- shared row with no service_type key can never satisfy
+-- filter_metadata = {"service_type": "grooming"} (or daycare/boarding),
+-- so every caller that passes a service_type (get_booking_service_options
+-- always does; retrieve_policy does whenever the model believes the
+-- question is service-specific) would still get zero shared rows back,
+-- even after the company_id fix above. Fix: a shared row is exempt from
+-- the metadata filter entirely — it's general knowledge, relevant
+-- regardless of which service the query happens to be scoped to. A real
+-- company's own tenant-scoped rows are unaffected — metadata filtering on
+-- those is unchanged.
 
 create or replace function match_chunks_bge_large(
   query_embedding vector(1024),
@@ -46,13 +63,16 @@ language sql stable as $$
       or c.metadata->>'tenant_id' = filter_tenant
       or c.metadata->>'company_id' = filter_tenant
     )
-    and c.metadata @> filter_metadata
+    -- Shared rows (company_id IS NULL) are exempt from metadata filtering
+    -- — they carry no service_type tag, so requiring containment would
+    -- silently zero them out of every service-scoped query.
+    and (c.metadata @> filter_metadata or c.company_id is null)
   order by c.embedding <=> query_embedding
   limit match_count;
 $$;
 
 comment on function match_chunks_bge_large(vector, int, text, jsonb) is
-  'Compatibility BGE-Large search. filter_tenant remains text, safely cast to bigint company_id when numeric. company_id IS NULL rows are shared knowledge, visible to every tenant.';
+  'Compatibility BGE-Large search. filter_tenant remains text, safely cast to bigint company_id when numeric. company_id IS NULL rows are shared knowledge, visible to every tenant and exempt from metadata/service_type filtering.';
 
 -- The repository's base definition of match_chunks_bge_large_production in
 -- 002_add_document_id_to_chunks_bge_large.sql now has the identical shared-

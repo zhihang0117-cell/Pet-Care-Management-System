@@ -1629,6 +1629,147 @@ def test_datetime_is_pre_resolved_and_explicit_staff_handoff_is_saved(monkeypatc
     assert response.content == "日期是 2026-08-15（星期六）。"
 
 
+def test_model_declared_staff_handoff_step_is_saved_even_without_regex_match(monkeypatch):
+    """The model's own current_step="STAFF_HANDOFF" declaration must trigger
+    the same deterministic escalation save as an explicit regex match —
+    tested with wording _is_staff_handoff_request does NOT recognize on its
+    own, to prove the model's judgment is the primary signal, not just a
+    duplicate path for what the regex already caught."""
+    class _Model:
+        def __init__(self):
+            self.calls = 0
+
+        def bind_tools(self, *_args, **_kwargs):
+            return self
+
+        def invoke(self, _messages):
+            self.calls += 1
+            if self.calls == 1:
+                return AIMessage(
+                    content="",
+                    tool_calls=[_call(
+                        "update_conversation_state",
+                        active_scenario="ENQUIRY",
+                        current_step="STAFF_HANDOFF",
+                        service_type="",
+                    )],
+                )
+            return AIMessage(content="I've noted this for our team to follow up with you.")
+
+    saved = []
+    orchestrator = object.__new__(PawfectOrchestrator)
+    orchestrator._base_model = _Model()
+    orchestrator._resolve_identity = lambda _company_id, _state: {
+        "found": True,
+        "customer_id": 22,
+        "full_name": "Alicia Lee",
+    }
+    orchestrator._save_escalation_message = lambda *args: saved.append(args)
+    state = ConversationState(
+        phone_number="+60123456705", company_id="7", customer_id=22, customer_name="Alicia Lee"
+    )
+    # Deliberately vague wording the regex does not match on its own.
+    vague_message = "this isn't quite what I meant, can you sort this out differently"
+    assert PawfectOrchestrator._is_staff_handoff_request(vague_message) is False
+
+    orchestrator.invoke_with_trace(
+        {"company_id": "7", "company_name": "Pawfect", "timezone": "Asia/Kuala_Lumpur"},
+        state,
+        vague_message,
+    )
+
+    assert saved and saved[0][-1] == "CUSTOMER_REQUESTED_STAFF_HANDOFF"
+    assert state.verified_facts["staff_enquiry"]["source"] == "model_declared_staff_handoff"
+
+
+def test_model_declared_data_deletion_step_is_saved_even_without_regex_match(monkeypatch):
+    """Same shape as the staff-handoff test above: the model's own
+    current_step="DATA_DELETION" declaration must trigger the escalation
+    save, tested with wording _is_data_deletion_request does not recognize
+    on its own."""
+    class _Model:
+        def __init__(self):
+            self.calls = 0
+
+        def bind_tools(self, *_args, **_kwargs):
+            return self
+
+        def invoke(self, _messages):
+            self.calls += 1
+            if self.calls == 1:
+                return AIMessage(
+                    content="",
+                    tool_calls=[_call(
+                        "update_conversation_state",
+                        active_scenario="ENQUIRY",
+                        current_step="DATA_DELETION",
+                        service_type="",
+                    )],
+                )
+            return AIMessage(content="I've recorded this request for our team.")
+
+    saved = []
+    orchestrator = object.__new__(PawfectOrchestrator)
+    orchestrator._base_model = _Model()
+    orchestrator._resolve_identity = lambda _company_id, _state: {
+        "found": True,
+        "customer_id": 22,
+        "full_name": "Alicia Lee",
+    }
+    orchestrator._save_escalation_message = lambda *args: saved.append(args)
+    state = ConversationState(
+        phone_number="+60123456705", company_id="7", customer_id=22, customer_name="Alicia Lee"
+    )
+    vague_message = "I don't want you keeping my information around anymore"
+    assert PawfectOrchestrator._is_data_deletion_request(vague_message) is False
+
+    orchestrator.invoke_with_trace(
+        {"company_id": "7", "company_name": "Pawfect", "timezone": "Asia/Kuala_Lumpur"},
+        state,
+        vague_message,
+    )
+
+    assert saved and saved[0][-1] == "DATA_DELETION_REQUEST"
+
+
+def test_low_confidence_response_is_escalated_and_customer_is_told(monkeypatch):
+    """A genuinely confused model reply (no tool call, no false claim to
+    repair — just doesn't understand the request) must not leave the
+    customer stuck on a bare "could you clarify?" — it gets escalated to
+    staff the same way an explicit handoff request would, and the customer
+    is explicitly told so, for ANY intent (this test uses an ordinary
+    enquiry-shaped message, not a staff-handoff one)."""
+    class _Model:
+        def bind_tools(self, *_args, **_kwargs):
+            return self
+
+        def invoke(self, _messages):
+            return AIMessage(content="Sorry, I don't understand your request. Could you rephrase?")
+
+    saved = []
+    orchestrator = object.__new__(PawfectOrchestrator)
+    orchestrator._base_model = _Model()
+    orchestrator._resolve_identity = lambda _company_id, _state: {
+        "found": True,
+        "customer_id": 22,
+        "full_name": "Alicia Lee",
+    }
+    orchestrator._save_escalation_message = lambda *args: saved.append(args)
+    state = ConversationState(
+        phone_number="+60123456705", company_id="7", customer_id=22, customer_name="Alicia Lee"
+    )
+
+    response, _trace = orchestrator.invoke_with_trace(
+        {"company_id": "7", "company_name": "Pawfect", "timezone": "Asia/Kuala_Lumpur"},
+        state,
+        "xyzzy plugh the grommit thing",
+    )
+
+    assert saved and saved[0][-1] == "LOW_CONFIDENCE_UNCLEAR_INTENT"
+    assert state.verified_facts["staff_enquiry"]["source"] == "low_confidence_escalation"
+    assert "escalated it to our staff" in response.content
+
+
 def test_invoice_boundary_rejects_unpaid_and_accepts_paid(monkeypatch):
     import main
 
