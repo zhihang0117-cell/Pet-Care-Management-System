@@ -8,7 +8,7 @@ not from customer free-text messages.
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime, timedelta
 from typing import Any
 
 from .customer_context import (
@@ -18,7 +18,7 @@ from .customer_context import (
     phones_match,
 )
 from .supabase_client import get_supabase_client
-from app.db.slot_holds import SLOT_HOLDS
+from app.context.slot_holds import SLOT_HOLDS
 from app.tools.booking_window import today_business
 
 READ_ONLY_SCENARIOS = {
@@ -54,10 +54,7 @@ SERVICE_TYPE_TO_BOOKING_TABLE = {
     "BOARDING": "boarding_booking",
 }
 
-# Customer-facing choices use a half-hour grid.  Anchoring an hourly grid to
-# the opening minute made every :30 choice disappear on days that opened on
-# the hour, even when 17:30 (or another half-hour) was genuinely free.
-SLOT_MINUTES = 30
+SLOT_MINUTES = 60
 BUSINESS_HOURS_CONFIG_ERROR = "BUSINESS_HOURS_NOT_CONFIGURED"
 
 # Statuses that may be referenced as a customer's previous booking at entry.
@@ -72,17 +69,6 @@ QUALIFYING_PREVIOUS_BOOKING_STATUSES = frozenset(
         "active",
     }
 )
-
-# A tool named "last completed booking" must not treat an old Pending or
-# Scheduled row as proof that the visit actually happened.  Those statuses
-# remain valid for generic latest-booking lookups above, but repeat-service
-# history is intentionally stricter.
-COMPLETED_BOOKING_STATUSES = frozenset({"completed", "done"})
-
-# This must match the database conflict RPCs and booking status constraint.
-# Only bookings that can still consume a real resource block availability;
-# unknown/legacy values must not drift from the SQL-side decision.
-ACTIVE_BOOKING_STATUSES = frozenset({"pending", "scheduled"})
 
 # Statuses that must never be presented as a previous completed service.
 EXCLUDED_PREVIOUS_BOOKING_STATUSES = frozenset(
@@ -240,9 +226,6 @@ def _verify_persisted_booking(
     if expected.get("pet_id") is not None:
         if int(record.get("pet_id") or 0) != int(expected["pet_id"]):
             mismatches.append("pet_id")
-    if expected.get("staff_id") is not None:
-        if int(record.get("staff_id") or 0) != int(expected["staff_id"]):
-            mismatches.append("staff_id")
     expected_date = str(expected.get("booking_date") or expected.get("preferred_date") or "").strip()
     if expected_date and str(record.get("booking_date") or record.get("check_in_date") or "").strip() != expected_date:
         mismatches.append("booking_date")
@@ -273,19 +256,6 @@ def _verify_persisted_booking(
         actual_status = str(record.get("booking_status") or "").strip().lower()
         if not actual_status.startswith(expected_status[:6]):
             mismatches.append("booking_status")
-    for amount_field in ("price", "price_per_night", "total_price", "add_on_price"):
-        if expected.get(amount_field) is None:
-            continue
-        try:
-            if round(float(record.get(amount_field)), 2) != round(
-                float(expected[amount_field]), 2
-            ):
-                mismatches.append(amount_field)
-        except (TypeError, ValueError):
-            mismatches.append(amount_field)
-    if expected.get("payment_id") is not None:
-        if int(record.get("payment_id") or 0) != int(expected["payment_id"]):
-            mismatches.append("payment_id")
     if not _verify_booking_belongs_to_customer(context, record):
         mismatches.append("customer_ownership")
     return not mismatches, record, mismatches
@@ -341,7 +311,9 @@ def is_qualifying_previous_booking_status(status: str) -> bool:
         return False
     if normalized in EXCLUDED_PREVIOUS_BOOKING_STATUSES:
         return False
-    return normalized in QUALIFYING_PREVIOUS_BOOKING_STATUSES
+    if normalized in QUALIFYING_PREVIOUS_BOOKING_STATUSES:
+        return True
+    return normalized not in EXCLUDED_PREVIOUS_BOOKING_STATUSES
 
 
 def check_customer_by_phone(context: CustomerContext) -> dict:
@@ -438,7 +410,6 @@ def get_booking_service_options(context: CustomerContext, service_type: str, pet
                     "service_name": row.get("room_type"),
                     "room_type": row.get("room_type"),
                     "capacity": row.get("capacity"),
-                    "price": row.get("price"),
                     "price_display": (
                         f"RM{row.get('price')}/night"
                         if row.get("price") not in (None, "")
@@ -576,7 +547,6 @@ def _serialize_grooming_booking(row: dict) -> dict:
         "service_type": "GROOMING",
         "booking_date": row.get("booking_date"),
         "booking_time": row.get("booking_time"),
-        "duration_minutes": row.get("duration_minutes") or 60,
         "booking_status": row.get("booking_status"),
         "service_name": "Grooming",
         "package_name": package_name,
@@ -719,46 +689,20 @@ def _collect_latest_customer_booking(context: CustomerContext, client) -> dict |
     return latest
 
 
-def _collect_last_completed_customer_booking(
-    context: CustomerContext,
-    client,
-    *,
-    pet_id: int | None = None,
-    service_type: str = "",
-) -> dict | None:
-    """Most recent real past visit for the requested pet/service scope."""
+def _collect_last_completed_customer_booking(context: CustomerContext, client) -> dict | None:
+    """Most recent real past visit, independent of any newer future booking."""
     pets_result = get_customer_pets(context)
     pet_ids = [pet["pet_id"] for pet in pets_result.get("data", {}).get("pets", [])]
     if not pet_ids:
         return None
 
-    if pet_id is not None:
-        try:
-            selected_pet_id = int(pet_id)
-        except (TypeError, ValueError):
-            return None
-        if selected_pet_id not in pet_ids:
-            return None
-        pet_ids = [selected_pet_id]
-
-    normalized_service = str(service_type or "").strip().upper()
-    if normalized_service and normalized_service not in SERVICE_TYPE_TO_BOOKING_TABLE:
-        return None
-    service_types = (
-        [normalized_service]
-        if normalized_service
-        else list(SERVICE_TYPE_TO_BOOKING_TABLE)
-    )
-
     pet_names = _pet_name_map(client, context.company_id, pet_ids)
     today = today_business()
     completed: list[dict] = []
-    for scoped_service_type in service_types:
-        table = _service_table(scoped_service_type)
-        for row in _fetch_bookings_for_customer(
-            client, context.company_id, pet_ids, scoped_service_type
-        ):
-            if _normalize_booking_status(row.get("booking_status")) not in COMPLETED_BOOKING_STATUSES:
+    for service_type in SERVICE_TYPE_TO_BOOKING_TABLE:
+        table = _service_table(service_type)
+        for row in _fetch_bookings_for_customer(client, context.company_id, pet_ids, service_type):
+            if not is_qualifying_previous_booking_status(row.get("booking_status")):
                 continue
             booking = _serialize_booking_row(table, row)
             raw_date = booking.get("booking_date")
@@ -777,67 +721,6 @@ def _collect_last_completed_customer_booking(
     latest = completed[0]
     latest["display_label"] = _display_label_for_booking(latest)
     return latest
-
-
-def _collect_upcoming_customer_booking(context: CustomerContext, client) -> dict | None:
-    """Soonest still-active future booking for a customer, across every pet/
-    service. Deliberately separate from _collect_latest_customer_booking,
-    which sorts by date DESCENDING and so returns whichever booking is
-    furthest away in time (or a past one if nothing is upcoming) — neither
-    of which is "the next thing this customer has coming up", the concept a
-    greeting actually wants to reference."""
-    pets_result = get_customer_pets(context)
-    pet_ids = [pet["pet_id"] for pet in pets_result.get("data", {}).get("pets", [])]
-    if not pet_ids:
-        return None
-
-    pet_names = _pet_name_map(client, context.company_id, pet_ids)
-    today = today_business()
-    upcoming: list[dict] = []
-    for service_type in SERVICE_TYPE_TO_BOOKING_TABLE:
-        table = _service_table(service_type)
-        for row in _fetch_bookings_for_customer(client, context.company_id, pet_ids, service_type):
-            if _normalize_booking_status(row.get("booking_status")) not in {"scheduled", "pending"}:
-                continue
-            booking = _serialize_booking_row(table, row)
-            raw_date = booking.get("booking_date")
-            try:
-                booking_date = date.fromisoformat(str(raw_date))
-            except (TypeError, ValueError):
-                continue
-            if booking_date < today:
-                continue
-            booking["pet_name"] = pet_names.get(booking.get("pet_id"), "")
-            upcoming.append(booking)
-
-    if not upcoming:
-        return None
-    upcoming.sort(key=_booking_sort_key)
-    soonest = upcoming[0]
-    soonest["display_label"] = _display_label_for_booking(soonest)
-    return soonest
-
-
-def get_upcoming_booking_by_customer_id(context: CustomerContext) -> dict:
-    """Read-only lookup of the customer's soonest still-active future booking."""
-    resolve_customer_context(context)
-    if context.resolved_customer_id is None:
-        return _result("get_upcoming_booking_by_customer_id", "not_found", {})
-    try:
-        soonest = _collect_upcoming_customer_booking(context, get_supabase_client())
-        if not soonest:
-            return _result(
-                "get_upcoming_booking_by_customer_id",
-                "not_found",
-                {"customer_id": context.resolved_customer_id},
-            )
-        return _result(
-            "get_upcoming_booking_by_customer_id",
-            "success",
-            _serialize_latest_booking_payload(soonest, context.resolved_customer_id),
-        )
-    except Exception as exc:
-        return _result("get_upcoming_booking_by_customer_id", "error", {}, str(exc))
 
 
 def _active_bookings_for_customer(context: CustomerContext) -> list[dict]:
@@ -870,18 +753,6 @@ def _active_bookings_for_customer(context: CustomerContext) -> list[dict]:
     return bookings
 
 
-def list_active_bookings(context: CustomerContext) -> dict:
-    """Public wrapper over _active_bookings_for_customer, for
-    app/tools/reference_tools.py's get_active_bookings — reused directly
-    rather than duplicating the query, same as cancel_booking/
-    reschedule_booking's own ambiguity detection already does."""
-    resolve_customer_context(context)
-    if context.resolved_customer_id is None:
-        return _result("list_active_bookings", "not_found", {"bookings": []})
-    active = _active_bookings_for_customer(context)
-    return _result("list_active_bookings", "success", {"bookings": active})
-
-
 def _serialize_latest_booking_payload(latest: dict, customer_id: int | None) -> dict:
     service_type = str(latest.get("service_type") or "UNKNOWN")
     return {
@@ -899,16 +770,6 @@ def _serialize_latest_booking_payload(latest: dict, customer_id: int | None) -> 
         "last_booking_time": latest.get("booking_time") or latest.get("check_in_time"),
         "booking_date": latest.get("booking_date"),
         "booking_status": latest.get("booking_status"),
-        "price": latest.get("price"),
-        "add_on": latest.get("add_on"),
-        "add_on_price": latest.get("add_on_price"),
-        "check_in_date": latest.get("check_in_date"),
-        "check_in_time": latest.get("check_in_time"),
-        "check_out_date": latest.get("check_out_date"),
-        "check_out_time": latest.get("check_out_time"),
-        "room_type": latest.get("room_type"),
-        "price_per_night": latest.get("price_per_night"),
-        "total_price": latest.get("total_price"),
         "source_table": latest.get("source_table"),
         "display_label": latest.get("display_label") or _display_label_for_booking(latest),
     }
@@ -944,23 +805,13 @@ def get_latest_booking_by_customer_id(context: CustomerContext) -> dict:
         return _result("get_latest_booking_by_customer_id", "error", {}, str(exc))
 
 
-def get_last_completed_booking_by_customer_id(
-    context: CustomerContext,
-    *,
-    pet_id: int | None = None,
-    service_type: str = "",
-) -> dict:
-    """Return the latest completed visit in the requested pet/service scope."""
+def get_last_completed_booking_by_customer_id(context: CustomerContext) -> dict:
+    """Return the latest past visit even when a newer upcoming booking exists."""
     resolve_customer_context(context)
     if context.resolved_customer_id is None:
         return _result("get_last_completed_booking_by_customer_id", "not_found", {})
     try:
-        latest = _collect_last_completed_customer_booking(
-            context,
-            get_supabase_client(),
-            pet_id=pet_id,
-            service_type=service_type,
-        )
+        latest = _collect_last_completed_customer_booking(context, get_supabase_client())
         if not latest:
             return _result(
                 "get_last_completed_booking_by_customer_id",
@@ -1146,16 +997,14 @@ def _business_hours_for_date(company_id: int, target_date: date) -> tuple[str | 
     return open_time, close_time, None
 
 
-def _time_slots_for_day(
-    open_time: str, close_time: str, *, include_close: bool = False
-) -> list[str]:
+def _time_slots_for_day(open_time: str, close_time: str) -> list[str]:
     start_minutes = _time_to_minutes(open_time)
     end_minutes = _time_to_minutes(close_time)
     if start_minutes is None or end_minutes is None or end_minutes <= start_minutes:
         return []
     slots: list[str] = []
     cursor = start_minutes
-    while cursor < end_minutes or (include_close and cursor == end_minutes):
+    while cursor < end_minutes:
         slots.append(f"{cursor // 60:02d}:{cursor % 60:02d}:00")
         cursor += SLOT_MINUTES
     return slots
@@ -1236,36 +1085,33 @@ def _booking_interval(row: dict, service_type: str, date_str: str | None = None)
             return [(start, end)]
         return [(start, start + 180)]
     if service == "GROOMING":
-        # Real bug confirmed 2026-08-10: this used to hardcode a duration
-        # regardless of the row's own duration_minutes column — but the
-        # SQL write-side conflict check (backend/sql/
-        # booking_conflict_prevention_migration.sql's create_booking_atomic/
-        # pet_has_conflicting_booking) uses coalesce(b.duration_minutes,
-        # 90), the row's REAL stored value when one exists (the schema
-        # explicitly allows 1-1440 minutes). A grooming_booking row with a
-        # different duration would make this read-side availability check
-        # disagree with what the database actually enforces at write time
-        # — exactly the "verified available, then confirm rejects it as a
-        # conflict" failure mode. Read the real value the same way SQL
-        # does; 60 (not the SQL column's own still-90 default) is only the
-        # fallback for a row that somehow has none at all — Python's
-        # create_booking always writes an explicit value (see
-        # service_duration_minutes("GROOMING") = 60), so this should not
-        # be reachable for any row written through the app itself. The SQL
-        # schema/RPC default was deliberately left at 90 — a live
-        # migration is a separate decision, not something to change
-        # silently alongside a Python default.
+        # Existing grooming rows persist their real duration_minutes. Using a
+        # fixed 90-minute interval here made read-side availability disagree
+        # with the database write-side conflict check whenever a real booking
+        # was longer/shorter than 90 minutes, producing fake available slots.
         try:
-            duration = int(row.get("duration_minutes") or 60)
+            duration = int(row.get("duration_minutes") or 90)
         except (TypeError, ValueError):
-            duration = 60
+            duration = 90
+        if duration <= 0:
+            duration = 90
         return [(start, start + duration)]
     return [(start, start + 60)]
 
 
 def _booking_blocks_availability(row: dict) -> bool:
     status = _normalize_booking_status(row.get("booking_status"))
-    return status in ACTIVE_BOOKING_STATUSES
+    return status not in {
+        "cancelled",
+        "canceled",
+        "done",
+        "completed",
+        "no show",
+        "no-show",
+        "rejected",
+        "deleted",
+        "failed",
+    }
 
 
 def _cross_service_staff_bookings(client, company_id: int, staff_ids: list[int], date_str: str) -> list[dict]:
@@ -1330,245 +1176,6 @@ def _cross_service_staff_bookings(client, company_id: int, staff_ids: list[int],
     return combined
 
 
-def _cross_service_pet_bookings(client, company_id: int, pet_id: int | None) -> list[dict]:
-    """Active-candidate rows for one pet across every booking table.
-
-    Staff availability alone cannot prevent the same pet from being booked
-    with two different staff members.  The final SQL RPC enforces this too;
-    this read-side copy prevents the LLM from offering such a slot first.
-    """
-    if pet_id is None:
-        return []
-    combined: list[dict] = []
-    for service_type, table in (
-        ("GROOMING", "grooming_booking"),
-        ("DAYCARE", "daycare_booking"),
-        ("BOARDING", "boarding_booking"),
-    ):
-        rows = (
-            client.table(table)
-            .select("*")
-            .eq("company_id", company_id)
-            .eq("pet_id", pet_id)
-            .execute()
-            .data
-            or []
-        )
-        combined.extend({**row, "_service_type": service_type} for row in rows)
-    return combined
-
-
-def _booking_row_id(row: dict, service_type: str):
-    return row.get({
-        "GROOMING": "grooming_booking_id",
-        "DAYCARE": "daycare_booking_id",
-        "BOARDING": "boarding_booking_id",
-    }.get(str(service_type or "").upper(), ""))
-
-
-def _without_excluded_booking(
-    rows: list[dict], service_type: str, booking_id: int | None
-) -> list[dict]:
-    """Exclude only the named row in the named service table.
-
-    Booking ids come from independent table sequences, so DAYCARE #7 must
-    never accidentally exclude GROOMING #7 during a reschedule probe.
-    """
-    if booking_id is None:
-        return rows
-    service = str(service_type or "").upper()
-    return [
-        row for row in rows
-        if not (
-            str(row.get("_service_type") or "").upper() == service
-            and _booking_row_id(row, service) == booking_id
-        )
-    ]
-
-
-def _pet_free_for_interval(
-    pet_bookings: list[dict], date_str: str, start: int, end: int,
-    *, exclude_booking_id: int | None = None, exclude_service_type: str = "",
-) -> bool:
-    for row in pet_bookings:
-        if not _booking_blocks_availability(row):
-            continue
-        service_type = str(row.get("_service_type") or "").upper()
-        row_id = row.get(
-            {
-                "GROOMING": "grooming_booking_id",
-                "DAYCARE": "daycare_booking_id",
-                "BOARDING": "boarding_booking_id",
-            }.get(service_type, "")
-        )
-        if (
-            exclude_booking_id is not None
-            and service_type == str(exclude_service_type or "").upper()
-            and row_id == exclude_booking_id
-        ):
-            continue
-        if service_type == "BOARDING":
-            # Real bug confirmed 2026-08-10: this used to treat a boarded
-            # pet as occupied only during its brief check-in/check-out
-            # handoff events (_booking_interval's normal 30-min windows
-            # for BOARDING), on the reasoning that being checked into a
-            # room for a multi-day stay doesn't physically stop the same
-            # pet from being walked to a grooming/daycare appointment
-            # elsewhere that day. But the SQL write-side conflict check
-            # (pet_has_conflicting_booking, called at
-            # create_booking_atomic/update_booking_atomic time — see
-            # backend/sql/booking_conflict_prevention_migration.sql) was
-            # never updated to match: it still overlaps the FULL
-            # check-in-to-check-out span against every other booking, so a
-            # mid-stay grooming/daycare slot this function verified as
-            # available would then get genuinely REJECTED by the real
-            # write — a confirmed "verified then overlap" failure, not a
-            # theoretical one. Matching SQL's stricter semantics here
-            # (rather than updating the SQL function, a live schema/RPC
-            # change) is the safe fix without touching the database.
-            check_in_date = str(row.get("check_in_date") or "")
-            check_out_date = str(row.get("check_out_date") or "")
-            if not (check_in_date and check_out_date and check_in_date <= date_str <= check_out_date):
-                continue
-            return False
-        if str(row.get("booking_date") or "") != date_str:
-            continue
-        for booked_start, booked_end in _booking_interval(row, service_type, date_str):
-            if start < booked_end and booked_start < end:
-                return False
-    return True
-
-
-def _pet_free_for_boarding_stay(
-    pet_bookings: list[dict], check_in: date, check_out: date,
-    *,
-    check_in_time: object = None,
-    check_out_time: object = None,
-    exclude_booking_id: int | None = None,
-    exclude_service_type: str = "",
-) -> bool:
-    return (
-        _pet_boarding_conflict_row(
-            pet_bookings, check_in, check_out,
-            check_in_time=check_in_time,
-            check_out_time=check_out_time,
-            exclude_booking_id=exclude_booking_id,
-            exclude_service_type=exclude_service_type,
-        )
-        is None
-    )
-
-
-def _pet_boarding_conflict_row(
-    pet_bookings: list[dict], check_in: date, check_out: date,
-    *,
-    check_in_time: object = None,
-    check_out_time: object = None,
-    exclude_booking_id: int | None = None,
-    exclude_service_type: str = "",
-) -> dict | None:
-    """The pet's own existing booking (if any) blocking this exact boarding
-    stay, or None if the pet is free. Same rule as
-    _pet_free_for_boarding_stay, factored out so a caller that gets an empty
-    result can tell the customer WHY — "your pet already has X booked" is a
-    very different, much clearer message than a generic "nothing available",
-    and previously check_available_slots had no way to surface which one it
-    actually was.
-
-    Date-only comparisons used to reject every grooming/daycare visit on the
-    check-in date, even one completed before the boarding arrival.  They also
-    could not validate a selected checkout endpoint.  Use timestamps whenever
-    the caller has them; missing times use the date boundary for compatibility
-    with date-only probes until the customer selects exact endpoints.
-
-    A pet's OTHER grooming/daycare bookings are treated as a genuine
-    interval-overlap conflict against this NEW boarding stay's full
-    [check_in, check_out) span — matching backend/sql/
-    booking_conflict_prevention_migration.sql's pet_has_conflicting_booking,
-    the real write-time check (called at create_booking_atomic time), which
-    overlaps the new booking's full span against every other booking
-    unconditionally. An earlier version of this function only treated the
-    exact check-in/check-out INSTANTS as conflict points (reasoning: "a
-    boarded pet can still be walked to a grooming appointment elsewhere
-    during its stay") — real, reasoned business intent, but the SQL
-    function was never updated to allow it, so this function verifying a
-    stay as available only for the real write to then reject it as a
-    conflict was a confirmed live failure mode, not a theoretical one.
-    Matching SQL's stricter semantics here (rather than updating the SQL
-    function, a live schema/RPC change) is the safe fix without touching
-    the database — if grooming/daycare-during-a-boarding-stay is genuinely
-    wanted long-term, that requires a coordinated SQL + Python change, not
-    a Python-only one.
-    """
-    checkin_minutes = _time_to_minutes(check_in_time)
-    checkout_minutes = _time_to_minutes(check_out_time)
-    if checkin_minutes is None:
-        checkin_minutes = 0
-    if checkout_minutes is None:
-        checkout_minutes = 0
-    requested_start = datetime(
-        check_in.year,
-        check_in.month,
-        check_in.day,
-    ) + timedelta(minutes=checkin_minutes)
-    requested_end = datetime(
-        check_out.year,
-        check_out.month,
-        check_out.day,
-    ) + timedelta(minutes=checkout_minutes)
-
-    for row in pet_bookings:
-        if not _booking_blocks_availability(row):
-            continue
-        service_type = str(row.get("_service_type") or "").upper()
-        row_id = row.get(
-            {
-                "GROOMING": "grooming_booking_id",
-                "DAYCARE": "daycare_booking_id",
-                "BOARDING": "boarding_booking_id",
-            }.get(service_type, "")
-        )
-        if (
-            exclude_booking_id is not None
-            and service_type == str(exclude_service_type or "").upper()
-            and row_id == exclude_booking_id
-        ):
-            continue
-        if service_type == "BOARDING":
-            existing_in = _parse_date(row.get("check_in_date"))
-            existing_out = _parse_date(row.get("check_out_date"))
-            existing_in_minutes = _time_to_minutes(row.get("check_in_time"))
-            existing_out_minutes = _time_to_minutes(row.get("check_out_time"))
-            if existing_in and existing_out:
-                existing_start = datetime(
-                    existing_in.year, existing_in.month, existing_in.day
-                ) + timedelta(
-                    minutes=existing_in_minutes if existing_in_minutes is not None else 0
-                )
-                existing_end = datetime(
-                    existing_out.year, existing_out.month, existing_out.day
-                ) + timedelta(
-                    minutes=existing_out_minutes if existing_out_minutes is not None else 0
-                )
-                if requested_start < existing_end and existing_start < requested_end:
-                    return row
-        else:
-            booked_date = _parse_date(row.get("booking_date"))
-            if booked_date:
-                for booked_start, booked_end in _booking_interval(
-                    row, service_type, booked_date.isoformat()
-                ):
-                    existing_start = datetime(
-                        booked_date.year, booked_date.month, booked_date.day
-                    ) + timedelta(minutes=booked_start)
-                    existing_end = datetime(
-                        booked_date.year, booked_date.month, booked_date.day
-                    ) + timedelta(minutes=booked_end)
-                    if requested_start < existing_end and existing_start < requested_end:
-                        return row
-    return None
-
-
 def _staff_free_for_interval(
     start: int, end: int, available_staff: list[dict], bookings: list[dict], date_str: str | None = None
 ) -> list[dict]:
@@ -1596,43 +1203,6 @@ def _staff_free_for_interval(
         if all(end <= booked_start or start >= booked_end for booked_start, booked_end in intervals):
             free.append(staff)
     return free
-
-
-def _daycare_visit_has_continuous_staff_coverage(
-    start: int, end: int, available_staff: list[dict], bookings: list[dict], *, date_str: str
-) -> bool:
-    """True only if SOME staff member (not necessarily the same one
-    throughout) is free at every SLOT_MINUTES checkpoint across [start,
-    end) — a real coverage check, not just "someone is free at drop-off and
-    someone is free at pick-up" (which would miss a genuine gap where every
-    staff member is simultaneously busy somewhere in the middle of the
-    visit). Confirmed live and by an existing regression test: a
-    single-staff roster with one real conflict mid-visit must still reject
-    that start time even when both handoff endpoints are individually free."""
-    cursor = start
-    while cursor < end:
-        step_end = min(cursor + SLOT_MINUTES, end)
-        if not _staff_free_for_interval(cursor, step_end, available_staff, bookings, date_str=date_str):
-            return False
-        cursor = step_end
-    return True
-
-
-def _slot_has_available_staff(
-    slot: str,
-    *,
-    duration_minutes: int,
-    available_staff: list[dict],
-    bookings: list[dict],
-    service_type: str,
-    date_str: str | None = None,
-) -> bool:
-    del service_type  # bookings now carry their own _service_type per row
-    start = _time_to_minutes(slot)
-    if start is None:
-        return False
-    end = start + duration_minutes
-    return bool(_staff_free_for_interval(start, end, available_staff, bookings, date_str))
 
 
 def _staff_day_roster(
@@ -1698,147 +1268,6 @@ def _match_preferred_staff(preferred: str, staff_list: list[dict]) -> dict | Non
     return None
 
 
-def _boarding_checkout_roster_and_bookings(
-    client, context: CustomerContext, checkout_date: date, service_type: str,
-    preferred_staff: str,
-) -> tuple[list[dict], list[dict]]:
-    """(roster, bookings) of staff qualified/on-duty on the checkout date,
-    scoped to preferred_staff the same way the check-in roster already is.
-
-    Shared by BOTH of BOARDING's availability code paths in
-    check_available_slots (selecting a check-in time with checkout
-    computed automatically, and selecting a check-out time against an
-    already-fixed check-in) — these used to duplicate this fetch
-    independently, which is exactly how the "same staff must do both ends"
-    bug got fixed in one path and silently left broken in the other.
-    """
-    checkout_roster = _staff_day_roster(
-        client, context.company_id, checkout_date, service_type=service_type
-    )
-    if preferred_staff:
-        matched = _match_preferred_staff(preferred_staff, checkout_roster)
-        checkout_roster = [matched] if matched is not None else []
-    checkout_staff_ids = [
-        row["staff_id"] for row in checkout_roster if row.get("staff_id") is not None
-    ]
-    checkout_bookings = _cross_service_staff_bookings(
-        client, context.company_id, checkout_staff_ids, checkout_date.isoformat()
-    )
-    return checkout_roster, checkout_bookings
-
-
-def _boarding_window_is_staffed(
-    start_minutes: int, width: int, roster: list[dict], bookings: list[dict], *, date_str: str
-) -> bool:
-    """True if any qualified staff member is free for one boarding event.
-
-    This is deliberately only a single-event helper.  A BOARDING row stores
-    one ``staff_id`` and the database conflict RPC validates that same staff
-    member at both check-in and check-out.  Callers checking a full stay must
-    therefore intersect the check-in and check-out free-staff sets rather
-    than using this boolean for each endpoint independently.
-    """
-    return bool(
-        _staff_free_for_interval(
-            start_minutes, start_minutes + width, roster, bookings, date_str=date_str
-        )
-    )
-
-
-def _shared_booking_holds(client, company_id: int) -> list[dict] | None:
-    """Active DB-backed holds, or None when the migration is not installed."""
-    try:
-        return (
-            client.table("booking_slot_hold")
-            .select(
-                "resource_kind,service_type,holder_key,slot_date,slot_time,end_time,staff_id,"
-                "room_type,check_in_date,check_out_date,expires_at"
-            )
-            .eq("company_id", company_id)
-            .gt("expires_at", datetime.now(timezone.utc).isoformat())
-            .execute()
-            .data
-            or []
-        )
-    except Exception as exc:
-        text = str(exc)
-        if "PGRST205" in text or "booking_slot_hold" in text:
-            return None
-        raise
-
-
-def _staff_hold_blocks(
-    holds: list[dict] | None,
-    *, company_id: int, staff_id: int, date_str: str,
-    start: int, end: int, holder: str | None,
-) -> bool:
-    if holder and SLOT_HOLDS.staff_held_by_other(
-        company_id, staff_id, date_str, start, end, holder
-    ):
-        return True
-    if holds is None:
-        return False
-    for row in holds:
-        if (
-            str(row.get("resource_kind") or "").upper() != "SLOT"
-            or str(row.get("slot_date") or "") != date_str
-            or str(row.get("staff_id") or "") != str(staff_id)
-            or str(row.get("holder_key") or "") == str(holder or "")
-        ):
-            continue
-        held_start = _time_to_minutes(row.get("slot_time"))
-        held_end = _time_to_minutes(row.get("end_time"))
-        if held_start is not None and held_end is not None and start < held_end and held_start < end:
-            return True
-    return False
-
-
-def _staff_free_after_holds(
-    staff_rows: list[dict], holds: list[dict] | None,
-    *, company_id: int, date_str: str, start: int, end: int, holder: str | None,
-) -> list[dict]:
-    return [
-        row for row in staff_rows
-        if row.get("staff_id") is not None
-        and not _staff_hold_blocks(
-            holds,
-            company_id=company_id,
-            staff_id=int(row["staff_id"]),
-            date_str=date_str,
-            start=start,
-            end=end,
-            holder=holder,
-        )
-    ]
-
-
-def _acquire_shared_hold(client, payload: dict) -> bool | None:
-    try:
-        data = client.rpc("acquire_booking_hold", payload).execute().data
-        return bool(data)
-    except Exception as exc:
-        text = str(exc)
-        if "PGRST202" in text or "acquire_booking_hold" in text or "booking_slot_hold" in text:
-            return None
-        raise
-
-
-def _release_shared_holds(client, company_id: int, holder: str) -> None:
-    try:
-        (
-            client.table("booking_slot_hold")
-            .delete()
-            .eq("company_id", company_id)
-            .eq("holder_key", holder)
-            .execute()
-        )
-    except Exception:
-        # Compatibility only: create/update themselves never fall back from
-        # their required atomic RPCs. An older deployment merely lacks the
-        # optional shared-hold table and still releases its in-process hold.
-        pass
-
-
 def check_available_slots(context: CustomerContext, intent_json: dict) -> dict:
     """
     Estimate available slots from active staff, approved leave, and existing
@@ -1851,12 +1280,7 @@ def check_available_slots(context: CustomerContext, intent_json: dict) -> dict:
         intent_json.get("service_type") or entities.get("service_type") or "GROOMING"
     ).strip().upper()
     if service_type not in SERVICE_TYPE_TO_BOOKING_TABLE:
-        return _result(
-            "check_available_slots",
-            "error",
-            {"service_type": service_type, "available_slots": []},
-            "service_type must be GROOMING, DAYCARE, or BOARDING.",
-        )
+        service_type = "GROOMING"
     if context.resolved_customer_id is None and entities.get("customer_id"):
         try:
             context.resolved_customer_id = int(entities["customer_id"])
@@ -1871,89 +1295,6 @@ def check_available_slots(context: CustomerContext, intent_json: dict) -> dict:
             {"missing_fields": ["preferred_date"]},
         )
     date_str = preferred_date.isoformat()
-
-    room_type = str(entities.get("room_type") or entities.get("package_name") or "").strip()
-    check_out_date_text = str(entities.get("check_out_date") or "").strip()
-    requested_duration = entities.get("duration_minutes")
-    requested_check_out_time = _normalize_time_value(str(entities.get("check_out_time") or ""))
-    selection_target = str(entities.get("selection_target") or "CHECK_IN").strip().upper()
-    fixed_check_in_time = _normalize_time_value(str(entities.get("check_in_time") or ""))
-    choosing_check_out = selection_target == "CHECK_OUT"
-
-    # A partial check must never be presented as a final choice. Boarding
-    # availability depends on room capacity across the whole stay, while
-    # daycare depends on the complete visit duration through pickup.
-    missing_constraints: list[str] = []
-    if choosing_check_out and service_type not in {"DAYCARE", "BOARDING"}:
-        return _result(
-            "check_available_slots",
-            "error",
-            {
-                "service_type": service_type,
-                "selection_target": selection_target,
-                "available_check_out_times": [],
-            },
-            "CHECK_OUT choices are only supported for DAYCARE or BOARDING.",
-        )
-    if choosing_check_out and not fixed_check_in_time:
-        missing_constraints.append("check_in_time")
-    # Explicit product decision: the customer stating only ONE side (a
-    # check-in time for DAYCARE, or a room for BOARDING) should see real
-    # check-in options immediately, not be blocked until they've also
-    # stated the other side. Confirmed live: forcing "how long will you
-    # stay?" before showing a single time, immediately followed by that
-    # same check-in time turning out unavailable once duration WAS known,
-    # reads to the customer as the system flatly contradicting itself one
-    # turn later. preliminary_checkin_only below computes real (but only
-    # partially validated) check-in times instead of hard-blocking; the
-    # full validation (room capacity / full-visit staff coverage) still
-    # happens once the other side is known — see the preliminary_checkin_only
-    # branch further down.
-    preliminary_checkin_only = False
-    if service_type == "BOARDING":
-        if not room_type:
-            missing_constraints.append("room_type")
-        elif not check_out_date_text:
-            preliminary_checkin_only = True
-    elif (
-        service_type == "DAYCARE"
-        and not choosing_check_out
-        and requested_duration in (None, "")
-        and not requested_check_out_time
-    ):
-        preliminary_checkin_only = True
-    if missing_constraints:
-        return _result(
-            "check_available_slots",
-            "missing_information",
-            {
-                "service_type": service_type,
-                "booking_date": date_str,
-                "missing_fields": missing_constraints,
-                "available_slots": [],
-                "available_check_out_times": [],
-            },
-            (
-                "Complete the service details before offering times; no slot has been "
-                "validated against all booking constraints yet."
-            ),
-        )
-
-    parsed_check_out_date = _parse_date(check_out_date_text) if check_out_date_text else None
-    if service_type == "BOARDING" and not preliminary_checkin_only and (
-        parsed_check_out_date is None or parsed_check_out_date <= preferred_date
-    ):
-        return _result(
-            "check_available_slots",
-            "error",
-            {
-                "service_type": service_type,
-                "booking_date": date_str,
-                "check_out_date": check_out_date_text,
-                "available_slots": [],
-            },
-            "Boarding check_out_date must be a valid date after check-in.",
-        )
 
     try:
         open_time, close_time, closed_reason = _business_hours_for_date(context.company_id, preferred_date)
@@ -1980,29 +1321,7 @@ def check_available_slots(context: CustomerContext, intent_json: dict) -> dict:
             )
 
         client = get_supabase_client()
-        shared_holds = _shared_booking_holds(client, context.company_id)
         available_staff = _staff_day_roster(client, context.company_id, preferred_date, service_type=service_type)
-        preferred_staff = str(entities.get("preferred_staff") or "").strip()
-        if preferred_staff:
-            matched_staff = _match_preferred_staff(preferred_staff, available_staff)
-            if matched_staff is None:
-                return _result(
-                    "check_available_slots",
-                    "error",
-                    {
-                        "service_type": service_type,
-                        "booking_date": date_str,
-                        "preferred_staff": preferred_staff,
-                        "available_slots": [],
-                        "available_check_out_times": [],
-                    },
-                    (
-                        "The requested staff member does not match an available, qualified "
-                        "staff member on this date. Ask the customer whether they prefer a "
-                        "different date or any available staff; do not silently substitute."
-                    ),
-                )
-            available_staff = [matched_staff]
         if not available_staff:
             return _result(
                 "check_available_slots",
@@ -2017,418 +1336,34 @@ def check_available_slots(context: CustomerContext, intent_json: dict) -> dict:
 
         staff_ids = [row["staff_id"] for row in available_staff]
         bookings = _cross_service_staff_bookings(client, context.company_id, staff_ids, date_str)
-        pet_id_raw = str(entities.get("pet_id") or "").strip()
-        pet_id = int(pet_id_raw) if pet_id_raw.isdigit() and int(pet_id_raw) > 0 else None
-        pet_bookings = _cross_service_pet_bookings(
-            client, context.company_id, pet_id
-        )
-        exclude_booking_id_raw = str(entities.get("exclude_booking_id") or "").strip()
-        exclude_booking_id = (
-            int(exclude_booking_id_raw)
-            if exclude_booking_id_raw.isdigit() and int(exclude_booking_id_raw) > 0
-            else None
-        )
-        bookings = _without_excluded_booking(bookings, service_type, exclude_booking_id)
-        holder = (
-            str(context.resolved_customer_id)
-            if context.resolved_customer_id is not None
-            else None
-        )
 
         from .availability_service import service_duration_minutes
 
-        if preliminary_checkin_only:
-            # Real check-in/drop-off times, staff-verified for a short
-            # handoff window only — deliberately NOT the full validation
-            # (BOARDING room capacity across the whole stay; DAYCARE staff
-            # coverage for the full visit length), since the other side
-            # (check_out_date / duration or pickup time) isn't known yet.
-            # The customer picks one of these, states the other side, and
-            # a SECOND check_availability call (this same branch once
-            # check_out_date/duration is known, or selection_target=
-            # CHECK_OUT) does the real, complete validation before
-            # anything here is treated as bookable.
-            handoff_width = service_duration_minutes("BOARDING")
-            close_minutes_preview = _time_to_minutes(close_time)
-            preliminary_slots = []
-            for slot in _time_slots_for_day(open_time, close_time):
-                slot_start = _time_to_minutes(slot)
-                if slot_start is None or close_minutes_preview is None:
-                    continue
-                drop_off_end = min(slot_start + handoff_width, close_minutes_preview)
-                staff_for_slot = _staff_free_for_interval(
-                    slot_start, drop_off_end, available_staff, bookings, date_str=date_str
-                )
-                staff_for_slot = _staff_free_after_holds(
-                    staff_for_slot, shared_holds, company_id=context.company_id,
-                    date_str=date_str, start=slot_start, end=drop_off_end, holder=holder,
-                )
-                if staff_for_slot and _pet_free_for_interval(
-                    pet_bookings, date_str, slot_start, drop_off_end,
-                    exclude_booking_id=exclude_booking_id, exclude_service_type=service_type,
-                ):
-                    preliminary_slots.append(slot)
-            still_needs = ["check_out_date"] if service_type == "BOARDING" else ["check_out_time_or_duration_minutes"]
-            return _result(
-                "check_available_slots",
-                "success",
-                {
-                    "service_type": service_type,
-                    "booking_date": date_str,
-                    "available_slots": preliminary_slots,
-                    "preliminary": True,
-                    "still_needs": still_needs,
-                    "room_type": room_type or None,
-                    "available_staff": [
-                        {"staff_id": row.get("staff_id"), "staff_name": row.get("staff_name")}
-                        for row in available_staff
-                    ],
-                },
-            )
-
-        if choosing_check_out:
-            checkin_minutes = _time_to_minutes(fixed_check_in_time)
-            open_minutes = _time_to_minutes(open_time)
-            close_minutes = _time_to_minutes(close_time)
-            if (
-                checkin_minutes is None
-                or open_minutes is None
-                or close_minutes is None
-                or checkin_minutes < open_minutes
-                or checkin_minutes >= close_minutes
-            ):
-                return _result(
-                    "check_available_slots",
-                    "error",
-                    {
-                        "service_type": service_type,
-                        "selection_target": selection_target,
-                        "check_in_time": fixed_check_in_time or None,
-                        "available_check_out_times": [],
-                    },
-                    "check_in_time must be a valid time within operating hours.",
-                )
-
-            capacity_status = None
-            if service_type == "DAYCARE":
-                # A visit is offerable when SOME staff member is on duty at
-                # every point across it (checked at SLOT_MINUTES
-                # granularity, not just the two handoff endpoints — see
-                # _daycare_visit_has_continuous_staff_coverage), not only
-                # when one specific person is free continuously from
-                # drop-off through pickup. That older rule made any
-                # sufficiently long visit combined with ANY staff member
-                # having so much as one unrelated booking that day
-                # mathematically unofferable, regardless of real staffing
-                # capacity — confirmed live (a real 6-hour request returned
-                # zero slots all day even though total staffing that day was
-                # ample). The staff actually held/recorded for the booking
-                # is still whoever is free at drop-off specifically.
-                checkout_staff_candidates: dict[str, list[dict]] = {}
-                check_out_choices = []
-                for candidate in _time_slots_for_day(
-                    open_time, close_time, include_close=True
-                ):
-                    candidate_minutes = _time_to_minutes(candidate)
-                    if candidate_minutes is None or candidate_minutes <= checkin_minutes:
-                        continue
-                    has_coverage = _daycare_visit_has_continuous_staff_coverage(
-                        checkin_minutes, candidate_minutes, available_staff, bookings, date_str=date_str,
-                    )
-                    drop_off_width = service_duration_minutes("BOARDING")
-                    free_for_visit = _staff_free_for_interval(
-                        checkin_minutes, min(checkin_minutes + drop_off_width, candidate_minutes),
-                        available_staff, bookings, date_str=date_str,
-                    ) if has_coverage else []
-                    free_for_visit = _staff_free_after_holds(
-                        free_for_visit,
-                        shared_holds,
-                        company_id=context.company_id,
-                        date_str=date_str,
-                        start=checkin_minutes,
-                        end=candidate_minutes,
-                        holder=holder,
-                    )
-                    if free_for_visit and _pet_free_for_interval(
-                        pet_bookings,
-                        date_str,
-                        checkin_minutes,
-                        candidate_minutes,
-                        exclude_booking_id=exclude_booking_id,
-                        exclude_service_type=service_type,
-                    ):
-                        check_out_choices.append(candidate)
-                        checkout_staff_candidates[candidate] = free_for_visit
-                checkout_date_value = date_str
-            else:
-                checkout_date_value = parsed_check_out_date.isoformat()
-                checkout_open, checkout_close, checkout_closed_reason = _business_hours_for_date(
-                    context.company_id, parsed_check_out_date
-                )
-                checkout_open_minutes = _time_to_minutes(checkout_open)
-                checkout_close_minutes = _time_to_minutes(checkout_close)
-                if (
-                    checkout_closed_reason
-                    or checkout_open_minutes is None
-                    or checkout_close_minutes is None
-                ):
-                    check_out_choices = []
-                else:
-                    checkout_roster, checkout_bookings = _boarding_checkout_roster_and_bookings(
-                        client, context, parsed_check_out_date, service_type, preferred_staff
-                    )
-                    width = service_duration_minutes("BOARDING")
-                    # The persisted booking has one staff_id.  Keep the
-                    # read-side promise aligned with the final database write:
-                    # the assigned person must be free for BOTH handoff
-                    # events, rather than independently finding one person at
-                    # check-in and another at check-out and promising a stay
-                    # create_booking/create_booking_atomic will reject.
-                    checkin_staff = _staff_free_for_interval(
-                        checkin_minutes,
-                        checkin_minutes + width,
-                        available_staff,
-                        bookings,
-                        date_str=date_str,
-                    )
-                    checkin_staff = _staff_free_after_holds(
-                        checkin_staff,
-                        shared_holds,
-                        company_id=context.company_id,
-                        date_str=date_str,
-                        start=checkin_minutes,
-                        end=checkin_minutes + width,
-                        holder=holder,
-                    )
-                    checkin_staff_ids = {
-                        int(row["staff_id"])
-                        for row in checkin_staff
-                        if row.get("staff_id") is not None
-                    }
-                    check_out_choices = []
-                    for candidate in _time_slots_for_day(checkout_open, checkout_close):
-                        checkout_minutes = _time_to_minutes(candidate)
-                        if (
-                            checkout_minutes is None
-                            or checkout_minutes + width > checkout_close_minutes
-                        ):
-                            continue
-                        checkout_staff = _staff_free_for_interval(
-                            checkout_minutes,
-                            checkout_minutes + width,
-                            checkout_roster,
-                            checkout_bookings,
-                            date_str=checkout_date_value,
-                        )
-                        checkout_staff = _staff_free_after_holds(
-                            checkout_staff,
-                            shared_holds,
-                            company_id=context.company_id,
-                            date_str=checkout_date_value,
-                            start=checkout_minutes,
-                            end=checkout_minutes + width,
-                            holder=holder,
-                        )
-                        checkout_staff_ids = {
-                            int(row["staff_id"])
-                            for row in checkout_staff
-                            if row.get("staff_id") is not None
-                        }
-                        if checkin_staff_ids & checkout_staff_ids:
-                            check_out_choices.append(candidate)
-
-                exclude_booking_id_raw = str(
-                    entities.get("exclude_booking_id") or ""
-                ).strip()
-                exclude_booking_id = (
-                    int(exclude_booking_id_raw)
-                    if exclude_booking_id_raw.isdigit()
-                    else None
-                )
-                capacity_status = _room_capacity_status(
-                    context,
-                    room_type,
-                    date_str,
-                    checkout_date_value,
-                    exclude_booking_id=exclude_booking_id,
-                )
-                if capacity_status is None:
-                    return _result(
-                        "check_available_slots",
-                        "error",
-                        {
-                            "service_type": service_type,
-                            "room_type": room_type,
-                            "available_check_out_times": [],
-                        },
-                        (
-                            f"room_type {room_type!r} does not exactly match a configured room. "
-                            "Use the exact room_type returned by get_booking_service_options."
-                        ),
-                    )
-                if not capacity_status["available"]:
-                    check_out_choices = []
-                check_out_choices = [
-                    candidate
-                    for candidate in check_out_choices
-                    if _pet_free_for_boarding_stay(
-                        pet_bookings,
-                        preferred_date,
-                        parsed_check_out_date,
-                        check_in_time=fixed_check_in_time,
-                        check_out_time=candidate,
-                        exclude_booking_id=exclude_booking_id,
-                        exclude_service_type=service_type,
-                    )
-                ]
-
-            # A CHECK_OUT request may be the first availability call for this
-            # interval. Hold only an exact pickup selection; a list of possible
-            # endpoints is not permission to reserve an arbitrary visit length.
-            requested_checkout_filter = _normalize_time_value(
-                str(entities.get("requested_check_out_filter") or "")
-            )
-            if (
-                service_type == "DAYCARE"
-                and holder
-                and requested_checkout_filter in check_out_choices
-            ):
-                SLOT_HOLDS.release_all_for(holder, prefix=(context.company_id, "STAFF"))
-                candidates = checkout_staff_candidates.get(requested_checkout_filter, [])
-                checkout_end = _time_to_minutes(requested_checkout_filter)
-                acquired = False
-                for staff in candidates:
-                    staff_id = int(staff["staff_id"])
-                    key = (
-                        context.company_id, "STAFF", staff_id, date_str,
-                        checkin_minutes, checkout_end, service_type,
-                    )
-                    if not SLOT_HOLDS.acquire(key, holder):
-                        continue
-                    try:
-                        shared_acquired = _acquire_shared_hold(
-                            client,
-                            {
-                                "p_company_id": context.company_id,
-                                "p_resource_kind": "SLOT",
-                                "p_service_type": service_type,
-                                "p_holder_key": holder,
-                                "p_slot_date": date_str,
-                                "p_slot_time": fixed_check_in_time,
-                                "p_end_time": requested_checkout_filter,
-                                "p_staff_id": staff_id,
-                                "p_room_type": None,
-                                "p_check_in_date": None,
-                                "p_check_out_date": None,
-                                "p_capacity": 1,
-                                "p_exclude_booking_id": exclude_booking_id,
-                            },
-                        )
-                    except Exception:
-                        SLOT_HOLDS.release(key)
-                        raise
-                    if shared_acquired is False:
-                        SLOT_HOLDS.release(key)
-                    else:
-                        acquired = True
-                        break
-                if not acquired:
-                    check_out_choices = [
-                        item for item in check_out_choices
-                        if item != requested_checkout_filter
-                    ]
-
-            result_data = {
-                "service_type": service_type,
-                "selection_target": selection_target,
-                "booking_date": date_str,
-                "check_in_time": fixed_check_in_time,
-                "check_out_date": checkout_date_value,
-                "available_slots": [],
-                "available_check_out_times": check_out_choices,
-                "available_staff": [
-                    {"staff_id": row.get("staff_id"), "staff_name": row.get("staff_name")}
-                    for row in available_staff
-                ],
-                "room_type": room_type or None,
-                "preferred_staff": preferred_staff or None,
-            }
-            if capacity_status is not None:
-                result_data["room_capacity"] = capacity_status
-            return _result("check_available_slots", "success", result_data)
-
         duration_minutes = service_duration_minutes(service_type)
-        parsed_requested_duration = None
-        # Real gap confirmed live 2026-08-10 (post-V1-decommission Boarding
-        # smoke test): this validated (and rejected out-of-range) ANY
-        # duration_minutes regardless of service_type, even though the
-        # branch two lines below only ever APPLIES it for GROOMING/DAYCARE
-        # — BOARDING's real length comes from check_in/check_out dates, not
-        # this parameter, so it was never going to be used either way. The
-        # model reasonably computed a multi-day stay's length in minutes
-        # (e.g. a 3-night stay = 4320) and passed it, got hard-rejected by
-        # a 24h cap that was never actually about BOARDING, retried twice
-        # more before landing on 1440, and by then had burned enough of
-        # MAX_AGENT_STEPS that a real, successful preview_booking result
-        # never made it into the final customer-facing reply. Scoped the
-        # same way the "does anything with it" branch already was: only
-        # validate when the value will actually be used.
-        if requested_duration not in (None, "") and service_type in {"GROOMING", "DAYCARE"}:
-            try:
-                parsed_requested_duration = int(requested_duration)
-            except (TypeError, ValueError):
-                return _result(
-                    "check_available_slots",
-                    "error",
-                    {"duration_minutes": requested_duration},
-                    "duration_minutes must be a positive number of minutes",
-                )
-            if not 0 < parsed_requested_duration <= 24 * 60:
-                return _result(
-                    "check_available_slots",
-                    "error",
-                    {"duration_minutes": requested_duration},
-                    "duration_minutes must be between 1 and 1440 minutes",
-                )
-            duration_minutes = parsed_requested_duration
-        # Set only for DAYCARE when the customer's check-in time is still a
-        # period word (e.g. "morning") rather than an exact clock time but a
-        # real check_out_time is already known — every candidate start then
-        # has its OWN true duration to that fixed checkout, not one shared
-        # duration_minutes. Previously this case silently fell through to
-        # the flat DAYCARE default (180 min) and ignored check_out_time
-        # entirely, which is the documented, standard way this tool is
-        # called (system prompt: "pass check_out_time... so every offered
-        # start can fit the complete visit") — a candidate near closing was
-        # wrongly excluded (checked against a fictitious 3-hour occupancy
-        # that overran business hours) and a candidate far from closing was
-        # wrongly offered (checked against only 3 hours instead of its real,
-        # much longer span to the fixed checkout).
-        daycare_checkout_target_minutes: int | None = None
+        requested_duration = entities.get("duration_minutes")
         if service_type == "DAYCARE":
             requested_start = _time_to_minutes(entities.get("preferred_time"))
             requested_end = _time_to_minutes(entities.get("check_out_time"))
-            if (
-                requested_start is not None
-                and requested_end is not None
-                and requested_end <= requested_start
-            ):
-                return _result(
-                    "check_available_slots",
-                    "error",
-                    {
-                        "check_in_time": _normalize_time_value(
-                            str(entities.get("preferred_time") or "")
-                        ),
-                        "check_out_time": requested_check_out_time,
-                        "available_slots": [],
-                    },
-                    "DAYCARE check_out_time must be after check_in_time on the same day.",
-                )
             if requested_start is not None and requested_end is not None and requested_end > requested_start:
                 duration_minutes = requested_end - requested_start
-            elif requested_start is None and requested_end is not None:
-                daycare_checkout_target_minutes = requested_end
+            elif requested_duration is not None:
+                try:
+                    parsed_duration = int(requested_duration)
+                except (TypeError, ValueError):
+                    return _result(
+                        "check_available_slots",
+                        "error",
+                        {"duration_minutes": requested_duration},
+                        "duration_minutes must be a positive number of minutes",
+                    )
+                if not 0 < parsed_duration <= 24 * 60:
+                    return _result(
+                        "check_available_slots",
+                        "error",
+                        {"duration_minutes": requested_duration},
+                        "duration_minutes must be between 1 and 1440 minutes",
+                    )
+                duration_minutes = parsed_duration
         close_minutes = _time_to_minutes(close_time)
         if close_minutes is None or not open_time or not close_time:
             return _result(
@@ -2439,220 +1374,69 @@ def check_available_slots(context: CustomerContext, intent_json: dict) -> dict:
                 handoff_required=True,
                 handoff_reason=BUSINESS_HOURS_CONFIG_ERROR,
             )
+        open_minutes = _time_to_minutes(open_time) or 0
+        candidate_slots = list(_time_slots_for_day(open_time, close_time))
+        # _time_slots_for_day only enumerates a fixed SLOT_MINUTES-spaced
+        # display grid anchored at open_time (e.g. 09:30, 10:30, 11:30 for a
+        # 09:30 opening) — that cadence exists purely to offer browsable
+        # alternatives, not because staff free/busy state is quantized to it.
+        # A customer's own exact requested clock time (e.g. "11:00") can fall
+        # between two grid points and is otherwise silently dropped from
+        # candidate_slots, which then makes it look unavailable even when
+        # every staff member is free at that exact minute — and since
+        # create_booking's own write-time gate (_slot_is_available) re-runs
+        # this same function, that false negative didn't just mislead the
+        # read-only check, it actually rejected a bookable slot outright.
+        # Add it as a real candidate so it gets the same staff-availability
+        # check as any grid point, instead of being excluded on cadence alone.
+        from .time_normalization import normalize_time_to_slot
 
-        def _daycare_slot_duration(slot_start: int) -> int | None:
-            """Per-candidate duration when checkout is fixed but check-in is
-            still a period word; otherwise the one shared duration_minutes."""
-            if daycare_checkout_target_minutes is None:
-                return duration_minutes
-            remaining = daycare_checkout_target_minutes - slot_start
-            return remaining if remaining > 0 else None
-
-        all_slots = []
-        for slot in _time_slots_for_day(open_time, close_time):
-            slot_start = _time_to_minutes(slot) or 0
-            slot_duration = _daycare_slot_duration(slot_start)
-            if slot_duration is not None and slot_start + slot_duration <= close_minutes:
-                all_slots.append(slot)
-        slot_staff_candidates: dict[str, list[dict]] = {}
-        free_slots = []
-        for slot in all_slots:
-            slot_start = _time_to_minutes(slot)
-            if slot_start is None:
-                continue
-            slot_duration = _daycare_slot_duration(slot_start)
-            if slot_duration is None:
-                continue
-            slot_end = slot_start + slot_duration
-            if service_type == "DAYCARE":
-                # A daycare visit is supervised by whoever is on duty, not
-                # one specific person glued to that pet for the whole visit.
-                # Requires SOME staff member on duty at every point across
-                # the visit (checked at SLOT_MINUTES granularity — see
-                # _daycare_visit_has_continuous_staff_coverage — not just
-                # the two handoff endpoints, which would miss a genuine gap
-                # where every staff member is simultaneously busy somewhere
-                # in the middle). Confirmed live: requiring ONE staff member
-                # free for the entire visit made a real 6-hour daycare
-                # request return zero slots all day, even though every
-                # staff member's actual commitments that day totaled well
-                # under a full day. The staff actually held/recorded for
-                # the booking is still whoever is free at drop-off.
-                has_coverage = _daycare_visit_has_continuous_staff_coverage(
-                    slot_start, slot_end, available_staff, bookings, date_str=date_str
-                )
-                handoff_width = service_duration_minutes("BOARDING")
-                staff_for_slot = _staff_free_for_interval(
-                    slot_start, min(slot_start + handoff_width, slot_end),
-                    available_staff, bookings, date_str=date_str,
-                ) if has_coverage else []
-            else:
-                staff_for_slot = _staff_free_for_interval(
-                    slot_start, slot_end, available_staff, bookings, date_str=date_str
-                )
-            staff_for_slot = _staff_free_after_holds(
-                staff_for_slot,
-                shared_holds,
-                company_id=context.company_id,
-                date_str=date_str,
-                start=slot_start,
-                end=slot_end,
-                holder=holder,
-            )
-            if staff_for_slot and _pet_free_for_interval(
-                pet_bookings,
+        requested_slot = normalize_time_to_slot(str(entities.get("preferred_time") or ""))
+        if requested_slot and _time_to_minutes(requested_slot) is not None and requested_slot not in candidate_slots:
+            candidate_slots.append(requested_slot)
+        all_slots = sorted(
+            slot
+            for slot in candidate_slots
+            if (_time_to_minutes(slot) or -1) >= open_minutes
+            and (_time_to_minutes(slot) or 0) + duration_minutes <= close_minutes
+        )
+        # Per-slot free-staff count, not just a bool — a hold below must know
+        # how many interchangeable staff can still fill THIS slot so it can
+        # allow that many customers to hold it concurrently instead of
+        # capping every slot at one, regardless of real staff capacity.
+        slot_free_staff = {
+            slot: _staff_free_for_interval(
+                _time_to_minutes(slot) or 0,
+                (_time_to_minutes(slot) or 0) + duration_minutes,
+                available_staff,
+                bookings,
                 date_str,
-                slot_start,
-                slot_end,
-                exclude_booking_id=exclude_booking_id,
-                exclude_service_type=service_type,
-            ):
-                free_slots.append(slot)
-                slot_staff_candidates[slot] = staff_for_slot
-
-        # A boarding row has one staff_id, and the final SQL conflict check
-        # uses it for both the check-in and check-out handoff windows.  A
-        # slot is consequently valid only when at least one *same* qualified
-        # staff member can cover both events.  Previously this read path used
-        # separate "someone is free" checks, then create_booking intersected
-        # the two staff lists and rejected a slot we had already shown as
-        # available.  Keep the read and write semantics identical until the
-        # schema models separate check-in/check-out staff assignments.
-        pet_conflict_row: dict | None = None
-        if service_type == "BOARDING" and parsed_check_out_date is not None:
-            checkout_open, checkout_close, checkout_closed_reason = _business_hours_for_date(
-                context.company_id, parsed_check_out_date
             )
-            checkout_open_minutes = _time_to_minutes(checkout_open)
-            checkout_close_minutes = _time_to_minutes(checkout_close)
-            if checkout_closed_reason or checkout_open_minutes is None or checkout_close_minutes is None:
-                free_slots = []
-            else:
-                # check_out_date is always strictly after check_in_date for
-                # BOARDING (validated earlier in this function), so the
-                # checkout date is never the same calendar day as
-                # preferred_date — always a real separate day-roster lookup.
-                checkout_roster, checkout_bookings = _boarding_checkout_roster_and_bookings(
-                    client, context, parsed_check_out_date, service_type, preferred_staff
-                )
+            for slot in all_slots
+        }
+        free_slots = [slot for slot in all_slots if slot_free_staff[slot]]
 
-                boarding_width = service_duration_minutes("BOARDING")
-                if requested_check_out_time:
-                    checkout_candidates = [requested_check_out_time]
-                else:
-                    checkout_candidates = _time_slots_for_day(
-                        checkout_open, checkout_close
-                    )
-                jointly_available_slots: list[str] = []
-                for slot in free_slots:
-                    checkin_start = _time_to_minutes(slot)
-                    if checkin_start is None:
-                        continue
-                    checkin_staff_ids = {
-                        int(row["staff_id"])
-                        for row in slot_staff_candidates.get(slot, [])
-                        if row.get("staff_id") is not None
-                    }
-                    for checkout_candidate in checkout_candidates:
-                        checkout_start = _time_to_minutes(checkout_candidate)
-                        if (
-                            checkout_start is None
-                            or checkout_start < checkout_open_minutes
-                            or checkout_start + boarding_width > checkout_close_minutes
-                        ):
-                            continue
-                        checkout_staff = _staff_free_for_interval(
-                            checkout_start,
-                            checkout_start + boarding_width,
-                            checkout_roster,
-                            checkout_bookings,
-                            date_str=parsed_check_out_date.isoformat(),
-                        )
-                        checkout_staff = _staff_free_after_holds(
-                            checkout_staff,
-                            shared_holds,
-                            company_id=context.company_id,
-                            date_str=parsed_check_out_date.isoformat(),
-                            start=checkout_start,
-                            end=checkout_start + boarding_width,
-                            holder=holder,
-                        )
-                        checkout_staff_ids = {
-                            int(row["staff_id"])
-                            for row in checkout_staff
-                            if row.get("staff_id") is not None
-                        }
-                        common_staff_ids = checkin_staff_ids & checkout_staff_ids
-                        if not common_staff_ids:
-                            continue
-                        conflict_row = _pet_boarding_conflict_row(
-                            pet_bookings,
-                            preferred_date,
-                            parsed_check_out_date,
-                            check_in_time=slot,
-                            check_out_time=checkout_candidate,
-                            exclude_booking_id=exclude_booking_id,
-                            exclude_service_type=service_type,
-                        )
-                        if conflict_row is not None:
-                            # Staff/room were both free for this combination —
-                            # only the pet's own other booking is blocking it.
-                            # Remember the first one seen so a totally empty
-                            # result can still tell the customer WHY, instead
-                            # of a generic "nothing available" that reads as
-                            # the business being fully booked.
-                            if pet_conflict_row is None:
-                                pet_conflict_row = conflict_row
-                            continue
-                        # The later short-lived hold must use a person
-                        # who is free at both endpoints too. Otherwise it
-                        # could reserve a check-in-only staff member and
-                        # recreate the read/write mismatch just fixed.
-                        slot_staff_candidates[slot] = [
-                            row for row in slot_staff_candidates.get(slot, [])
-                            if row.get("staff_id") is not None
-                            and int(row["staff_id"]) in common_staff_ids
-                        ]
-                        jointly_available_slots.append(slot)
-                        break
-                free_slots = jointly_available_slots
-
-        capacity_status = None
-        if service_type == "BOARDING":
-            # Validate room capacity before filtering/holding a staff slot.
-            # Otherwise a full room can take a provisional staff hold even
-            # though no time will ultimately be offered to that customer.
-            capacity_status = _room_capacity_status(
-                context,
-                room_type,
-                date_str,
-                check_out_date_text,
-                exclude_booking_id=exclude_booking_id,
-            )
-            if capacity_status is None:
-                return _result(
-                    "check_available_slots",
-                    "error",
-                    {
-                        "service_type": service_type,
-                        "room_type": room_type,
-                        "available_slots": [],
-                    },
-                    (
-                        f"room_type {room_type!r} does not exactly match a configured room. "
-                        "Use the exact room_type returned by get_booking_service_options."
-                    ),
-                )
-            elif not capacity_status["available"]:
-                free_slots = []
-
-        # A slot another customer is actively being asked to confirm right
-        # now is provisionally unavailable to everyone else (see
-        # app.db.slot_holds) — filter those out same as a real booking.
+        # A slot is only provisionally unavailable to a customer once every
+        # one of its real interchangeable staff is already being decided on
+        # by OTHER customers right now (see app.context.slot_holds) — filter
+        # those out same as a real booking. A slot with, say, 4 free staff
+        # and 1 other customer currently holding it still has 3 to offer.
         # Keyed by resolved customer_id, not phone_number — this repo path
         # never resolves a phone (check_availability's CustomerContext is
         # built without one); entities.customer_id is threaded in from
         # state.customer_id by the orchestrator instead (see _run_tool).
+        holder = str(context.resolved_customer_id) if context.resolved_customer_id is not None else None
+        if holder:
+            free_slots = [
+                slot
+                for slot in free_slots
+                if SLOT_HOLDS.capacity_available(
+                    (context.company_id, service_type, date_str, slot),
+                    holder,
+                    len(slot_free_staff[slot]),
+                )
+            ]
+
         entities = intent_json.get("entities") or {}
         from .time_normalization import normalize_time
 
@@ -2666,51 +1450,13 @@ def check_available_slots(context: CustomerContext, intent_json: dict) -> dict:
             if requested_minutes is not None:
                 for slot in free_slots:
                     if _time_to_minutes(slot) == requested_minutes:
-                        SLOT_HOLDS.release_all_for(holder, prefix=(context.company_id, "STAFF"))
-                        slot_end = requested_minutes + duration_minutes
-                        acquired = False
-                        for staff in slot_staff_candidates.get(slot, []):
-                            staff_id = int(staff["staff_id"])
-                            key = (
-                                context.company_id, "STAFF", staff_id, date_str,
-                                requested_minutes, slot_end, service_type,
-                            )
-                            if not SLOT_HOLDS.acquire(key, holder):
-                                continue
-                            try:
-                                shared_acquired = _acquire_shared_hold(
-                                    client,
-                                    {
-                                        "p_company_id": context.company_id,
-                                        "p_resource_kind": "SLOT",
-                                        "p_service_type": service_type,
-                                        "p_holder_key": holder,
-                                        "p_slot_date": date_str,
-                                        "p_slot_time": slot,
-                                        "p_end_time": f"{slot_end // 60:02d}:{slot_end % 60:02d}",
-                                        "p_staff_id": staff_id,
-                                        "p_room_type": None,
-                                        "p_check_in_date": None,
-                                        "p_check_out_date": None,
-                                        "p_capacity": 1,
-                                        "p_exclude_booking_id": exclude_booking_id,
-                                    },
-                                )
-                            except Exception:
-                                SLOT_HOLDS.release(key)
-                                raise
-                            if shared_acquired is False:
-                                SLOT_HOLDS.release(key)
-                            else:
-                                hold_info = {
-                                    "slot": slot,
-                                    "hold_minutes": 15,
-                                    "staff_id": staff_id,
-                                }
-                                acquired = True
-                                break
-                        if not acquired:
-                            free_slots = [candidate for candidate in free_slots if candidate != slot]
+                        key = (context.company_id, service_type, date_str, slot)
+                        # A customer can only be deciding on one slot at a time —
+                        # drop any earlier hold of theirs for this service before
+                        # taking a new one, so holds don't pile up indefinitely.
+                        SLOT_HOLDS.release_all_for(holder, prefix=(context.company_id, service_type))
+                        if SLOT_HOLDS.acquire(key, holder, len(slot_free_staff[slot])):
+                            hold_info = {"slot": slot, "hold_minutes": 15}
                         break
 
         result_data = {
@@ -2724,43 +1470,45 @@ def check_available_slots(context: CustomerContext, intent_json: dict) -> dict:
             "requested_time": requested_time,
             "requested_date": date_str,
             "service_duration_minutes": duration_minutes,
-            "room_type": room_type or None,
-            "check_out_date": parsed_check_out_date.isoformat() if parsed_check_out_date else None,
-            "check_out_time": requested_check_out_time or None,
-            "preferred_staff": preferred_staff or None,
         }
         if hold_info:
             result_data["slot_held"] = hold_info
-        if capacity_status is not None:
-            result_data["room_capacity"] = capacity_status
-        if not free_slots and pet_conflict_row is not None:
-            # Staff and room were both genuinely free — the ONLY reason
-            # nothing came back is this pet's own other booking. Surface it
-            # explicitly so the model tells the customer the real reason
-            # ("Milo already has a stay booked Aug 8-11") instead of a
-            # generic "everything is booked" that reads as the whole
-            # business being full when it isn't.
-            conflict_service = str(pet_conflict_row.get("_service_type") or "").upper()
-            if conflict_service == "BOARDING":
-                conflict_summary = {
-                    "service_type": "BOARDING",
-                    "booking_id": pet_conflict_row.get("boarding_booking_id"),
-                    "check_in_date": pet_conflict_row.get("check_in_date"),
-                    "check_in_time": pet_conflict_row.get("check_in_time"),
-                    "check_out_date": pet_conflict_row.get("check_out_date"),
-                    "check_out_time": pet_conflict_row.get("check_out_time"),
-                    "room_type": pet_conflict_row.get("room_type"),
-                }
-            else:
-                conflict_summary = {
-                    "service_type": conflict_service,
-                    "booking_id": pet_conflict_row.get(
-                        "grooming_booking_id" if conflict_service == "GROOMING" else "daycare_booking_id"
-                    ),
-                    "booking_date": pet_conflict_row.get("booking_date"),
-                    "booking_time": pet_conflict_row.get("booking_time") or pet_conflict_row.get("check_in_time"),
-                }
-            result_data["pet_already_booked"] = conflict_summary
+
+        if service_type == "BOARDING":
+            # Staff-slot availability above says nothing about whether the
+            # room itself still has capacity across the requested nights —
+            # that's a separate, real constraint (room.capacity vs
+            # overlapping boarding_booking rows), only checkable once we
+            # know which room and how many nights.
+            room_type = str(entities.get("room_type") or entities.get("package_name") or "").strip()
+            check_out_date = str(entities.get("check_out_date") or "").strip()
+            exclude_booking_id_raw = str(entities.get("exclude_booking_id") or "").strip()
+            exclude_booking_id = int(exclude_booking_id_raw) if exclude_booking_id_raw.isdigit() else None
+            if exclude_booking_id is None and context.resolved_customer_id is not None and room_type:
+                # The model reliably checks availability BEFORE calling
+                # reschedule_booking (so it doesn't yet have/pass the
+                # booking_id to exclude) — without this, a customer's own
+                # current stay in a single-capacity room always makes that
+                # room look "fully booked" to itself, even though
+                # reschedule_booking's own internal check is correct.
+                # Auto-detect: if this customer has exactly one active
+                # (Scheduled/Pending) booking in this exact room, it's safe
+                # to assume that's the stay being reconsidered/rescheduled.
+                own_active = [
+                    b
+                    for b in _active_bookings_for_customer(context)
+                    if b.get("service_type") == "BOARDING"
+                    and str(b.get("room_type") or b.get("package_name") or "").strip().lower() == room_type.lower()
+                ]
+                if len(own_active) == 1:
+                    exclude_booking_id = own_active[0].get("booking_id")
+            capacity_status = _room_capacity_status(
+                context, room_type, date_str, check_out_date, exclude_booking_id=exclude_booking_id
+            )
+            if capacity_status is not None:
+                result_data["room_capacity"] = capacity_status
+                if not capacity_status["available"]:
+                    result_data["available_slots"] = []
 
         return _result("check_available_slots", "success", result_data)
     except Exception as exc:
@@ -2834,26 +1582,10 @@ def _room_capacity_status(
             if existing_in < check_out and check_in < existing_out:
                 overlapping += 1
 
+        key = _room_hold_key(context, room_type, check_in_date, check_out_date)
         holder = str(context.resolved_customer_id) if context.resolved_customer_id is not None else None
-        shared_holds = _shared_booking_holds(client, context.company_id)
-        if shared_holds is None:
-            overlapping += SLOT_HOLDS.count_overlapping_room_holds(
-                context.company_id,
-                room_type,
-                check_in_date,
-                check_out_date,
-                holder,
-            )
-        else:
-            overlapping += sum(
-                1
-                for row in shared_holds
-                if str(row.get("resource_kind") or "").upper() == "ROOM"
-                and str(row.get("room_type") or "").casefold() == room_type.casefold()
-                and str(row.get("holder_key") or "") != str(holder or "")
-                and str(row.get("check_in_date") or "") < check_out_date
-                and check_in_date < str(row.get("check_out_date") or "")
-            )
+        if holder and SLOT_HOLDS.held_by_other(key, holder):
+            overlapping += 1
 
         available = overlapping < capacity
         held_now = False
@@ -2863,27 +1595,7 @@ def _room_capacity_status(
             # available, hold it for the 15-minute confirmation window
             # instead of letting a second customer be told the same thing.
             SLOT_HOLDS.release_all_for(holder, prefix=(context.company_id, "BOARDING_ROOM"))
-            key = _room_hold_key(context, room_type, check_in_date, check_out_date)
-            shared_acquired = _acquire_shared_hold(
-                client,
-                {
-                    "p_company_id": context.company_id,
-                    "p_resource_kind": "ROOM",
-                    "p_service_type": "BOARDING",
-                    "p_holder_key": holder,
-                    "p_slot_date": None,
-                    "p_slot_time": None,
-                    "p_room_type": room_type,
-                    "p_check_in_date": check_in_date,
-                    "p_check_out_date": check_out_date,
-                    "p_capacity": capacity,
-                    "p_exclude_booking_id": exclude_booking_id,
-                },
-            )
-            if shared_acquired is False:
-                available = False
-            else:
-                held_now = SLOT_HOLDS.acquire(key, holder)
+            held_now = SLOT_HOLDS.acquire(key, holder)
 
         return {
             "capacity": capacity,
@@ -2895,22 +1607,23 @@ def _room_capacity_status(
             # exists at all.
             "held_for_minutes": 15 if held_now else None,
         }
-    except Exception as exc:
-        raise RuntimeError(f"Room capacity could not be verified: {exc}") from exc
+    except Exception:
+        return None
+
+
+def _next_table_id(client, table: str, id_column: str) -> int:
+    response = client.table(table).select(id_column).order(id_column, desc=True).limit(1).execute()
+    rows = response.data or []
+    if not rows:
+        return 1
+    try:
+        return int(rows[0].get(id_column) or 0) + 1
+    except (TypeError, ValueError):
+        return 1
 
 
 def _today_parts() -> tuple[str, str]:
-    """A booking row's created_date/created_time — must be business-local
-    (Asia/Kuala_Lumpur), not naive server time. The container runs in UTC
-    (no TZ set), so a bare datetime.now() silently recorded a created_time
-    up to 8 hours off real local time (and, near midnight either side, the
-    wrong calendar date) — inconsistent with booking_date/booking_time,
-    which are always real business-local values via resolve_datetime."""
-    from zoneinfo import ZoneInfo
-
-    from .time_normalization import BUSINESS_TIMEZONE
-
-    now = datetime.now(ZoneInfo(BUSINESS_TIMEZONE))
+    now = datetime.now()
     return now.date().isoformat(), now.strftime("%H:%M:%S")
 
 
@@ -2988,8 +1701,10 @@ def create_customer(context: CustomerContext, full_name: str, phone_number: str,
                 existing.get("data") or {},
                 "Customer already exists for this phone number",
             )
+        customer_id = _next_table_id(client, "customer", "customer_id")
         row = {
             "company_id": context.company_id,
+            "customer_id": customer_id,
             "full_name": str(full_name).strip(),
             "phone_number": str(phone_number).strip(),
             "address": str(address or "-").strip() or "-",
@@ -3069,8 +1784,10 @@ def create_pet(
                 existing.get("data") or {},
                 "Pet with this name already exists for the customer",
             )
+        pet_id = _next_table_id(client, "pet", "pet_id")
         row: dict[str, Any] = {
             "company_id": context.company_id,
+            "pet_id": pet_id,
             "customer_id": context.resolved_customer_id,
             "pet_name": str(pet_name).strip(),
             "pet_type": str(pet_type or "Dog").strip(),
@@ -3198,14 +1915,6 @@ def create_booking(context: CustomerContext, intent_json: dict) -> dict:
     customer_id = context.resolved_customer_id
     if customer_id is None:
         return missing_identity_result("create_booking")
-    idempotency_key = str(entities.get("idempotency_key") or "").strip()
-    if not 16 <= len(idempotency_key) <= 128:
-        return _result(
-            "create_booking",
-            "error",
-            {"missing_fields": ["idempotency_key"]},
-            "A server-generated booking idempotency key is required.",
-        )
 
     pet_id_raw = entities.get("pet_id") or draft.get("pet_id")
     pet_name = str(entities.get("pet_name") or draft.get("pet_name") or "").strip()
@@ -3245,29 +1954,6 @@ def create_booking(context: CustomerContext, intent_json: dict) -> dict:
     if missing:
         return _result("create_booking", "error", {"missing_fields": missing}, "Missing required booking fields")
 
-    if service_type == "DAYCARE" and not _normalize_time_value(
-        str(entities.get("check_out_time") or "")
-    ):
-        return _result(
-            "create_booking",
-            "error",
-            {"missing_fields": ["check_out_time"]},
-            "DAYCARE check_out_time is required; the data layer will not invent a visit duration.",
-        )
-    if service_type == "BOARDING":
-        boarding_missing = [
-            field
-            for field in ("check_out_date", "check_out_time")
-            if not str(entities.get(field) or "").strip()
-        ]
-        if boarding_missing:
-            return _result(
-                "create_booking",
-                "error",
-                {"missing_fields": boarding_missing},
-                "BOARDING check-out date and time are required; the data layer will not invent them.",
-            )
-
     add_on_name = str(entities.get("add_on") or "").strip()
     has_add_on_name = add_on_name not in {"", "-"}
     add_on_price_supplied = entities.get("add_on_price") is not None
@@ -3295,62 +1981,6 @@ def create_booking(context: CustomerContext, intent_json: dict) -> dict:
             "Pet does not belong to this customer",
         )
 
-    # A previous HTTP/tool attempt may have committed even though its result
-    # never reached the agent. Check the server-issued key before availability
-    # and staff selection, because the newly committed booking now makes its
-    # own slot look unavailable.
-    client = get_supabase_client()
-    replay_rows = (
-        client.table("ai_mutation_idempotency")
-        .select("result")
-        .eq("company_id", context.company_id)
-        .eq("operation", "create_booking")
-        .eq("idempotency_key", idempotency_key)
-        .limit(1)
-        .execute()
-        .data
-        or []
-    )
-    if replay_rows:
-        atomic = dict(replay_rows[0].get("result") or {})
-        record = dict(atomic.get("booking") or {})
-        table, _ = _booking_table_meta(service_type)
-        serialized = _serialize_booking_row(table, record)
-        replay_matches = (
-            int(serialized.get("pet_id") or 0) == pet_id
-            and str(serialized.get("booking_date") or "") == booking_date
-            and str(serialized.get("booking_time") or serialized.get("check_in_time") or "")
-            == booking_time
-            and str(serialized.get("package_name") or "").strip().casefold()
-            == service_name.casefold()
-        )
-        if not replay_matches:
-            return _result(
-                "create_booking",
-                "error",
-                {},
-                "Booking idempotency key was reused with different details.",
-                handoff_required=True,
-                handoff_reason="IDEMPOTENCY_KEY_MISMATCH",
-            )
-        payment = dict(atomic.get("payment") or {})
-        serialized["payment_status"] = payment.get("status") or "Pending"
-        return _result(
-            "create_booking",
-            "success",
-            {
-                **serialized,
-                "customer_id": customer_id,
-                "pet_id": pet_id,
-                "_internal_payment_id": record.get("payment_id"),
-                "confirmation_delivery_status": "unknown_after_retry",
-                "verified": True,
-                "idempotency_replayed": True,
-            },
-            handoff_required=True,
-            handoff_reason="DOCUMENT_DELIVERY_STATUS_UNKNOWN",
-        )
-
     from app.validation.validator import check_vaccination_eligibility
 
     vaccination = check_vaccination_eligibility(context.company_id, pet_id, service_type, booking_date)
@@ -3375,6 +2005,10 @@ def create_booking(context: CustomerContext, intent_json: dict) -> dict:
     if service_type == "BOARDING":
         probe_entities["room_type"] = service_name
         probe_check_out_date = _resolve_booking_date({"preferred_date": entities.get("check_out_date")})
+        if not probe_check_out_date:
+            parsed_check_in_for_probe = _parse_date(booking_date)
+            if parsed_check_in_for_probe is not None:
+                probe_check_out_date = (parsed_check_in_for_probe + timedelta(days=1)).isoformat()
         probe_entities["check_out_date"] = probe_check_out_date
     probe["service_type"] = service_type
     probe["entities"] = probe_entities
@@ -3538,22 +2172,23 @@ def create_booking(context: CustomerContext, intent_json: dict) -> dict:
             checkout_minutes = _time_to_minutes(entities.get("check_out_time"))
             if checkout_minutes is not None and checkout_minutes > start_minutes:
                 duration_minutes = checkout_minutes - start_minutes
-        elif service_type == "GROOMING" and entities.get("duration_minutes") not in (None, ""):
-            try:
-                candidate_duration = int(entities["duration_minutes"])
-                if 0 < candidate_duration <= 24 * 60:
-                    duration_minutes = candidate_duration
-            except (TypeError, ValueError):
-                pass
         free_staff = _staff_free_for_interval(
             start_minutes, start_minutes + duration_minutes, roster, bookings_today, date_str=booking_date
         )
         if service_type == "BOARDING":
-            # Both values were required above; use the exact customer-approved
-            # checkout rather than manufacturing a stay length here.
+            # The write path further below defaults check_out_date to
+            # check-in + 1 day and check_out_time to the same clock time as
+            # check-in when the customer didn't state either explicitly —
+            # resolve the SAME defaults here so a staff member who's
+            # actually busy at THIS booking's own checkout event is
+            # excluded from selection now, instead of only being discovered
+            # when create_booking_atomic's own database-level check rejects
+            # the whole write at the very last step.
             resolved_checkout_date_str = _resolve_booking_date({"preferred_date": entities.get("check_out_date")})
+            if not resolved_checkout_date_str:
+                resolved_checkout_date_str = (parsed_booking_date + timedelta(days=1)).isoformat()
             resolved_checkout_date = _parse_date(resolved_checkout_date_str)
-            checkout_time_raw = _normalize_time_value(str(entities.get("check_out_time") or ""))
+            checkout_time_raw = _normalize_time_value(str(entities.get("check_out_time") or booking_time))
             checkout_minutes_boarding = _time_to_minutes(checkout_time_raw)
             if resolved_checkout_date is not None and checkout_minutes_boarding is not None:
                 boarding_width = service_duration_minutes("BOARDING")
@@ -3568,38 +2203,17 @@ def create_booking(context: CustomerContext, intent_json: dict) -> dict:
                     co_bookings = _cross_service_staff_bookings(
                         client, context.company_id, co_roster_ids, co_date_str
                     )
-                # ANY qualified staff free for check-in AND ANY qualified
-                # staff (not necessarily the same one) free for check-out —
-                # matches check_available_slots's own fix for the identical
-                # rule (a stay can span days/weeks; requiring one specific
-                # person on duty at both ends is stronger than this business
-                # needs). Confirmed live: this write-side copy still had the
-                # old same-staff intersection after the read-side (what
-                # actually offers the slot to the customer) was fixed,
-                # producing exactly "shown as available, then rejected on
-                # confirm" — free_staff (check-in candidates) must stay
-                # unfiltered here; only checkout coverage needs to exist.
-                free_at_checkout = _staff_free_for_interval(
-                    checkout_minutes_boarding,
-                    checkout_minutes_boarding + boarding_width,
-                    co_roster,
-                    co_bookings,
-                    date_str=co_date_str,
-                )
-                if not free_at_checkout:
-                    return _result(
-                        "create_booking",
-                        "error",
-                        {
-                            "check_out_date": resolved_checkout_date_str,
-                            "check_out_time": checkout_time_raw,
-                        },
-                        (
-                            "No qualified staff member is free for the check-out "
-                            "handoff at that date/time. Ask the customer for a "
-                            "different check-out time, or a different check-out date."
-                        ),
+                free_at_checkout_ids = {
+                    r.get("staff_id")
+                    for r in _staff_free_for_interval(
+                        checkout_minutes_boarding,
+                        checkout_minutes_boarding + boarding_width,
+                        co_roster,
+                        co_bookings,
+                        date_str=co_date_str,
                     )
+                }
+                free_staff = [r for r in free_staff if r.get("staff_id") in free_at_checkout_ids]
         if preferred_staff_raw:
             chosen = _match_preferred_staff(preferred_staff_raw, free_staff)
             if chosen is None:
@@ -3620,22 +2234,13 @@ def create_booking(context: CustomerContext, intent_json: dict) -> dict:
                             "time, or confirm booking with any available staff instead."
                         ),
                     )
-                return _result(
-                    "create_booking",
-                    "error",
-                    {"preferred_staff": preferred_staff_raw},
-                    (
-                        "The requested preferred_staff does not match a real, qualified "
-                        "staff member. Ask the customer to choose a listed staff member or "
-                        "explicitly agree to any available staff."
-                    ),
-                )
+                # Name/id didn't match any real staff at all — fall through to
+                # auto-assign rather than blocking the whole booking on a typo.
             else:
                 staff_id = int(chosen["staff_id"])
         if staff_id is None:
             staff_id = select_staff_id(free_staff)
 
-    committed_booking_id: int | None = None
     try:
         client = get_supabase_client()
         table, _ = _booking_table_meta(service_type)
@@ -3644,7 +2249,9 @@ def create_booking(context: CustomerContext, intent_json: dict) -> dict:
         price = draft.get("price_quote")
         if price is None:
             price = entities.get("price")
-        numeric_price = round(float(price or 0), 2)
+        # Current Supabase monetary columns are int8, so keep the Python
+        # payload integral until the schema is migrated to numeric/decimal.
+        numeric_price = int(round(float(price or 0)))
 
         if table == "grooming_booking":
             row = {
@@ -3653,11 +2260,10 @@ def create_booking(context: CustomerContext, intent_json: dict) -> dict:
                 "service_name": service_name,
                 "booking_date": booking_date,
                 "booking_time": booking_time,
-                "duration_minutes": duration_minutes,
                 "booking_status": status,
                 "price": numeric_price,
                 "add_on": str(entities.get("add_on") or "-"),
-                "add_on_price": round(float(entities.get("add_on_price") or 0), 2),
+                "add_on_price": int(round(float(entities.get("add_on_price") or 0))),
                 "notes": str(entities.get("notes") or "-"),
                 "created_date": created_date,
                 "created_time": created_time,
@@ -3665,12 +2271,8 @@ def create_booking(context: CustomerContext, intent_json: dict) -> dict:
         elif table == "daycare_booking":
             check_out_time = _normalize_time_value(str(entities.get("check_out_time") or ""))
             if not check_out_time:
-                return _result(
-                    "create_booking",
-                    "error",
-                    {"missing_fields": ["check_out_time"]},
-                    "DAYCARE check_out_time is required; the data layer will not invent a visit duration.",
-                )
+                start_minutes = _time_to_minutes(booking_time) or 0
+                check_out_time = f"{(start_minutes + 180) // 60:02d}:{(start_minutes + 180) % 60:02d}:00"
             row = {
                 "pet_id": pet_id,
                 "staff_id": staff_id,
@@ -3681,7 +2283,7 @@ def create_booking(context: CustomerContext, intent_json: dict) -> dict:
                 "booking_status": status,
                 "price": numeric_price,
                 "add_on": str(entities.get("add_on") or "-"),
-                "add_on_price": round(float(entities.get("add_on_price") or 0), 2),
+                "add_on_price": int(round(float(entities.get("add_on_price") or 0))),
                 "special_instruction": str(entities.get("special_instruction") or "-"),
                 "created_date": created_date,
                 "created_time": created_time,
@@ -3691,44 +2293,18 @@ def create_booking(context: CustomerContext, intent_json: dict) -> dict:
             check_out_date = _resolve_booking_date(
                 {"preferred_date": entities.get("check_out_date")}
             )
-            if not check_out_date:
-                return _result(
-                    "create_booking",
-                    "error",
-                    {"missing_fields": ["check_out_date"]},
-                    "BOARDING check_out_date is required; the data layer will not invent a stay length.",
-                )
+            if not check_out_date and parsed_check_in:
+                check_out_date = (parsed_check_in + timedelta(days=1)).isoformat()
             check_out_time = _normalize_time_value(
-                str(entities.get("check_out_time") or "")
+                str(entities.get("check_out_time") or booking_time)
             )
-            if not check_out_time:
-                return _result(
-                    "create_booking",
-                    "error",
-                    {"missing_fields": ["check_out_time"]},
-                    "BOARDING check_out_time is required; the data layer will not invent it.",
-                )
-            parsed_check_out = _parse_date(check_out_date)
-            if parsed_check_in and (parsed_check_out or parsed_check_in) <= parsed_check_in:
-                # Defense in depth: app/tools/booking_tools.py already rejects
-                # this before ever reaching the data layer, so this path is
-                # unreachable from the live AI flow today — but nights below
-                # would otherwise silently clamp a negative/zero-night stay
-                # to 1 via max(1, ...) instead of failing, for any other
-                # caller of this function.
-                return _result(
-                    "create_booking",
-                    "error",
-                    {"check_in_date": booking_date, "check_out_date": check_out_date},
-                    "BOARDING check_out_date must be strictly after the check-in date.",
-                )
-            price_per_night = round(
-                float(entities.get("price_per_night") or numeric_price or 0), 2
+            price_per_night = int(
+                round(float(entities.get("price_per_night") or numeric_price or 0))
             )
             nights = max(
                 1,
                 (
-                    (parsed_check_out or parsed_check_in)
+                    (_parse_date(check_out_date) or parsed_check_in)
                     - parsed_check_in
                 ).days
                 if parsed_check_in
@@ -3744,9 +2320,9 @@ def create_booking(context: CustomerContext, intent_json: dict) -> dict:
                 "room_type": service_name,
                 "booking_status": status,
                 "price_per_night": price_per_night,
-                # Never accept a caller-supplied total that can diverge from
-                # the verified room rate and stay length.
-                "total_price": round(price_per_night * nights, 2),
+                "total_price": int(
+                    round(float(entities.get("total_price") or price_per_night * nights))
+                ),
                 "feeding_instruction": str(entities.get("feeding_instruction") or "-"),
                 "medical_instruction": str(entities.get("medical_instruction") or "-"),
                 "notes": str(entities.get("notes") or "-"),
@@ -3772,36 +2348,85 @@ def create_booking(context: CustomerContext, intent_json: dict) -> dict:
             "status": "Pending",
         }
         booking_type = service_type.lower()
-        atomic = client.rpc(
-            "create_booking_idempotent",
-            {
-                "p_company_id": context.company_id,
-                "p_booking_type": booking_type,
-                "p_booking": row,
-                "p_payment": payment,
-                "p_idempotency_key": idempotency_key,
-            },
-        ).execute().data or {}
-        if not atomic.get("booking"):
-            raise RuntimeError(
-                "create_booking_idempotent returned no booking; apply the required booking migrations"
-            )
-        record = dict(atomic["booking"])
+        used_compensating_fallback = False
+        try:
+            atomic = client.rpc(
+                "create_booking_atomic",
+                {
+                    "p_company_id": context.company_id,
+                    "p_booking_type": booking_type,
+                    "p_booking": row,
+                    "p_payment": payment,
+                },
+            ).execute().data or {}
+            record = dict(atomic.get("booking") or {})
+        except Exception as rpc_exc:
+            # Some deployed projects have not applied crud_consistency_functions.sql
+            # yet. Preserve the booking/payment relationship with compensating
+            # cleanup instead of silently reverting to an unlinked booking insert.
+            if "PGRST202" not in str(rpc_exc) and "create_booking_atomic" not in str(rpc_exc):
+                raise
+            used_compensating_fallback = True
+            table, id_column = _booking_table_meta(service_type)
+            fallback_row = {
+                "company_id": context.company_id,
+                id_column: _next_table_id(client, table, id_column),
+                **row,
+            }
+            inserted = client.table(table).insert(fallback_row).execute().data or []
+            if not inserted:
+                raise RuntimeError("Booking insert returned no row")
+            record = dict(inserted[0])
+            booking_id = record.get(id_column)
+            payment_id = None
+            try:
+                payment_rows = (
+                    client.table("payment")
+                    .insert({"company_id": context.company_id, **payment})
+                    .execute()
+                    .data
+                    or []
+                )
+                if not payment_rows:
+                    raise RuntimeError("Payment insert returned no row")
+                payment_id = payment_rows[0].get("payment_id")
+                linked = (
+                    client.table(table)
+                    .update({"payment_id": payment_id})
+                    .eq("company_id", context.company_id)
+                    .eq(id_column, booking_id)
+                    .execute()
+                    .data
+                    or []
+                )
+                if not linked:
+                    raise RuntimeError("Booking payment link update returned no row")
+                record = dict(linked[0])
+            except Exception:
+                if payment_id is not None:
+                    (
+                        client.table("payment")
+                        .delete()
+                        .eq("company_id", context.company_id)
+                        .eq("payment_id", payment_id)
+                        .execute()
+                    )
+                (
+                    client.table(table)
+                    .delete()
+                    .eq("company_id", context.company_id)
+                    .eq(id_column, booking_id)
+                    .execute()
+                )
+                raise
         serialized = _serialize_booking_row(table, record)
         booking_id = int(serialized.get("booking_id"))
-        committed_booking_id = booking_id
         expected = {
             "pet_id": pet_id,
             "booking_date": booking_date,
             "booking_time": booking_time,
             "service_name": service_name,
             "booking_status": status,
-            "staff_id": staff_id,
-            "price": row.get("price"),
-            "price_per_night": row.get("price_per_night"),
-            "total_price": row.get("total_price"),
-            "add_on_price": row.get("add_on_price"),
-            "payment_id": record.get("payment_id"),
         }
         verified, persisted, mismatches = _verify_persisted_booking(
             context,
@@ -3809,18 +2434,6 @@ def create_booking(context: CustomerContext, intent_json: dict) -> dict:
             service_type,
             expected,
         )
-        persisted_payment = dict(atomic.get("payment") or {})
-        if int(persisted_payment.get("payment_id") or 0) != int(record.get("payment_id") or 0):
-            mismatches.append("payment_id")
-        for amount_field in ("base_price", "final_amount"):
-            try:
-                if round(float(persisted_payment.get(amount_field)), 2) != round(
-                    float(payment[amount_field]), 2
-                ):
-                    mismatches.append(f"payment.{amount_field}")
-            except (TypeError, ValueError):
-                mismatches.append(f"payment.{amount_field}")
-        verified = not mismatches
         if verified:
             # booking_status is always "Pending" at this exact point — every
             # new booking starts there regardless of path — so it tells the
@@ -3832,32 +2445,42 @@ def create_booking(context: CustomerContext, intent_json: dict) -> dict:
             # below actually spreads into the tool response.
             persisted["payment_status"] = payment["status"]
         if not verified:
+            if used_compensating_fallback:
+                (
+                    client.table(table)
+                    .delete()
+                    .eq("company_id", context.company_id)
+                    .eq(_booking_table_meta(service_type)[1], booking_id)
+                    .execute()
+                )
+                payment_id = record.get("payment_id")
+                if payment_id is not None:
+                    (
+                        client.table("payment")
+                        .delete()
+                        .eq("company_id", context.company_id)
+                        .eq("payment_id", payment_id)
+                        .execute()
+                    )
             return _result(
                 "create_booking",
                 "error",
                 {
                     "booking_id": booking_id,
-                    "committed": True,
                     "mismatches": mismatches,
                     "inserted": serialized,
                     "record": persisted,
                 },
-                "Booking was committed, but its read-back verification failed.",
+                "Booking verification failed after insert",
                 handoff_required=True,
-                handoff_reason="BOOKING_COMMITTED_VERIFICATION_FAILED",
+                handoff_reason="DATABASE_ERROR",
             )
         # The slot is now a real booking (which itself blocks availability
         # going forward) — the temporary hold has done its job.
-        holder = (
-            str(context.resolved_customer_id)
-            if context.resolved_customer_id is not None
-            else None
-        )
-        if holder:
-            _release_shared_holds(client, context.company_id, holder)
-            SLOT_HOLDS.release_all_for(holder, prefix=(context.company_id, service_type))
+        if context.has_phone:
+            SLOT_HOLDS.release_all_for(context.phone_number, prefix=(context.company_id, service_type))
             if service_type == "BOARDING":
-                SLOT_HOLDS.release_all_for(holder, prefix=(context.company_id, "BOARDING_ROOM"))
+                SLOT_HOLDS.release_all_for(context.phone_number, prefix=(context.company_id, "BOARDING_ROOM"))
 
         from app.documents.service import generate_and_send_booking_confirmation
 
@@ -3887,15 +2510,6 @@ def create_booking(context: CustomerContext, intent_json: dict) -> dict:
             handoff_reason=None if confirmation_delivered else "DOCUMENT_DELIVERY_ERROR",
         )
     except Exception as exc:
-        if committed_booking_id is not None:
-            return _result(
-                "create_booking",
-                "error",
-                {"booking_id": committed_booking_id, "committed": True},
-                f"Booking was committed, but post-booking processing failed: {exc}",
-                handoff_required=True,
-                handoff_reason="BOOKING_COMMITTED_POSTPROCESSING_FAILED",
-            )
         return _result(
             "create_booking",
             "error",
@@ -3926,7 +2540,6 @@ def update_booking(
         allowed = {
             "booking_date",
             "booking_time",
-            "duration_minutes",
             "check_in_date",
             "check_in_time",
             "check_out_date",
@@ -3948,23 +2561,46 @@ def update_booking(
         if not payload:
             return _result("update_booking", "error", {}, "No valid booking fields to update")
 
-        atomic = (
-            client.rpc(
-                "update_booking_atomic",
-                {
-                    "p_company_id": context.company_id,
-                    "p_booking_type": str(service_type).strip().lower(),
-                    "p_booking_id": int(booking_id),
-                    "p_booking_patch": payload,
-                    "p_payment_patch": payment_updates or {},
-                },
+        try:
+            atomic = (
+                client.rpc(
+                    "update_booking_atomic",
+                    {
+                        "p_company_id": context.company_id,
+                        "p_booking_type": str(service_type).strip().lower(),
+                        "p_booking_id": int(booking_id),
+                        "p_booking_patch": payload,
+                        "p_payment_patch": payment_updates or {},
+                    },
+                )
+                .execute()
+                .data
             )
-            .execute()
-            .data
-        )
-        if not atomic:
-            return _result("update_booking", "not_found", {"booking_id": booking_id})
-        return _result("update_booking", "success", _serialize_booking_row(table, dict(atomic)))
+            if not atomic:
+                return _result("update_booking", "not_found", {"booking_id": booking_id})
+            return _result("update_booking", "success", _serialize_booking_row(table, dict(atomic)))
+        except Exception as rpc_exc:
+            # Only retain a compatibility path for projects that have not
+            # installed the RPC at all. Real RPC validation/conflict errors
+            # must surface; bypassing them with a direct table update would
+            # reintroduce the double-booking race the migration prevents.
+            if "PGRST202" not in str(rpc_exc) and "update_booking_atomic" not in str(rpc_exc):
+                raise
+            response = (
+                client.table(table)
+                .update(payload)
+                .eq("company_id", context.company_id)
+                .eq(id_column, int(booking_id))
+                .execute()
+            )
+            rows = response.data or []
+            if not rows:
+                return _result("update_booking", "not_found", {"booking_id": booking_id})
+            if payment_updates:
+                raise RuntimeError(
+                    "update_booking_atomic is required when synchronizing booking and payment amounts"
+                )
+            return _result("update_booking", "success", _serialize_booking_row(table, rows[0]))
     except Exception as exc:
         return _result("update_booking", "error", {}, str(exc))
 
@@ -3986,13 +2622,6 @@ def _locate_active_customer_booking(context: CustomerContext, intent_json: dict)
     entities = intent_json.get("entities") or {}
     booking_id_raw = str(entities.get("booking_id") or "").strip()
     if booking_id_raw:
-        if not booking_id_raw.isdigit() or int(booking_id_raw) <= 0:
-            return None, _result(
-                "cancel_booking",
-                "error",
-                {"booking_id": booking_id_raw},
-                "booking_id must be a positive integer",
-            )
         service_type = str(intent_json.get("service_type") or "GROOMING").strip().upper()
         result = get_booking_by_id(context, int(booking_id_raw), service_type)
         if result.get("status") != "success":
@@ -4010,7 +2639,7 @@ def _locate_active_customer_booking(context: CustomerContext, intent_json: dict)
             names = _pet_name_map(get_supabase_client(), context.company_id, [int(booking["pet_id"])])
             booking["pet_name"] = names.get(int(booking["pet_id"]), "")
         status = _normalize_booking_status(booking.get("booking_status"))
-        if status not in {"scheduled", "pending"}:
+        if status not in {"scheduled", "pending"} and status not in {"cancelled", "canceled"}:
             return None, _result(
                 "cancel_booking",
                 "error",
@@ -4063,6 +2692,80 @@ def _ambiguous_active_bookings_result(action: str, context: CustomerContext) -> 
     )
 
 
+def _void_payment_for_booking(company_id: int, booking: dict) -> None:
+    """
+    A cancelled booking that was never paid owes nothing — remove its
+    payment record outright (unlike the booking row itself, which is always
+    kept with status "Cancelled" for history; the payment is a different
+    object).
+
+    A payment already marked Paid is real, collected money — possibly with
+    loyalty points already spent on a redemption tied to it (see
+    redeem_reward). Deleting that row outright, unconditionally, used to
+    silently destroy the payment history, the Paid status, and any spent
+    loyalty points with zero refund record and no way for staff to recover
+    it — confirmed live: pay -> redeem a coupon against that payment ->
+    cancel the booking left the customer's money and spent points both gone
+    with no trace. Route a Paid payment through the same refund_payment RPC
+    the staff dashboard already uses for manual refunds
+    (backend/sql/enquiry_refund_logo_migration.sql) instead — it reverses
+    any linked redemption's loyalty points and marks the payment Refunded,
+    the same protection reschedule's price-resync path already gets via
+    update_booking_atomic's own "cannot change a completed/refunded
+    payment" guard.
+
+    The booking's own payment_id is nulled first so nothing is left
+    pointing at a deleted/refunded row.
+    """
+    payment_id = booking.get("payment_id")
+    service_type = booking.get("service_type")
+    booking_id = booking.get("booking_id")
+    if payment_id is None:
+        return
+    try:
+        client = get_supabase_client()
+        payment_rows = (
+            client.table("payment")
+            .select("payment_id, status")
+            .eq("company_id", int(company_id))
+            .eq("payment_id", int(payment_id))
+            .limit(1)
+            .execute()
+            .data
+            or []
+        )
+        payment_status = str((payment_rows[0] if payment_rows else {}).get("status") or "").strip().lower()
+
+        if service_type and booking_id is not None:
+            table, id_column = _booking_table_meta(service_type)
+            client.table(table).update({"payment_id": None}).eq(id_column, int(booking_id)).eq(
+                "company_id", int(company_id)
+            ).execute()
+
+        if payment_status == "paid":
+            client.rpc(
+                "refund_payment",
+                {
+                    "p_company_id": int(company_id),
+                    "p_payment_id": int(payment_id),
+                    "p_refunded_by": None,
+                    "p_refund_reason": "Booking cancelled",
+                },
+            ).execute()
+        elif payment_status in ("refunded", ""):
+            # Already refunded, or the row is gone/unreadable — nothing left
+            # to void or delete either way.
+            return
+        else:
+            # Pending/Unpaid: no money was ever collected, safe to remove
+            # the row outright as before.
+            client.table("payment").delete().eq("payment_id", int(payment_id)).eq(
+                "company_id", int(company_id)
+            ).execute()
+    except Exception as exc:
+        raise RuntimeError(f"Booking was cancelled but payment cleanup failed: {exc}") from exc
+
+
 def cancel_booking(context: CustomerContext, intent_json: dict) -> dict:
     resolve_customer_context(context)
     if context.resolved_customer_id is None:
@@ -4073,6 +2776,17 @@ def cancel_booking(context: CustomerContext, intent_json: dict) -> dict:
         return error
     if not _verify_booking_belongs_to_customer(context, booking):
         return _result("cancel_booking", "error", {}, "Booking does not belong to this customer")
+
+    current_status = _normalize_booking_status(booking.get("booking_status"))
+    if current_status in {"cancelled", "canceled"}:
+        return _finalize_booking_write(
+            "cancel_booking",
+            context,
+            int(booking.get("booking_id")),
+            str(booking.get("service_type") or intent_json.get("service_type") or "GROOMING"),
+            _result("cancel_booking", "success", booking),
+            expected={"booking_status": "cancelled"},
+        )
 
     # SAFETY CONFIRMATION: cancelling is irreversible-in-effect (it frees the
     # slot for someone else) and a wrong target here has been observed to be
@@ -4104,37 +2818,7 @@ def cancel_booking(context: CustomerContext, intent_json: dict) -> dict:
 
     service_type = str(booking.get("service_type") or intent_json.get("service_type") or "GROOMING")
     booking_id = int(booking.get("booking_id"))
-    try:
-        table, _ = _booking_table_meta(service_type)
-        cancelled = (
-            get_supabase_client()
-            .rpc(
-                "cancel_booking_atomic",
-                {
-                    "p_company_id": int(context.company_id),
-                    "p_booking_type": service_type.strip().lower(),
-                    "p_booking_id": booking_id,
-                },
-            )
-            .execute()
-            .data
-        )
-        if not cancelled:
-            return _result("cancel_booking", "not_found", {"booking_id": booking_id})
-        update_result = _result(
-            "cancel_booking",
-            "success",
-            _serialize_booking_row(table, dict(cancelled)),
-        )
-    except Exception as exc:
-        return _result(
-            "cancel_booking",
-            "error",
-            {"booking_id": booking_id, "service_type": service_type},
-            f"Atomic booking cancellation failed: {exc}",
-            handoff_required=True,
-            handoff_reason="DATABASE_ERROR",
-        )
+    update_result = update_booking(context, booking_id, service_type, {"booking_status": "Cancelled"})
     final = _finalize_booking_write(
         "cancel_booking",
         context,
@@ -4143,11 +2827,18 @@ def cancel_booking(context: CustomerContext, intent_json: dict) -> dict:
         update_result,
         expected={"booking_status": "cancelled"},
     )
-    if final.get("status") == "success" and context.resolved_customer_id is not None:
-        holder = str(context.resolved_customer_id)
-        client = get_supabase_client()
-        _release_shared_holds(client, context.company_id, holder)
-        SLOT_HOLDS.release_all_for(holder)
+    if final.get("status") == "success":
+        try:
+            _void_payment_for_booking(context.company_id, final.get("data") or {})
+        except Exception as exc:
+            return _result(
+                "cancel_booking",
+                "error",
+                dict(final.get("data") or {}),
+                str(exc),
+                handoff_required=True,
+                handoff_reason="DATABASE_ERROR",
+            )
     return final
 
 
@@ -4175,13 +2866,9 @@ def reschedule_booking(context: CustomerContext, intent_json: dict) -> dict:
                 "pet_name": booking.get("pet_name"),
                 "package_name": booking.get("package_name") or booking.get("service_name") or booking.get("room_type"),
                 "date": booking.get("booking_date") or booking.get("check_in_date"),
-                "new_date": entities.get("new_preferred_date") or entities.get("preferred_date"),
-                "new_time": entities.get("new_preferred_time") or entities.get("preferred_time"),
-                "new_check_out_date": entities.get("new_check_out_date") or None,
-                "new_check_out_time": entities.get("new_check_out_time") or None,
             },
             (
-                "Show the customer the target booking AND exact new date/time details, then ask them to type "
+                "Show the customer these exact booking details and ask them to type "
                 f"the pet's name ({booking.get('pet_name')!r}) to confirm rescheduling "
                 "THIS booking. Do not proceed until they reply with it — then call "
                 "reschedule_booking again with confirm_pet_name set to what they typed "
@@ -4211,23 +2898,6 @@ def reschedule_booking(context: CustomerContext, intent_json: dict) -> dict:
     new_check_out_date = str(entities.get("new_check_out_date") or "").strip()
     new_check_out_time = ""
     if service_type_hint == "BOARDING":
-        if not new_check_out_date:
-            # The customer asked to keep the same stay length ("remain the
-            # time" / no new check-out date mentioned at all) — mirror
-            # DAYCARE reschedule's own duration-preserving fallback below
-            # instead of leaving the model to compute a new check-out date
-            # itself. A model-computed date is never verifiable by
-            # resolve_datetime (nothing in the customer's own wording names
-            # it), so it always fails the UNVERIFIED_DATE guardrail — this
-            # was a real dead end for a completely ordinary request. Derived
-            # server-side from the booking's own real nights, never trusted
-            # from the model.
-            old_check_in = _parse_date(str(booking.get("check_in_date") or ""))
-            old_check_out = _parse_date(str(booking.get("check_out_date") or ""))
-            new_date_value = _parse_date(new_date)
-            if old_check_in and old_check_out and new_date_value and old_check_out > old_check_in:
-                original_nights = (old_check_out - old_check_in).days
-                new_check_out_date = (new_date_value + timedelta(days=original_nights)).isoformat()
         if not new_check_out_date:
             return _result(
                 "reschedule_booking",
@@ -4425,30 +3095,14 @@ def reschedule_booking(context: CustomerContext, intent_json: dict) -> dict:
     probe_entities = dict(entities)
     probe_entities["preferred_date"] = new_date
     probe_entities["preferred_time"] = new_time
-    # A reschedule preserves the assigned staff unless the write explicitly
-    # changes staff_id.  Validate the exact original staff member, not merely
-    # whether somebody else happens to be free.
-    if booking.get("staff_id") is not None:
-        probe_entities["preferred_staff"] = str(booking["staff_id"])
     if new_check_out_time:
         probe_entities["check_out_time"] = new_check_out_time
-    # Exclude the booking's own still-unmodified row from every service
-    # type's availability probe, not only BOARDING — otherwise a reschedule
-    # that overlaps the booking's OWN current slot (the ordinary "shift my
-    # appointment by 15 minutes, same staff, same day" case) sees that slot
-    # as already taken by itself and is wrongly rejected as unavailable,
-    # even though the atomic write RPC (update_booking_atomic) already
-    # excludes it correctly and would have accepted it. Also carry pet_id so
-    # the same-pet cross-service conflict check (otherwise a silent no-op
-    # here without it) is genuinely exercised at this pre-check too.
-    probe_entities["exclude_booking_id"] = booking.get("booking_id")
-    if booking.get("pet_id") is not None:
-        probe_entities["pet_id"] = booking.get("pet_id")
     if service_type_hint == "BOARDING":
         # Otherwise a single-capacity room's own current (pre-reschedule)
         # stay counts against itself in the overlap check.
         probe_entities["room_type"] = booking.get("room_type") or booking.get("package_name")
         probe_entities["check_out_date"] = new_check_out_date
+        probe_entities["exclude_booking_id"] = booking.get("booking_id")
     probe["entities"] = probe_entities
     if not _slot_is_available(context, probe, booking_date=new_date, booking_time=new_time):
         return _result(
@@ -4463,6 +3117,7 @@ def reschedule_booking(context: CustomerContext, intent_json: dict) -> dict:
     table = _service_table(service_type)
     updates = {"booking_date": new_date, "booking_time": new_time}
     new_total_price = None
+    daycare_duration_price_review = False
     if table == "daycare_booking":
         updates = {
             "booking_date": new_date,
@@ -4487,23 +3142,7 @@ def reschedule_booking(context: CustomerContext, intent_json: dict) -> dict:
             and start_minutes is not None and end_minutes is not None
             and (end_minutes - start_minutes) != (old_end - old_start)
         ):
-            return _result(
-                "reschedule_booking",
-                "error",
-                {
-                    "booking_id": booking.get("booking_id"),
-                    "price_review_required": True,
-                    "old_duration_minutes": old_end - old_start,
-                    "new_duration_minutes": end_minutes - start_minutes,
-                },
-                (
-                    "The DAYCARE visit duration changed and no structured pricing rule is "
-                    "available to recalculate it safely. No booking change was written; "
-                    "staff must confirm the new price first."
-                ),
-                handoff_required=True,
-                handoff_reason="DAYCARE_DURATION_PRICE_REVIEW",
-            )
+            daycare_duration_price_review = True
     elif table == "boarding_booking":
         updates = {
             "check_in_date": new_date,
@@ -4519,7 +3158,7 @@ def reschedule_booking(context: CustomerContext, intent_json: dict) -> dict:
         try:
             nights = max(1, (date.fromisoformat(new_check_out_date) - date.fromisoformat(new_date)).days)
             if price_per_night is not None:
-                new_total_price = round(float(price_per_night) * nights, 2)
+                new_total_price = int(round(float(price_per_night) * nights))
                 updates["total_price"] = new_total_price
         except (TypeError, ValueError) as exc:
             return _result(
@@ -4622,13 +3261,6 @@ def reschedule_booking(context: CustomerContext, intent_json: dict) -> dict:
                 handoff_required=True,
                 handoff_reason="DATABASE_ERROR",
             )
-    if final.get("status") == "success" and context.resolved_customer_id is not None:
-        holder = str(context.resolved_customer_id)
-        client = get_supabase_client()
-        _release_shared_holds(client, context.company_id, holder)
-        SLOT_HOLDS.release_all_for(holder, prefix=(context.company_id, service_type.upper()))
-        if service_type.upper() == "BOARDING":
-            SLOT_HOLDS.release_all_for(holder, prefix=(context.company_id, "BOARDING_ROOM"))
     if final.get("status") == "success":
         from app.documents.service import generate_and_send_booking_confirmation
 
@@ -4646,6 +3278,20 @@ def reschedule_booking(context: CustomerContext, intent_json: dict) -> dict:
         ):
             final["handoff_required"] = True
             final["handoff_reason"] = "DOCUMENT_DELIVERY_ERROR"
+    if final.get("status") == "success" and daycare_duration_price_review:
+        final["data"]["price_review_required"] = True
+        final["data"]["price_review_reason"] = (
+            "DAYCARE visit duration changed on this reschedule; the linked payment's "
+            "price was NOT recalculated (no verified hourly rate exists server-side "
+            "for DAYCARE, unlike BOARDING's real per-night room rate) and needs staff "
+            "review before the amount on file is treated as final."
+        )
+        final["handoff_required"] = True
+        # Don't clobber a real document-delivery reason if that ALSO failed on
+        # this same reschedule (final["handoff_reason"] may already be a real,
+        # non-empty value, not just an absent key) — the price_review_reason
+        # note above still explains the pricing issue either way.
+        final["handoff_reason"] = final.get("handoff_reason") or "DAYCARE_DURATION_PRICE_REVIEW"
     return final
 
 
@@ -4669,13 +3315,6 @@ def register_loyalty_member(context: CustomerContext, confirmed: bool = False) -
             "success",
             {**(existing.get("data") or {}), "already_member": True},
         )
-    if existing.get("status") != "not_found":
-        return _result(
-            "register_loyalty_member",
-            "error",
-            existing.get("data") or {},
-            existing.get("error") or "Membership status could not be verified",
-        )
     if not confirmed:
         return _result(
             "register_loyalty_member",
@@ -4691,19 +3330,17 @@ def register_loyalty_member(context: CustomerContext, confirmed: bool = False) -
         )
     try:
         client = get_supabase_client()
-        payload = client.rpc(
-            "register_loyalty_member_atomic",
-            {
-                "p_company_id": context.company_id,
-                "p_customer_id": context.resolved_customer_id,
-                "p_points_balance": 0,
-            },
-        ).execute().data
-        if not isinstance(payload, dict) or not isinstance(payload.get("member"), dict):
-            raise RuntimeError(
-                "register_loyalty_member_atomic returned no persisted member; apply the required loyalty migration"
-            )
-        record = payload["member"]
+        loyalty_id = _next_table_id(client, "loyaltymember", "loyalty_id")
+        row = {
+            "company_id": context.company_id,
+            "loyalty_id": loyalty_id,
+            "customer_id": context.resolved_customer_id,
+            "tier": "Bronze",
+            "points_balance": 0,
+            "redemption_made": 0,
+        }
+        inserted = client.table("loyaltymember").insert(row).execute().data or []
+        record = inserted[0] if inserted else row
         return _result(
             "register_loyalty_member",
             "success",
@@ -4711,7 +3348,7 @@ def register_loyalty_member(context: CustomerContext, confirmed: bool = False) -
                 "loyalty_id": record.get("loyalty_id"),
                 "points_balance": record.get("points_balance"),
                 "tier": record.get("tier"),
-                "already_member": bool(payload.get("already_member")),
+                "already_member": False,
             },
         )
     except Exception as exc:

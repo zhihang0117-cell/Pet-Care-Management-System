@@ -23,7 +23,6 @@ class ConversationMemory:
         self._ttl_seconds = ttl_seconds
         self._locks: dict[str, threading.RLock] = {}
         self._locks_guard = threading.Lock()
-        self._active_lock_counts: dict[str, int] = {}
 
     @staticmethod
     def _key(phone_number: str, company_id: str) -> str:
@@ -41,63 +40,28 @@ class ConversationMemory:
     def get(self, phone_number: str, company_id: str) -> ConversationState:
         key = self._key(phone_number, company_id)
         now = time.monotonic()
-        with self._locks_guard:
-            self._sweep_expired_locked(now)
-            last_seen = self._last_seen.get(key)
-            expired = last_seen is not None and (now - last_seen) > self._ttl_seconds
-            if key not in self._store or expired:
-                self._store[key] = ConversationState(
-                    phone_number=phone_number, company_id=company_id
-                )
-            self._last_seen[key] = now
-            return self._store[key]
+        last_seen = self._last_seen.get(key)
+        expired = last_seen is not None and (now - last_seen) > self._ttl_seconds
 
-    def _sweep_expired_locked(self, now: float) -> None:
-        """Remove inactive session data and its per-session lock.
+        if key not in self._store or expired:
+            self._store[key] = ConversationState(phone_number=phone_number, company_id=company_id)
 
-        Caller must hold ``_locks_guard``. Active lock users are excluded so
-        a concurrent request can never receive a second lock for the same
-        session while the first request is still running.
-        """
-        expired = [
-            key
-            for key, last_seen in self._last_seen.items()
-            if now - last_seen > self._ttl_seconds
-            and self._active_lock_counts.get(key, 0) == 0
-        ]
-        for key in expired:
-            self._store.pop(key, None)
-            self._last_seen.pop(key, None)
-            self._locks.pop(key, None)
-            self._active_lock_counts.pop(key, None)
+        self._last_seen[key] = now
+        return self._store[key]
 
     @contextmanager
     def session_lock(self, phone_number: str, company_id: str):
         """Serialize simultaneous messages for one customer in this process."""
         key = self._key(phone_number, company_id)
         with self._locks_guard:
-            self._sweep_expired_locked(time.monotonic())
             lock = self._locks.setdefault(key, threading.RLock())
-            self._last_seen.setdefault(key, time.monotonic())
-            self._active_lock_counts[key] = self._active_lock_counts.get(key, 0) + 1
-        try:
-            with lock:
-                yield
-        finally:
-            with self._locks_guard:
-                remaining = self._active_lock_counts.get(key, 1) - 1
-                if remaining > 0:
-                    self._active_lock_counts[key] = remaining
-                else:
-                    self._active_lock_counts.pop(key, None)
+        with lock:
+            yield
 
     def save(self, state: ConversationState) -> None:
         key = self._key(state.phone_number, state.company_id)
-        now = time.monotonic()
-        with self._locks_guard:
-            self._sweep_expired_locked(now)
-            self._store[key] = state
-            self._last_seen[key] = now
+        self._store[key] = state
+        self._last_seen[key] = time.monotonic()
 
     def clear(self, phone_number: str, company_id: str | None = None) -> bool:
         """Clears the session for phone_number. If company_id is omitted
@@ -105,17 +69,18 @@ class ConversationMemory:
         clears that phone_number across every company rather than silently
         no-op'ing or guessing — this is a manual test/debug action, not a
         security-sensitive path."""
-        with self._locks_guard:
-            if company_id is not None:
-                keys = [self._key(phone_number, company_id)]
-            else:
-                suffix = f"::{phone_number}"
-                keys = [key for key in self._store if key.endswith(suffix)]
-            removed = False
-            for key in keys:
-                removed = self._store.pop(key, None) is not None or removed
-                self._last_seen.pop(key, None)
-                if self._active_lock_counts.get(key, 0) == 0:
-                    self._locks.pop(key, None)
-                    self._active_lock_counts.pop(key, None)
-            return removed
+        if company_id is not None:
+            key = self._key(phone_number, company_id)
+            self._last_seen.pop(key, None)
+            with self._locks_guard:
+                self._locks.pop(key, None)
+            return self._store.pop(key, None) is not None
+
+        suffix = f"::{phone_number}"
+        matching = [key for key in self._store if key.endswith(suffix)]
+        for key in matching:
+            self._last_seen.pop(key, None)
+            self._store.pop(key, None)
+            with self._locks_guard:
+                self._locks.pop(key, None)
+        return bool(matching)

@@ -9,10 +9,7 @@ from dateutil import parser as _dateutil_parser
 
 _MONTH_NAMES = (
     r"jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|"
-    # "sept" (with the trailing t) is at least as common a casual
-    # abbreviation as "sep" — sep(?:tember)? only matched the bare 3-letter
-    # form or the full word, so "21 sept" resolved to nothing at all.
-    r"jul(?:y)?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?"
+    r"jul(?:y)?|aug(?:ust)?|sep(?:tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?"
 )
 
 # Common WhatsApp-texting abbreviations/misspellings — a customer typing
@@ -24,25 +21,6 @@ _TOMORROW_WORDS = (
 )
 _TODAY_ALT = "|".join(_TODAY_WORDS)
 _TOMORROW_ALT = "|".join(_TOMORROW_WORDS)
-
-_WEEKDAY_FULL_NAMES = (
-    "monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday",
-)
-# Same WhatsApp-casual-texting reasoning as _TOMORROW_WORDS above — "next
-# wed"/"this fri" are at least as common as the full spelling and previously
-# matched nothing at all (extract_customer_date's own substring search only
-# looked for the full weekday name, so "next Wed" never even reached the
-# weekday parser below).
-_WEEKDAY_ABBREVIATIONS = {
-    "mon": "monday",
-    "tue": "tuesday", "tues": "tuesday",
-    "wed": "wednesday", "weds": "wednesday",
-    "thu": "thursday", "thur": "thursday", "thurs": "thursday",
-    "fri": "friday",
-    "sat": "saturday",
-    "sun": "sunday",
-}
-_WEEKDAY_ALT = "|".join(_WEEKDAY_FULL_NAMES) + "|" + "|".join(_WEEKDAY_ABBREVIATIONS)
 
 
 def _looks_like_abbreviation(word: str, target: str) -> bool:
@@ -84,15 +62,13 @@ _CHINESE_RELATIVE_DAYS = {
     "大后天": 3,
 }
 _CHINESE_WEEKDAY_NAMES = {
-    # Digit forms ("星期5") included alongside the character forms — a
-    # customer texting on a phone commonly types the digit instead of 五.
-    1: ("星期一", "周一", "礼拜一", "星期1", "周1", "礼拜1"),
-    2: ("星期二", "周二", "礼拜二", "星期2", "周2", "礼拜2"),
-    3: ("星期三", "周三", "礼拜三", "星期3", "周3", "礼拜3"),
-    4: ("星期四", "周四", "礼拜四", "星期4", "周4", "礼拜4"),
-    5: ("星期五", "周五", "礼拜五", "星期5", "周5", "礼拜5"),
-    6: ("星期六", "周六", "礼拜六", "星期6", "周6", "礼拜6"),
-    7: ("星期日", "星期天", "周日", "周天", "礼拜日", "礼拜天", "星期7", "周7", "礼拜7"),
+    1: ("星期一", "周一", "礼拜一"),
+    2: ("星期二", "周二", "礼拜二"),
+    3: ("星期三", "周三", "礼拜三"),
+    4: ("星期四", "周四", "礼拜四"),
+    5: ("星期五", "周五", "礼拜五"),
+    6: ("星期六", "周六", "礼拜六"),
+    7: ("星期日", "星期天", "周日", "周天", "礼拜日", "礼拜天"),
 }
 _CHINESE_WEEKDAY_TO_INDEX = {
     name: weekday_num - 1  # Monday=0 to match date.weekday()
@@ -100,7 +76,6 @@ _CHINESE_WEEKDAY_TO_INDEX = {
     for name in names
 }
 _CHINESE_NEXT_MODIFIERS = ("下个", "下")
-_CHINESE_THIS_MODIFIERS = ("这个", "这", "本")
 
 # Malay (Bahasa Malaysia) relative-day and weekday words — same reasoning as
 # the Chinese block above: this is a Malaysia-based business, and a Malay
@@ -117,34 +92,6 @@ _MALAY_WEEKDAY_TO_INDEX = {name: num - 1 for num, name in _MALAY_WEEKDAY_NAMES.i
 _MALAY_NEXT_MODIFIER = "depan"
 
 
-def _resolve_weekday_date(reference: date, weekday_index: int, modifier: str | None) -> date:
-    """Resolve a weekday with calendar-week semantics.
-
-    ``next`` means the named day in the next Monday-to-Sunday week, while
-    ``this`` means the named day in the current week — EXCEPT when that day
-    has already passed within the current week, in which case it rolls
-    forward to the upcoming occurrence instead. Confirmed live: "this
-    Saturday" asked on a Sunday resolved to yesterday's Saturday (the
-    current ISO week's Sat is before today once the week has rolled past
-    it) — a real customer booking a FUTURE service never means "this
-    Saturday" as a day that's already gone, regardless of which day of the
-    week they're asking from. An unmodified weekday means its next
-    occurrence and is always future (the same weekday today rolls forward
-    seven days).
-    """
-    this_monday = reference - timedelta(days=reference.weekday())
-    if modifier == "next":
-        return this_monday + timedelta(days=7 + weekday_index)
-    if modifier == "this":
-        candidate = this_monday + timedelta(days=weekday_index)
-        if candidate < reference:
-            candidate += timedelta(days=7)
-        return candidate
-
-    days_ahead = (weekday_index - reference.weekday()) % 7
-    return reference + timedelta(days=days_ahead or 7)
-
-
 def _parse_malay_date(text: str, reference: date) -> date | None:
     """text: already stripped/lowercased/whitespace-collapsed."""
     if text in _MALAY_RELATIVE_DAYS:
@@ -156,8 +103,12 @@ def _parse_malay_date(text: str, reference: date) -> date | None:
         return None
     weekday_text, modifier = match.groups()
     weekday_index = _MALAY_WEEKDAY_TO_INDEX[weekday_text]
-    canonical_modifier = "next" if modifier == _MALAY_NEXT_MODIFIER else "this" if modifier == "ini" else None
-    return _resolve_weekday_date(reference, weekday_index, canonical_modifier)
+    days_ahead = (weekday_index - reference.weekday()) % 7
+    if modifier == _MALAY_NEXT_MODIFIER:
+        days_ahead += 7
+    elif days_ahead == 0:
+        days_ahead = 7
+    return reference + timedelta(days=days_ahead)
 
 
 def _parse_chinese_date(text: str, reference: date) -> date | None:
@@ -180,24 +131,22 @@ def _parse_chinese_date(text: str, reference: date) -> date | None:
             except ValueError:
                 return None
         return parsed
-    compact_text = re.sub(r"\s+", "", text)
     for weekday_text, weekday_index in _CHINESE_WEEKDAY_TO_INDEX.items():
-        modifier = None
-        core = compact_text
+        is_next = False
+        core = text
         for prefix in _CHINESE_NEXT_MODIFIERS:
             if core == f"{prefix}{weekday_text}":
-                modifier = "next"
+                is_next = True
                 core = weekday_text
                 break
-        if modifier is None:
-            for prefix in _CHINESE_THIS_MODIFIERS:
-                if core == f"{prefix}{weekday_text}":
-                    modifier = "this"
-                    core = weekday_text
-                    break
         if core != weekday_text:
             continue
-        return _resolve_weekday_date(reference, weekday_index, modifier)
+        days_ahead = (weekday_index - reference.weekday()) % 7
+        if is_next:
+            days_ahead += 7
+        elif days_ahead == 0:
+            days_ahead = 7
+        return reference + timedelta(days=days_ahead)
     return None
 
 
@@ -295,15 +244,26 @@ def parse_customer_date(value: str | None, *, today: date | None = None) -> date
         text = " ".join(text.split())
 
     weekday_match = re.fullmatch(
-        rf"(?:(next|this)\s+)?({_WEEKDAY_ALT})",
+        r"(?:(next|this)\s+)?"
+        r"(monday|tuesday|wednesday|thursday|friday|saturday|sunday)",
         text,
         re.I,
     )
     if weekday_match:
         modifier, weekday_text = weekday_match.groups()
-        canonical = _WEEKDAY_ABBREVIATIONS.get(weekday_text.lower(), weekday_text.lower())
-        weekday_index = _WEEKDAY_FULL_NAMES.index(canonical)
-        return _resolve_weekday_date(reference, weekday_index, modifier)
+        weekday_index = (
+            "monday",
+            "tuesday",
+            "wednesday",
+            "thursday",
+            "friday",
+            "saturday",
+            "sunday",
+        ).index(weekday_text.lower())
+        days_ahead = (weekday_index - reference.weekday()) % 7
+        if days_ahead == 0 or modifier == "next" and days_ahead == 0:
+            days_ahead = 7
+        return reference + timedelta(days=days_ahead)
 
     for fmt in ("%Y-%m-%d", "%d/%m/%Y", "%m/%d/%Y", "%d/%m/%y", "%m/%d/%y"):
         try:
@@ -382,19 +342,12 @@ def extract_customer_date(value: str | None, *, today: date | None = None) -> da
     # Chinese day-words/weekdays have no spaces to anchor a \b-based regex
     # search on, so check every known alias as a plain substring instead —
     # same reasoning as extract_time_from_message's period-word handling.
-    compact_value = re.sub(r"\s+", "", str(value or ""))
     for alias in sorted(
         list(_CHINESE_RELATIVE_DAYS) + list(_CHINESE_WEEKDAY_TO_INDEX), key=len, reverse=True
     ):
-        # Modifiers tried before the bare alias (and longest modifier
-        # first): a bare weekday like "星期五" is always a substring of its
-        # own "下个"-prefixed form, so checking it first would match "下个
-        # 星期五大概中午这样" on the unprefixed candidate and silently drop
-        # the "next" modifier, returning this week's Friday instead of next
-        # week's.
-        for prefix in _CHINESE_NEXT_MODIFIERS + _CHINESE_THIS_MODIFIERS + ("",):
+        for prefix in ("",) + _CHINESE_NEXT_MODIFIERS:
             candidate = f"{prefix}{alias}"
-            if candidate in compact_value:
+            if candidate in str(value or ""):
                 parsed = _parse_chinese_date(candidate, reference)
                 if parsed is not None:
                     return parsed
@@ -412,7 +365,7 @@ def extract_customer_date(value: str | None, *, today: date | None = None) -> da
         # phrase's "day after" never gets seen at all.
         rf"\b(?:the\s+)?day\s+after\s+(?:{_TOMORROW_ALT})\b",
         rf"\b(?:{_TODAY_ALT}|{_TOMORROW_ALT})\b",
-        rf"\b(?:(?:next|this)\s+)?(?:{_WEEKDAY_ALT})\b",
+        r"\b(?:(?:next|this)\s+)?(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b",
         r"\b(?:hari\s+ini|esok|lusa)\b",
         r"\b(?:isnin|selasa|rabu|khamis|jumaat|sabtu|ahad)(?:\s+(?:depan|ini))?\b",
         r"\b\d{4}-\d{2}-\d{2}\b",

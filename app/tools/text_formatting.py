@@ -15,24 +15,7 @@ every turn.
 """
 from __future__ import annotations
 
-import re
 from typing import Any
-
-# Matches any CJK Unified Ideograph. Deliberately narrow (Chinese script
-# detection only, not "is this message Chinese") — every call site uses it
-# to choose between an English and a Chinese hardcoded response string, so a
-# false positive/negative just picks the wrong of two fixed templates.
-_CHINESE_CHAR_RE = re.compile(r"[㐀-鿿]")
-
-
-def contains_chinese(text: str | None) -> bool:
-    """True if text contains at least one CJK ideograph.
-
-    Previously reimplemented independently at five separate call sites in
-    orchestrator.py (all sharing this exact pattern) — centralized here so
-    there is one definition of "should this reply be in Chinese".
-    """
-    return bool(_CHINESE_CHAR_RE.search(text or ""))
 
 
 def first_name(full_name: str | None) -> str:

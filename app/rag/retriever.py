@@ -14,19 +14,6 @@ TOP_K = 5
 _PRICE_PATTERN = re.compile(r"\bRM\s*\d", re.I)
 _LOW_VALUE_WORD_COUNT = 10
 
-# match_chunks_bge_large's `similarity` is `1 - cosine_distance`, so it
-# ranges roughly [-1, 1]. Because the RPC has no WHERE-clause cutoff, it
-# always returns match_count rows ordered by distance even when nothing in
-# the knowledge base is actually about the query — e.g. an off-topic
-# question can still surface the closest (but unrelated) chunk at
-# similarity ~0.2-0.3, and callers that only look at "did we get any rows
-# back" then hand that chunk to the model as if it were real evidence.
-# 0.35 is a conservative floor picked to sit below genuinely relevant
-# BGE-large matches on this knowledge base's content (~0.5+) while still
-# cutting the near-random tail; re-tune against real queries if it proves
-# too strict/loose in practice.
-MIN_SIMILARITY = 0.35
-
 # Grooming price chunks bundle every size tier of a package into one
 # paragraph at the document-ingestion level (e.g. "For S size cats (...) -
 # ...; For M size cats (...) - ...; ..."), so retrieval always returns the
@@ -152,9 +139,6 @@ class CompanyRAGRetriever:
 
         results = []
         for row in rows:
-            similarity = row.get("similarity")
-            if similarity is not None and similarity < MIN_SIMILARITY:
-                continue  # semantically unrelated to the query — not real evidence
             if _is_low_value_chunk(row.get("content")):
                 continue
             chunk_pet_type = str((row.get("metadata") or {}).get("pet_type") or "").strip().lower()

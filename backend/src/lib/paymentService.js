@@ -7,7 +7,7 @@ import { findBookingByPaymentId } from "./bookingService.js";
  * { settings: { loyalty_earn_rate } } (see routes/companies.js). Falls back
  * to the LOYALTY_EARN_RATE env default when a company hasn't set its own.
  */
-export async function getEarnRateForCompany(companyId) {
+async function getEarnRateForCompany(companyId) {
   const { data } = await supabase
     .from("companies")
     .select("settings_json")

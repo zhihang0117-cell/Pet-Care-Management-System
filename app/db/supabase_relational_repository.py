@@ -80,20 +80,6 @@ class SupabaseRelationalRepository:
         context.resolved_customer_id = int(customer_id)
         return get_latest_booking_by_customer_id(context)
 
-    def get_upcoming_booking(self, company_id: int, customer_id: int, *, phone_number: str = "") -> dict:
-        from .relational_actions import get_upcoming_booking_by_customer_id
-
-        context = CustomerContext(phone_number=str(phone_number or "").strip(), company_id=company_id)
-        context.resolved_customer_id = int(customer_id)
-        return get_upcoming_booking_by_customer_id(context)
-
-    def get_recent_completed_booking(self, company_id: int, customer_id: int, *, phone_number: str = "") -> dict:
-        from .relational_actions import get_last_completed_booking_by_customer_id
-
-        context = CustomerContext(phone_number=str(phone_number or "").strip(), company_id=company_id)
-        context.resolved_customer_id = int(customer_id)
-        return get_last_completed_booking_by_customer_id(context)
-
     def get_booking_by_id(
         self, company_id: int, customer_id: int, booking_id: int, service_type: str = "GROOMING"
     ) -> dict:
@@ -155,7 +141,7 @@ class SupabaseRelationalRepository:
             **dict(payload.get("entities") or {}),
             "pet_id": booking_command.pet_id,
             "pet_name": booking_command.pet_name,
-            "preferred_date": booking_command.preferred_date,
+            "preferred_date": booking_command.preferred_date or booking_command.booking_date,
             "preferred_time": booking_command.selected_slot or booking_command.preferred_time,
             "service_type": booking_command.service_type,
             "package_name": booking_command.package_name,
@@ -164,8 +150,6 @@ class SupabaseRelationalRepository:
             "preferred_staff": booking_command.preferred_staff,
             "add_on": booking_command.add_on,
             "add_on_price": booking_command.add_on_price,
-            "duration_minutes": booking_command.duration_minutes,
-            "idempotency_key": booking_command.idempotency_key,
         }
         payload["_draft_booking"] = {
             "pet_id": booking_command.pet_id,
@@ -175,7 +159,6 @@ class SupabaseRelationalRepository:
             "selected_slot": booking_command.selected_slot,
             "preferred_time": booking_command.preferred_time,
             "price_quote": booking_command.price_quote,
-            "duration_minutes": booking_command.duration_minutes,
         }
         return create_booking(context, payload)
 

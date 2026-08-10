@@ -1,17 +1,9 @@
 """
 Minimal HTTP entrypoint for the LangChain harness in app/.
 
-app.agent.runtime.handle_turn() is a plain importable function (no server
-assumptions). This file just exposes it over HTTP so the eval console
-(frontend/eval_console.html) and, eventually, a WhatsApp webhook can call
-it.
-
-V1 decommission (2026-08-10): app/orchestrator.py's PawfectOrchestrator
-("v1") and the Phase 9 runtime v1/v2 switch this file used to expose are
-gone — /chat now always calls handle_turn() ("v2", the constrained-agent,
-reference-based-tools architecture; see REFACTOR_PLAN.md). Live rollback
-if a deployment misbehaves is now a Cloud Run/Render previous-revision
-rollback, not a runtime engine flip.
+app/orchestrator.py is a plain importable library (no server assumptions).
+This file just exposes it over HTTP so the eval console (frontend/eval_console.html)
+and, eventually, a WhatsApp webhook can call it.
 """
 
 from __future__ import annotations
@@ -139,8 +131,7 @@ def _require_internal_key(x_internal_key: str = Header(default="")) -> None:
 from app.context.memory import ConversationMemory
 from app.context.company import get_company_config
 from app.db.customer_context import get_relational_company_id
-from app.agent.evidence import EvidenceStoreRegistry
-from app.agent.runtime import handle_turn
+from app.orchestrator import PawfectOrchestrator
 from app.documents.company_profile import get_billing_profile
 from app.documents.pdf_builder import build_booking_confirmation_pdf, build_invoice_pdf
 from app.documents.service import generate_and_send_invoice
@@ -164,18 +155,8 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+_orchestrator: PawfectOrchestrator | None = None
 _memory = ConversationMemory()
-_evidence_registry = EvidenceStoreRegistry()
-_agent_model = None
-
-
-def _get_agent_model():
-    global _agent_model
-    if _agent_model is None:
-        from langchain_openai import ChatOpenAI
-
-        _agent_model = ChatOpenAI(model="gpt-4o-mini", temperature=0, timeout=30, max_retries=2)
-    return _agent_model
 
 
 @app.on_event("startup")
@@ -207,14 +188,6 @@ def _warm_up_embedding_model() -> None:
         )
 
 
-@app.on_event("startup")
-def _verify_database_schema() -> None:
-    """Fail deployment before traffic when a required migration is absent."""
-    from app.db.schema_preflight import verify_required_supabase_schema
-
-    verify_required_supabase_schema()
-
-
 def _agent_state_summary(state) -> dict:
     """Small, non-sensitive progress snapshot for the authenticated eval console."""
     return {
@@ -235,7 +208,7 @@ def _documents_from_trace(trace: list[dict]) -> list[dict]:
     seen_urls: set[str] = set()
     for item in trace or []:
         if item.get("tool") not in {
-            "confirm_booking", "reschedule_booking", "send_booking_confirmation",
+            "create_booking", "reschedule_booking", "send_booking_confirmation"
         }:
             continue
         raw_result = item.get("result")
@@ -276,6 +249,13 @@ def _documents_from_trace(trace: list[dict]) -> list[dict]:
             "source_tool": item.get("tool"),
         })
     return documents
+
+
+def _get_orchestrator() -> PawfectOrchestrator:
+    global _orchestrator
+    if _orchestrator is None:
+        _orchestrator = PawfectOrchestrator()
+    return _orchestrator
 
 
 class ChatRequest(BaseModel):
@@ -329,17 +309,7 @@ def _chat_locked(request: ChatRequest, phone_number: str, company_id: str):
         # failure here must reach the customer fallback/staff escalation rather
         # than escaping as an unhandled FastAPI 500 before the try block.
         company_context = get_company_config(company_id)
-        # handle_turn() fetches/saves the SAME ConversationState object via
-        # _memory (same dict-backed store, same phone/company key — no
-        # copy), so state mutations it makes are visible through this
-        # function's own `state` reference too, and the downstream
-        # _memory.save(state) call below is a harmless redundant save.
-        result = handle_turn(
-            memory=_memory, evidence_registry=_evidence_registry, model=_get_agent_model(),
-            company_context=company_context, phone_number=phone_number, user_message=request.message,
-        )
-        response_text = result.reply
-        trace = result.trace
+        response, trace = _get_orchestrator().invoke_with_trace(company_context, state, request.message)
     except Exception as exc:
         import traceback
 
@@ -417,7 +387,7 @@ def _chat_locked(request: ChatRequest, phone_number: str, company_id: str):
     latency_ms = round((time.perf_counter() - started_at) * 1000, 1)
     _memory.save(state)
 
-    delivery = send_whatsapp_text(phone_number, response_text)
+    delivery = send_whatsapp_text(phone_number, response.content)
     delivery_escalation_saved = False
     if delivery.get("status") not in {"sent", "sent_console"} and state.customer_id is not None:
         try:
@@ -430,7 +400,7 @@ def _chat_locked(request: ChatRequest, phone_number: str, company_id: str):
             # replace it with a fake sent status if this secondary alert also fails.
             logging.getLogger(__name__).exception("Could not persist WhatsApp delivery escalation: %s", exc)
     return {
-        "reply": response_text,
+        "reply": response.content,
         "phone_number": phone_number,
         "company_id": company_id,
         "customer_id": state.customer_id,
@@ -454,28 +424,11 @@ def _require_debug_mode() -> None:
         raise HTTPException(status_code=404, detail="Not found")
 
 
-def _canonical_or_raw_phone(phone: str) -> str:
-    """/chat stores every session/outbox entry under canonical_phone_number
-    (e.g. "+60 12-345 6701" -> "+60123456701") — reading/clearing debug
-    state with the raw typed string instead silently misses it for any
-    phone with spaces/dashes, exactly the shape the eval console's own
-    default test-phone field uses. Confirmed live: /debug/clear-session
-    returned cleared:false while the real session stayed fully intact,
-    contaminating every "reset" test that followed with leftover history
-    from earlier turns."""
-    from app.db.customer_context import canonical_phone_number
-
-    try:
-        return canonical_phone_number(phone)
-    except ValueError:
-        return phone  # fall back to the raw key exactly as typed
-
-
 @app.post("/debug/clear-session")
 def clear_session(request: ClearSessionRequest):
     """Local testing only: reset in-memory conversation state for a phone number."""
     _require_debug_mode()
-    phone = _canonical_or_raw_phone(request.phone_number.strip())
+    phone = request.phone_number.strip()
     cleared = _memory.clear(phone)
     return {"status": "success", "cleared": cleared, "phone_number": phone}
 
@@ -490,17 +443,15 @@ def debug_outbox(phone_number: str):
     notices — without needing real WhatsApp credentials.
     """
     _require_debug_mode()
-    phone = _canonical_or_raw_phone(phone_number.strip())
-    return {"phone_number": phone, "entries": get_outbox(phone)}
+    return {"phone_number": phone_number, "entries": get_outbox(phone_number.strip())}
 
 
 @app.post("/debug/clear-outbox")
 def debug_clear_outbox(request: ClearSessionRequest):
     """Local testing only: clear the simulated WhatsApp outbox for one phone number."""
     _require_debug_mode()
-    phone = _canonical_or_raw_phone(request.phone_number.strip())
-    clear_outbox(phone)
-    return {"status": "success", "phone_number": phone}
+    clear_outbox(request.phone_number.strip())
+    return {"status": "success", "phone_number": request.phone_number}
 
 
 class ProcessDocumentRequest(BaseModel):
@@ -577,12 +528,6 @@ def documents_invoice(request: InvoiceRequest):
     if not payment_rows:
         return {"status": "error", "error": f"payment_id {request.payment_id} not found"}
     payment = payment_rows[0]
-    if str(payment.get("status") or "").strip().casefold() != "paid":
-        return {
-            "status": "error",
-            "error": "INVOICE_REQUIRES_PAID_PAYMENT",
-            "message": "An invoice can only be generated for a payment whose status is Paid.",
-        }
 
     booking = {}
     for table, id_col, date_col in (
@@ -607,47 +552,17 @@ def documents_invoice(request: InvoiceRequest):
     return generate_and_send_invoice(request.company_id, payment, booking, send=request.send)
 
 
-def _delivery_succeeded(send_result: dict) -> bool:
-    """True only for send_whatsapp_text/send_whatsapp_document's real
-    success statuses ("sent" from the live provider, "sent_console" from
-    the local test outbox) — "error" and "not_configured" are failures.
-
-    The three notice endpoints below, and /documents/invoice, previously
-    returned a hard-coded {"status": "success"} regardless of this value —
-    the real outcome was buried in an unread send_result sub-object, so a
-    staff dashboard reading only the top-level status (the convention used
-    everywhere else in this API) would report a refund/status/redemption
-    notice or invoice as delivered even when WhatsApp genuinely failed or
-    was never configured. Matches the same guardrail already applied to
-    booking-confirmation delivery."""
-    return str((send_result or {}).get("status") or "") in {"sent", "sent_console"}
-
-
-def _seed_notice_into_history(company_id: int | str, phone_number: str, message: str) -> None:
+def _seed_notice_into_history(phone_number: str, message: str) -> None:
     """
     So that if the customer replies to this outbound notice, the next /chat
     turn already has it in state.history as an "ai" turn — e.g. a reply to
     the No Show notice ("sorry, can we reschedule?") reads naturally in
     context instead of the model having no idea what's being responded to.
     """
-    from app.db.customer_context import canonical_phone_number
-
-    try:
-        canonical_phone = canonical_phone_number(phone_number)
-    except ValueError:
-        canonical_phone = phone_number.strip()
-    tenant = str(company_id)
-    from contextlib import nullcontext
-
-    lock_context = (
-        _memory.session_lock(canonical_phone, tenant)
-        if hasattr(_memory, "session_lock")
-        else nullcontext()
-    )
-    with lock_context:
-        state = _memory.get(canonical_phone, tenant)
-        state.history.append({"role": "ai", "content": message})
-        _memory.save(state)
+    company_id = str(get_relational_company_id())
+    state = _memory.get(phone_number, company_id)
+    state.history.append({"role": "ai", "content": message})
+    _memory.save(state)
 
 
 class BookingStatusNoticeRequest(BaseModel):
@@ -669,13 +584,9 @@ def documents_booking_status_notice(request: BookingStatusNoticeRequest):
     )
     if notice is None:
         return {"status": "no_notice_needed"}
-    _seed_notice_into_history(request.company_id, notice["phone_number"], notice["message"])
+    _seed_notice_into_history(notice["phone_number"], notice["message"])
     send_result = send_whatsapp_text(notice["phone_number"], notice["message"])
-    return {
-        "status": "success" if _delivery_succeeded(send_result) else "delivery_failed",
-        "message": notice["message"],
-        "send_result": send_result,
-    }
+    return {"status": "success", "message": notice["message"], "send_result": send_result}
 
 
 class RedemptionNoticeRequest(BaseModel):
@@ -691,13 +602,9 @@ def documents_redemption_notice(request: RedemptionNoticeRequest):
     notice = build_redemption_decision_notice(request.company_id, request.redemption_id, request.status)
     if notice is None:
         return {"status": "no_notice_needed"}
-    _seed_notice_into_history(request.company_id, notice["phone_number"], notice["message"])
+    _seed_notice_into_history(notice["phone_number"], notice["message"])
     send_result = send_whatsapp_text(notice["phone_number"], notice["message"])
-    return {
-        "status": "success" if _delivery_succeeded(send_result) else "delivery_failed",
-        "message": notice["message"],
-        "send_result": send_result,
-    }
+    return {"status": "success", "message": notice["message"], "send_result": send_result}
 
 
 class RefundNoticeRequest(BaseModel):
@@ -712,13 +619,9 @@ def documents_refund_notice(request: RefundNoticeRequest):
     notice = build_payment_refund_notice(request.company_id, request.payment_id)
     if notice is None:
         return {"status": "no_notice_needed"}
-    _seed_notice_into_history(request.company_id, notice["phone_number"], notice["message"])
+    _seed_notice_into_history(notice["phone_number"], notice["message"])
     send_result = send_whatsapp_text(notice["phone_number"], notice["message"])
-    return {
-        "status": "success" if _delivery_succeeded(send_result) else "delivery_failed",
-        "message": notice["message"],
-        "send_result": send_result,
-    }
+    return {"status": "success", "message": notice["message"], "send_result": send_result}
 
 
 _SAMPLE_BOOKING = {

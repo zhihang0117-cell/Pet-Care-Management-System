@@ -48,11 +48,6 @@ class BookingCommand:
     # instead of silently folding it into the base package price.
     add_on: str = ""
     add_on_price: float | None = None
-    # Exact package/visit duration when the catalogue or customer provides
-    # one. Grooming falls back to 90 minutes only when no verified duration
-    # exists; daycare normally derives this from its pickup endpoint.
-    duration_minutes: int | None = None
-    idempotency_key: str = ""
 
 
 class RelationalRepository(Protocol):
@@ -65,8 +60,6 @@ class RelationalRepository(Protocol):
     def create_pet(self, company_id: int, customer_id: int, pet_data: PetData) -> dict: ...
     def update_pet(self, company_id: int, customer_id: int, pet_id: int, updates: dict) -> dict: ...
     def get_latest_booking(self, company_id: int, customer_id: int, *, phone_number: str = "") -> dict: ...
-    def get_upcoming_booking(self, company_id: int, customer_id: int, *, phone_number: str = "") -> dict: ...
-    def get_recent_completed_booking(self, company_id: int, customer_id: int, *, phone_number: str = "") -> dict: ...
     def get_booking_by_id(
         self, company_id: int, customer_id: int, booking_id: int, service_type: str = "GROOMING"
     ) -> dict: ...

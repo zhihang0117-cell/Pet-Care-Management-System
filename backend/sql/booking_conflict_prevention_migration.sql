@@ -9,14 +9,12 @@
 -- Enforced at the database layer (not just Node) so every caller is covered,
 -- including the AI/WhatsApp booking path (app/tools/booking_tools.py), which
 -- calls these atomic functions after its advisory availability check and
--- 15-minute shared SLOT_HOLDS reservation (with an in-process compatibility
--- fallback until booking_slot_holds_migration.sql is applied).
+-- 15-minute in-memory SLOT_HOLDS reservation.
 --
 -- Conflict windows mirror the duration model already used by that advisory
 -- check (app/db/availability_service.py's DEFAULT_SERVICE_DURATION_MINUTES),
 -- so the two entry points agree on what "conflicting" means:
---   - grooming: the selected catalogue duration from booking_time (90-minute
---     fallback for older rows/services without explicit duration metadata)
+--   - grooming: one continuous 90-minute appointment from booking_time
 --   - daycare: the complete check-in-to-check-out visit
 --   - boarding: only the brief check-in and check-out windows (30 min each),
 --     not the full stay; full-stay occupancy belongs to room capacity below
@@ -34,16 +32,6 @@
 -- the migration safe for older projects that only had them on grooming.
 alter table daycare_booking add column if not exists add_on text;
 alter table daycare_booking add column if not exists add_on_price numeric default 0;
-alter table grooming_booking add column if not exists duration_minutes int not null default 90;
-
-do $$
-begin
-  if not exists (select 1 from pg_constraint where conname = 'grooming_duration_positive') then
-    alter table grooming_booking add constraint grooming_duration_positive
-      check (duration_minutes > 0 and duration_minutes <= 1440) not valid;
-  end if;
-end
-$$;
 
 create or replace function staff_has_conflicting_booking(
   p_company_id int,
@@ -73,8 +61,7 @@ begin
     where b.company_id = p_company_id and b.staff_id = p_staff_id
       and b.booking_status in ('Pending', 'Scheduled')
       and not (coalesce(p_exclude_type, '') = 'grooming' and b.grooming_booking_id = p_exclude_id)
-      and (b.booking_date + b.booking_time,
-           (b.booking_date + b.booking_time) + make_interval(mins => coalesce(b.duration_minutes, 90)))
+      and (b.booking_date + b.booking_time, (b.booking_date + b.booking_time) + interval '90 minutes')
           overlaps (p_start, p_end)
     union all
     select 1 from daycare_booking b
@@ -118,8 +105,10 @@ begin
     where company_id = p_company_id and room_type = p_room_type
     limit 1;
   if v_capacity is null then
-    -- Unknown room names are invalid, never optimistically available.
-    return false;
+    -- No room record configured for this room_type: nothing to enforce
+    -- against (matches _room_capacity_status returning None -> caller
+    -- doesn't block on an incomplete check).
+    return true;
   end if;
 
   select count(*) into v_count from boarding_booking b
@@ -132,145 +121,10 @@ begin
 end;
 $$;
 
-create or replace function pet_has_conflicting_booking(
-  p_company_id int,
-  p_pet_id int,
-  p_start timestamp,
-  p_end timestamp,
-  p_exclude_type text default null,
-  p_exclude_id int default null
-)
-returns boolean
-language sql
-stable
-as $$
-  select exists (
-    select 1 from grooming_booking b
-    where b.company_id = p_company_id and b.pet_id = p_pet_id
-      and b.booking_status in ('Pending', 'Scheduled')
-      and not (coalesce(p_exclude_type, '') = 'grooming' and b.grooming_booking_id = p_exclude_id)
-      and (b.booking_date + b.booking_time,
-           (b.booking_date + b.booking_time) + make_interval(mins => coalesce(b.duration_minutes, 90)))
-          overlaps (p_start, p_end)
-    union all
-    select 1 from daycare_booking b
-    where b.company_id = p_company_id and b.pet_id = p_pet_id
-      and b.booking_status in ('Pending', 'Scheduled')
-      and not (coalesce(p_exclude_type, '') = 'daycare' and b.daycare_booking_id = p_exclude_id)
-      and (b.booking_date + b.check_in_time, b.booking_date + b.check_out_time)
-          overlaps (p_start, p_end)
-    union all
-    select 1 from boarding_booking b
-    where b.company_id = p_company_id and b.pet_id = p_pet_id
-      and b.booking_status in ('Pending', 'Scheduled')
-      and not (coalesce(p_exclude_type, '') = 'boarding' and b.boarding_booking_id = p_exclude_id)
-      and (b.check_in_date + b.check_in_time, b.check_out_date + b.check_out_time)
-          overlaps (p_start, p_end)
-  );
-$$;
-
-create or replace function booking_status_transition_allowed(p_old text, p_new text)
-returns boolean
-language sql
-immutable
-as $$
-  select case
-    when p_new = p_old then true
-    when p_old = 'Pending' and p_new = 'Scheduled' then true
-    when p_old = 'Scheduled' and p_new in ('Done', 'No Show') then true
-    else false
-  end;
-$$;
-
-create or replace function booking_event_within_hours(
-  p_company_id int, p_date date, p_start time, p_end time
-)
-returns boolean
-language sql
-stable
-as $$
-  select not exists (
-    select 1 from company_closed_dates c
-    where c.company_id = p_company_id and c.closed_date = p_date
-  ) and exists (
-    select 1 from company_business_hours h
-    where h.company_id = p_company_id
-      and h.day_of_week = extract(dow from p_date)::int
-      and not h.is_closed
-      and p_start >= h.open_time and p_end <= h.close_time and p_end > p_start
-  );
-$$;
-
-create or replace function staff_can_book_service(
-  p_company_id int, p_staff_id int, p_service_type text, p_date date
-)
-returns boolean
-language sql
-stable
-as $$
-  select exists (
-    select 1 from staff s
-    where s.company_id = p_company_id and s.staff_id = p_staff_id
-      and lower(s.status) = 'active'
-      and coalesce(s.provides_service, true)
-      and coalesce(s.service_types_json, '["GROOMING","DAYCARE","BOARDING"]'::jsonb)
-          ? upper(p_service_type)
-      and not (coalesce(s.off_days_json, '[]'::jsonb) ? to_char(p_date, 'FMDay'))
-      and not exists (
-        select 1 from leave l
-        where l.company_id = p_company_id and l.staff_id = p_staff_id
-          and l.status = 'Approved' and p_date between l.start_date and l.end_date
-      )
-  );
-$$;
-
-create or replace function pet_vaccination_valid(
-  p_company_id int, p_pet_id int, p_service_type text, p_date date
-)
-returns boolean
-language plpgsql
-stable
-as $$
-declare
-  v_status text;
-  v_expiry_text text;
-  v_expiry date;
-begin
-  if upper(p_service_type) = 'GROOMING' then return true; end if;
-  select vaccination_status, vaccination_expired_date
-    into v_status, v_expiry_text
-  from pet where company_id = p_company_id and pet_id = p_pet_id;
-  if not found or lower(coalesce(v_status, '')) <> 'vaccinated' then return false; end if;
-  if nullif(btrim(v_expiry_text), '') is null then return true; end if;
-  begin
-    if v_expiry_text ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}$' then
-      v_expiry := v_expiry_text::date;
-    elsif v_expiry_text ~ '^[0-9]{1,2}/[0-9]{1,2}/[0-9]{4}$' then
-      v_expiry := to_date(v_expiry_text, 'DD/MM/YYYY');
-    else
-      return false;
-    end if;
-  exception when others then
-    return false;
-  end;
-  return v_expiry > p_date;
-end;
-$$;
-
 revoke all on function staff_has_conflicting_booking(int, int, timestamp, timestamp, text, int) from public, anon, authenticated;
 revoke all on function room_has_capacity(int, text, date, date, int) from public, anon, authenticated;
-revoke all on function pet_has_conflicting_booking(int, int, timestamp, timestamp, text, int) from public, anon, authenticated;
-revoke all on function booking_status_transition_allowed(text, text) from public, anon, authenticated;
-revoke all on function booking_event_within_hours(int, date, time, time) from public, anon, authenticated;
-revoke all on function staff_can_book_service(int, int, text, date) from public, anon, authenticated;
-revoke all on function pet_vaccination_valid(int, int, text, date) from public, anon, authenticated;
 grant execute on function staff_has_conflicting_booking(int, int, timestamp, timestamp, text, int) to service_role;
 grant execute on function room_has_capacity(int, text, date, date, int) to service_role;
-grant execute on function pet_has_conflicting_booking(int, int, timestamp, timestamp, text, int) to service_role;
-grant execute on function booking_status_transition_allowed(text, text) to service_role;
-grant execute on function booking_event_within_hours(int, date, time, time) to service_role;
-grant execute on function staff_can_book_service(int, int, text, date) to service_role;
-grant execute on function pet_vaccination_valid(int, int, text, date) to service_role;
 
 -- ---------------------------------------------------------------------------
 -- get_room_occupancy: read-only per-room-type status for a given date (every
@@ -344,27 +198,20 @@ declare
   v_boarding boarding_booking%rowtype;
   v_booking jsonb;
   v_staff_id int := (p_booking->>'staff_id')::int;
-  v_pet_id int := (p_booking->>'pet_id')::int;
   v_start timestamp;
   v_end timestamp;
   v_checkout timestamp;
   v_room_type text;
   v_check_in date;
   v_check_out date;
-  v_duration int;
 begin
   -- Serialize concurrent booking attempts for the same staff member so the
   -- conflict check below and the insert always see a consistent picture.
   perform pg_advisory_xact_lock(hashtextextended(p_company_id::text || ':staff:' || v_staff_id::text, 0));
-  perform pg_advisory_xact_lock(hashtextextended(p_company_id::text || ':pet:' || v_pet_id::text, 0));
 
   if p_booking_type = 'grooming' then
     v_start := (p_booking->>'booking_date')::date + (p_booking->>'booking_time')::time;
-    v_duration := coalesce((p_booking->>'duration_minutes')::int, 90);
-    if v_duration <= 0 or v_duration > 1440 then
-      raise exception 'Invalid grooming duration' using errcode = 'P0001';
-    end if;
-    v_end := v_start + make_interval(mins => v_duration);
+    v_end := v_start + interval '90 minutes';
   elsif p_booking_type = 'daycare' then
     v_start := (p_booking->>'booking_date')::date + (p_booking->>'check_in_time')::time;
     v_end := (p_booking->>'booking_date')::date + (p_booking->>'check_out_time')::time;
@@ -376,36 +223,11 @@ begin
     raise exception 'Unknown booking type %', p_booking_type using errcode = 'P0001';
   end if;
 
-  if not staff_can_book_service(p_company_id, v_staff_id, p_booking_type, v_start::date)
-    or (p_booking_type = 'boarding' and not staff_can_book_service(
-      p_company_id, v_staff_id, p_booking_type, v_checkout::date
-    )) then
-    raise exception 'Selected staff member is not eligible on the requested date' using errcode = 'P0001';
-  end if;
-  if not booking_event_within_hours(p_company_id, v_start::date, v_start::time, v_end::time)
-    or (p_booking_type = 'boarding' and not booking_event_within_hours(
-      p_company_id, v_checkout::date, v_checkout::time, (v_checkout + interval '30 minutes')::time
-    )) then
-    raise exception 'Requested interval is outside configured business hours' using errcode = 'P0001';
-  end if;
-  if not pet_vaccination_valid(p_company_id, v_pet_id, p_booking_type, v_start::date) then
-    raise exception 'Pet vaccination is not valid for this service date' using errcode = 'P0001';
-  end if;
-
   if staff_has_conflicting_booking(p_company_id, v_staff_id, v_start, v_end)
     or (p_booking_type = 'boarding' and staff_has_conflicting_booking(
       p_company_id, v_staff_id, v_checkout, v_checkout + interval '30 minutes'
     )) then
     raise exception 'This staff member already has a booking that overlaps this time' using errcode = 'P0001';
-  end if;
-
-  if pet_has_conflicting_booking(
-    p_company_id,
-    v_pet_id,
-    v_start,
-    case when p_booking_type = 'boarding' then v_checkout else v_end end
-  ) then
-    raise exception 'This pet already has a booking that overlaps this time' using errcode = 'P0001';
   end if;
 
   if p_booking_type = 'boarding' then
@@ -421,12 +243,12 @@ begin
   if p_booking_type = 'grooming' then
     insert into grooming_booking (
       company_id, pet_id, staff_id, service_name, booking_date,
-      booking_time, duration_minutes, price, add_on, add_on_price, notes, booking_status,
+      booking_time, price, add_on, add_on_price, notes, booking_status,
       created_date, created_time
     ) values (
       p_company_id, (p_booking->>'pet_id')::int, v_staff_id,
       p_booking->>'service_name', (p_booking->>'booking_date')::date,
-      (p_booking->>'booking_time')::time, v_duration, (p_booking->>'price')::numeric,
+      (p_booking->>'booking_time')::time, (p_booking->>'price')::numeric,
       p_booking->>'add_on', (p_booking->>'add_on_price')::numeric, p_booking->>'notes',
       p_booking->>'booking_status', (p_booking->>'created_date')::date,
       (p_booking->>'created_time')::time
@@ -527,61 +349,28 @@ declare
   v_payment_id int;
   v_result jsonb;
   v_staff_id int;
-  v_pet_id int;
-  v_current_status text;
-  v_new_status text;
   v_start timestamp;
   v_end timestamp;
   v_checkout timestamp;
   v_room_type text;
   v_check_in date;
   v_check_out date;
-  v_duration int;
   v_needs_conflict_check boolean;
 begin
   if p_booking_type = 'grooming' then
-    select payment_id, staff_id, pet_id, booking_status, booking_date + booking_time
-      into v_payment_id, v_staff_id, v_pet_id, v_current_status, v_start
+    select payment_id, staff_id, booking_date + booking_time into v_payment_id, v_staff_id, v_start
       from grooming_booking where company_id = p_company_id and grooming_booking_id = p_booking_id for update;
     if not found then raise exception 'Booking not found' using errcode = 'P0002'; end if;
-    if p_booking_patch ? 'booking_status' then
-      v_new_status := p_booking_patch->>'booking_status';
-      if v_new_status = 'Cancelled' then
-        raise exception 'Use cancel_booking_atomic to cancel a booking' using errcode = 'P0001';
-      end if;
-      if not booking_status_transition_allowed(v_current_status, v_new_status) then
-        raise exception 'Invalid booking status transition from % to %', v_current_status, v_new_status using errcode = 'P0001';
-      end if;
-    end if;
-    v_needs_conflict_check := (p_booking_patch ? 'staff_id') or (p_booking_patch ? 'pet_id')
-      or (p_booking_patch ? 'booking_date') or (p_booking_patch ? 'booking_time')
-      or (p_booking_patch ? 'duration_minutes');
+    v_needs_conflict_check := (p_booking_patch ? 'staff_id') or (p_booking_patch ? 'booking_date') or (p_booking_patch ? 'booking_time');
     if v_needs_conflict_check then
       v_staff_id := coalesce((p_booking_patch->>'staff_id')::int, v_staff_id);
-      v_pet_id := coalesce((p_booking_patch->>'pet_id')::int, v_pet_id);
       select coalesce((p_booking_patch->>'booking_date')::date, booking_date)
              + coalesce((p_booking_patch->>'booking_time')::time, booking_time)
         into v_start
         from grooming_booking where company_id = p_company_id and grooming_booking_id = p_booking_id;
-      select coalesce((p_booking_patch->>'duration_minutes')::int, duration_minutes, 90)
-        into v_duration from grooming_booking
-        where company_id = p_company_id and grooming_booking_id = p_booking_id;
-      if v_duration <= 0 or v_duration > 1440 then
-        raise exception 'Invalid grooming duration' using errcode = 'P0001';
-      end if;
-      v_end := v_start + make_interval(mins => v_duration);
-      perform pg_advisory_xact_lock(hashtextextended(p_company_id::text || ':staff:' || v_staff_id::text, 0));
-      perform pg_advisory_xact_lock(hashtextextended(p_company_id::text || ':pet:' || v_pet_id::text, 0));
-      if not staff_can_book_service(p_company_id, v_staff_id, 'grooming', v_start::date)
-        or not booking_event_within_hours(p_company_id, v_start::date, v_start::time, v_end::time)
-        or not pet_vaccination_valid(p_company_id, v_pet_id, 'grooming', v_start::date) then
-        raise exception 'Updated booking violates staff, hours, or pet eligibility rules' using errcode = 'P0001';
-      end if;
+      v_end := v_start + interval '90 minutes';
       if staff_has_conflicting_booking(p_company_id, v_staff_id, v_start, v_end, 'grooming', p_booking_id) then
         raise exception 'This staff member already has a booking that overlaps this time' using errcode = 'P0001';
-      end if;
-      if pet_has_conflicting_booking(p_company_id, v_pet_id, v_start, v_end, 'grooming', p_booking_id) then
-        raise exception 'This pet already has a booking that overlaps this time' using errcode = 'P0001';
       end if;
     end if;
     update grooming_booking b set
@@ -590,7 +379,6 @@ begin
       service_name = coalesce(p_booking_patch->>'service_name', b.service_name),
       booking_date = coalesce((p_booking_patch->>'booking_date')::date, b.booking_date),
       booking_time = coalesce((p_booking_patch->>'booking_time')::time, b.booking_time),
-      duration_minutes = coalesce((p_booking_patch->>'duration_minutes')::int, b.duration_minutes),
       price = coalesce((p_booking_patch->>'price')::numeric, b.price),
       add_on = coalesce(p_booking_patch->>'add_on', b.add_on),
       add_on_price = coalesce((p_booking_patch->>'add_on_price')::numeric, b.add_on_price),
@@ -599,40 +387,19 @@ begin
       where company_id = p_company_id and grooming_booking_id = p_booking_id
       returning to_jsonb(b) into v_result;
   elsif p_booking_type = 'daycare' then
-    select payment_id, staff_id, pet_id, booking_status
-      into v_payment_id, v_staff_id, v_pet_id, v_current_status from daycare_booking
+    select payment_id, staff_id into v_payment_id, v_staff_id from daycare_booking
       where company_id = p_company_id and daycare_booking_id = p_booking_id for update;
     if not found then raise exception 'Booking not found' using errcode = 'P0002'; end if;
-    if p_booking_patch ? 'booking_status' then
-      v_new_status := p_booking_patch->>'booking_status';
-      if v_new_status = 'Cancelled' then
-        raise exception 'Use cancel_booking_atomic to cancel a booking' using errcode = 'P0001';
-      end if;
-      if not booking_status_transition_allowed(v_current_status, v_new_status) then
-        raise exception 'Invalid booking status transition from % to %', v_current_status, v_new_status using errcode = 'P0001';
-      end if;
-    end if;
-    v_needs_conflict_check := (p_booking_patch ? 'staff_id') or (p_booking_patch ? 'pet_id') or (p_booking_patch ? 'booking_date')
+    v_needs_conflict_check := (p_booking_patch ? 'staff_id') or (p_booking_patch ? 'booking_date')
       or (p_booking_patch ? 'check_in_time') or (p_booking_patch ? 'check_out_time');
     if v_needs_conflict_check then
       v_staff_id := coalesce((p_booking_patch->>'staff_id')::int, v_staff_id);
-      v_pet_id := coalesce((p_booking_patch->>'pet_id')::int, v_pet_id);
       select coalesce((p_booking_patch->>'booking_date')::date, booking_date) + coalesce((p_booking_patch->>'check_in_time')::time, check_in_time),
              coalesce((p_booking_patch->>'booking_date')::date, booking_date) + coalesce((p_booking_patch->>'check_out_time')::time, check_out_time)
         into v_start, v_end
         from daycare_booking where company_id = p_company_id and daycare_booking_id = p_booking_id;
-      perform pg_advisory_xact_lock(hashtextextended(p_company_id::text || ':staff:' || v_staff_id::text, 0));
-      perform pg_advisory_xact_lock(hashtextextended(p_company_id::text || ':pet:' || v_pet_id::text, 0));
-      if not staff_can_book_service(p_company_id, v_staff_id, 'daycare', v_start::date)
-        or not booking_event_within_hours(p_company_id, v_start::date, v_start::time, v_end::time)
-        or not pet_vaccination_valid(p_company_id, v_pet_id, 'daycare', v_start::date) then
-        raise exception 'Updated booking violates staff, hours, or pet eligibility rules' using errcode = 'P0001';
-      end if;
       if staff_has_conflicting_booking(p_company_id, v_staff_id, v_start, v_end, 'daycare', p_booking_id) then
         raise exception 'This staff member already has a booking that overlaps this time' using errcode = 'P0001';
-      end if;
-      if pet_has_conflicting_booking(p_company_id, v_pet_id, v_start, v_end, 'daycare', p_booking_id) then
-        raise exception 'This pet already has a booking that overlaps this time' using errcode = 'P0001';
       end if;
     end if;
     update daycare_booking b set
@@ -650,48 +417,23 @@ begin
       where company_id = p_company_id and daycare_booking_id = p_booking_id
       returning to_jsonb(b) into v_result;
   elsif p_booking_type = 'boarding' then
-    select payment_id, staff_id, pet_id, room_type, booking_status
-      into v_payment_id, v_staff_id, v_pet_id, v_room_type, v_current_status from boarding_booking
+    select payment_id, staff_id, room_type into v_payment_id, v_staff_id, v_room_type from boarding_booking
       where company_id = p_company_id and boarding_booking_id = p_booking_id for update;
     if not found then raise exception 'Booking not found' using errcode = 'P0002'; end if;
-    if p_booking_patch ? 'booking_status' then
-      v_new_status := p_booking_patch->>'booking_status';
-      if v_new_status = 'Cancelled' then
-        raise exception 'Use cancel_booking_atomic to cancel a booking' using errcode = 'P0001';
-      end if;
-      if not booking_status_transition_allowed(v_current_status, v_new_status) then
-        raise exception 'Invalid booking status transition from % to %', v_current_status, v_new_status using errcode = 'P0001';
-      end if;
-    end if;
-    v_needs_conflict_check := (p_booking_patch ? 'staff_id') or (p_booking_patch ? 'pet_id') or (p_booking_patch ? 'check_in_date') or (p_booking_patch ? 'check_in_time')
+    v_needs_conflict_check := (p_booking_patch ? 'staff_id') or (p_booking_patch ? 'check_in_date') or (p_booking_patch ? 'check_in_time')
       or (p_booking_patch ? 'check_out_date') or (p_booking_patch ? 'check_out_time');
     if v_needs_conflict_check then
       v_staff_id := coalesce((p_booking_patch->>'staff_id')::int, v_staff_id);
-      v_pet_id := coalesce((p_booking_patch->>'pet_id')::int, v_pet_id);
       select coalesce((p_booking_patch->>'check_in_date')::date, check_in_date) + coalesce((p_booking_patch->>'check_in_time')::time, check_in_time),
              coalesce((p_booking_patch->>'check_out_date')::date, check_out_date) + coalesce((p_booking_patch->>'check_out_time')::time, check_out_time)
         into v_start, v_checkout
         from boarding_booking where company_id = p_company_id and boarding_booking_id = p_booking_id;
       v_end := v_start + interval '30 minutes';
-      perform pg_advisory_xact_lock(hashtextextended(p_company_id::text || ':staff:' || v_staff_id::text, 0));
-      perform pg_advisory_xact_lock(hashtextextended(p_company_id::text || ':pet:' || v_pet_id::text, 0));
-      if not staff_can_book_service(p_company_id, v_staff_id, 'boarding', v_start::date)
-        or not staff_can_book_service(p_company_id, v_staff_id, 'boarding', v_checkout::date)
-        or not booking_event_within_hours(p_company_id, v_start::date, v_start::time, v_end::time)
-        or not booking_event_within_hours(
-          p_company_id, v_checkout::date, v_checkout::time, (v_checkout + interval '30 minutes')::time
-        )
-        or not pet_vaccination_valid(p_company_id, v_pet_id, 'boarding', v_start::date) then
-        raise exception 'Updated booking violates staff, hours, or pet eligibility rules' using errcode = 'P0001';
-      end if;
       if staff_has_conflicting_booking(p_company_id, v_staff_id, v_start, v_end, 'boarding', p_booking_id)
         or staff_has_conflicting_booking(
           p_company_id, v_staff_id, v_checkout, v_checkout + interval '30 minutes', 'boarding', p_booking_id
         ) then
         raise exception 'This staff member already has a booking that overlaps this time' using errcode = 'P0001';
-      end if;
-      if pet_has_conflicting_booking(p_company_id, v_pet_id, v_start, v_checkout, 'boarding', p_booking_id) then
-        raise exception 'This pet already has a booking that overlaps this stay' using errcode = 'P0001';
       end if;
     end if;
     if (p_booking_patch ? 'room_type') or (p_booking_patch ? 'check_in_date') or (p_booking_patch ? 'check_out_date') then
@@ -700,7 +442,6 @@ begin
              coalesce((p_booking_patch->>'check_out_date')::date, check_out_date)
         into v_room_type, v_check_in, v_check_out
         from boarding_booking where company_id = p_company_id and boarding_booking_id = p_booking_id;
-      perform pg_advisory_xact_lock(hashtextextended(p_company_id::text || ':room:' || coalesce(v_room_type, ''), 0));
       if not room_has_capacity(p_company_id, v_room_type, v_check_in, v_check_out, p_booking_id) then
         raise exception 'This room type is fully booked for the selected dates' using errcode = 'P0001';
       end if;

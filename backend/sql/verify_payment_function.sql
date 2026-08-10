@@ -16,11 +16,6 @@ create index if not exists payment_company_redemption_idx
 create index if not exists redemption_company_status_idx
   on redemption (company_id, status);
 
--- Keep this base migration aligned with the later rejection-reason repair so
--- re-running it can never recreate the obsolete three-argument overload.
-alter table redemption
-  add column if not exists rejection_reason text;
-
 -- A voucher request is created as Pending and linked to one payment. No
 -- points move until a manager approves it.
 create or replace function request_redemption(
@@ -125,15 +120,11 @@ end;
 $$;
 
 -- Approval revalidates and locks the member/coupon before deducting exactly
--- once. Rejection never changes the member balance and requires an auditable
--- reason. Drop the old signature so PostgREST never sees both overloads.
-drop function if exists decide_redemption(int, int, text);
-
+-- once. Rejection never changes the member balance.
 create or replace function decide_redemption(
   p_company_id int,
   p_redemption_id int,
-  p_status text,
-  p_reason text default null
+  p_status text
 )
 returns jsonb
 language plpgsql
@@ -149,9 +140,6 @@ declare
 begin
   if p_status not in ('Approved', 'Rejected') then
     raise exception 'status must be Approved or Rejected' using errcode = 'P0001';
-  end if;
-  if p_status = 'Rejected' and nullif(btrim(p_reason), '') is null then
-    raise exception 'A rejection reason is required' using errcode = 'P0001';
   end if;
 
   -- All payment/redemption/member functions lock in this exact order to
@@ -228,8 +216,7 @@ begin
     update redemption
     set status = 'Rejected',
         approved_date = null,
-        approved_time = null,
-        rejection_reason = btrim(p_reason)
+        approved_time = null
     where company_id = p_company_id and redemption_id = p_redemption_id;
     v_new_balance := null;
   end if;
@@ -294,9 +281,6 @@ begin
   end if;
 
   v_payment.final_amount := coalesce(p_final_amount, v_payment.final_amount);
-  if v_payment.final_amount is null or v_payment.final_amount < 0 then
-    raise exception 'Final payment amount must be zero or greater' using errcode = 'P0001';
-  end if;
 
   -- A payment with a linked redemption cannot be verified until that exact
   -- request has been approved. Points were already deducted at approval.
@@ -317,20 +301,6 @@ begin
     v_spend := coalesce(v_redemption.loyalty_spend, 0);
   elsif p_coupon_id is not null then
     raise exception 'No approved point redemption for this payment' using errcode = 'P0001';
-  end if;
-
-  -- A zero amount is only legitimate when it's actually covered by a
-  -- verified, approved redemption (checked above — p_coupon_id not null
-  -- here means it already matched v_payment's own approved redemption, or
-  -- the block above already raised). Any other zero amount is a data
-  -- error, not a real free service, and must still be rejected. This was
-  -- previously an unconditional "> 0" check that blocked a booking fully
-  -- covered by loyalty points/a 100% discount from EVER being marked Paid
-  -- — the 'Loyalty Redemption' payment_method branch further below already
-  -- assumed this exact case (final_amount = 0 and p_coupon_id is not null)
-  -- was reachable, but it never was until now.
-  if v_payment.final_amount = 0 and p_coupon_id is null then
-    raise exception 'Final payment amount must be greater than zero unless a fully-covering redemption is verified' using errcode = 'P0001';
   end if;
 
   -- A non-member can pay normally. Lock member after payment/redemption,
@@ -421,5 +391,5 @@ grant execute on function verify_payment(int, int, int, int, numeric, int, text,
   to service_role;
 revoke all on function request_redemption(int, int, int) from public, anon, authenticated;
 grant execute on function request_redemption(int, int, int) to service_role;
-revoke all on function decide_redemption(int, int, text, text) from public, anon, authenticated;
-grant execute on function decide_redemption(int, int, text, text) to service_role;
+revoke all on function decide_redemption(int, int, text) from public, anon, authenticated;
+grant execute on function decide_redemption(int, int, text) to service_role;

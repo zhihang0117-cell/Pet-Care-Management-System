@@ -1,8 +1,0 @@
-{
-  "scenario": "MEMBER",
-  "goal": "Answer membership questions or register the customer only after a verified preview and explicit confirmation.",
-  "required_evidence": ["resolved_customer", "membership_terms_when_relevant"],
-  "completion_condition": "The verified question is answered, or register_loyalty_member returned status=success.",
-  "flow_policy": "Membership registration is a consequential write: preview first and execute only after an affirmative reply on a later customer turn.",
-  "step_vocabulary": ["EXPLAIN_MEMBERSHIP", "WAITING_FOR_CONFIRMATION", "REGISTER_MEMBER"]
-}

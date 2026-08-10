@@ -21,16 +21,6 @@ from app.documents.storage import upload_customer_document
 from app.db.supabase_client import get_supabase_client
 
 
-def _delivery_succeeded(send_result: dict) -> bool:
-    """True only for send_whatsapp_document's real success statuses ("sent"
-    from the live provider, "sent_console" from the local test outbox) —
-    "error" and "not_configured" are failures. Both functions below used to
-    return a hard-coded {"status": "success"} regardless of this value, so a
-    failed/unconfigured WhatsApp send was reported as a delivered document.
-    Mirrors the same guardrail applied to the notice endpoints in main.py."""
-    return str((send_result or {}).get("status") or "") in {"sent", "sent_console"}
-
-
 def _customer_for_pet(company_id: int, pet_id: int | None) -> dict:
     """{customer_id, customer_name, phone_number} for the customer who owns pet_id."""
     empty = {"customer_id": None, "customer_name": "", "phone_number": ""}
@@ -174,36 +164,6 @@ def _fill_pet_name(company_id: int, booking: dict) -> dict:
     return booking
 
 
-def _payment_status_for(company_id: int, booking: dict) -> str:
-    """The linked payment's real status ("Pending" until staff verify it,
-    "Paid", "Refunded", etc).
-
-    booking_status is "Pending"/"Scheduled" at this exact point regardless
-    of path — every booking starts there — so it tells the customer nothing
-    they don't already know from having just booked. payment_status is what
-    they actually still need to act on. create_booking's own result already
-    carries payment_status (fetched at write time); this only re-fetches it
-    when a caller's booking dict didn't already have it (reschedule_booking,
-    and document_tools.py's on-demand "resend my confirmation" path)."""
-    if booking.get("payment_status"):
-        return str(booking["payment_status"])
-    payment_id = booking.get("payment_id")
-    if payment_id is None:
-        return "Pending"
-    rows = (
-        get_supabase_client()
-        .table("payment")
-        .select("status")
-        .eq("company_id", company_id)
-        .eq("payment_id", int(payment_id))
-        .limit(1)
-        .execute()
-        .data
-        or []
-    )
-    return str(rows[0].get("status")) if rows and rows[0].get("status") else "Pending"
-
-
 def generate_and_send_booking_confirmation(company_id: int, booking: dict, redemption: dict | None = None) -> dict:
     """booking: the persisted record returned by create_booking/
     reschedule_booking (has booking_id, service_type, pet_id, pet_name,
@@ -215,7 +175,6 @@ def generate_and_send_booking_confirmation(company_id: int, booking: dict, redem
         booking = {
             **booking,
             "staff_name": _staff_name(company_id, booking.get("staff_id")),
-            "payment_status": _payment_status_for(company_id, booking),
         }
         loyalty = _loyalty_snapshot(company_id, customer["customer_id"])
         pdf_bytes = build_booking_confirmation_pdf(
@@ -238,11 +197,7 @@ def generate_and_send_booking_confirmation(company_id: int, booking: dict, redem
             document_url,
             f"Your booking confirmation — BC-{str(booking.get('service_type') or 'BOOKING').upper()}-{booking.get('booking_id')}",
         )
-        return {
-            "status": "success" if _delivery_succeeded(send_result) else "delivery_failed",
-            "document_url": document_url,
-            "send_result": send_result,
-        }
+        return {"status": "success", "document_url": document_url, "send_result": send_result}
     except Exception as exc:
         return {"status": "error", "error": str(exc)}
 
@@ -312,10 +267,6 @@ def generate_and_send_invoice(company_id: int, payment: dict, booking: dict, *, 
             document_url,
             f"Your invoice — {profile['invoice_prefix']}-{payment.get('payment_id')}",
         )
-        return {
-            "status": "success" if _delivery_succeeded(send_result) else "delivery_failed",
-            "document_url": document_url,
-            "send_result": send_result,
-        }
+        return {"status": "success", "document_url": document_url, "send_result": send_result}
     except Exception as exc:
         return {"status": "error", "error": str(exc)}

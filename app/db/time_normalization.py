@@ -155,37 +155,30 @@ def extract_duration_minutes(message: str) -> int | None:
     return None
 
 
-_TIME_RANGE_SEPARATOR_RE = re.compile(
-    r"\s+(?:to|until|till|hingga|sehingga)\s+|\s*[-–—]\s*|\s*(?:到|至)\s*",
-    re.I,
-)
-
-
 def extract_time_range(message: str) -> tuple[str, str, int] | None:
-    """Extract an explicit same-day start/end pair and its duration.
-
-    Tries every separator occurrence in the message, not just the first —
-    real bug confirmed live: a message like "I want to book ... 12pm to
-    5pm" has an earlier, unrelated "to" ("want TO book") that used to make
-    the old first-match-only split fail before ever reaching the actual
-    time range later in the same sentence, silently returning None for a
-    perfectly explicit range the customer did state."""
+    """Extract an explicit same-day start/end pair and its duration."""
     text = str(message or "").strip()
-    for match in _TIME_RANGE_SEPARATOR_RE.finditer(text):
-        start = extract_time_from_message(text[: match.start()])
-        end = extract_time_from_message(text[match.end() :])
-        if not start or not end or is_period_token(start) or is_period_token(end):
-            continue
-        try:
-            start_hour, start_minute = (int(part) for part in start.split(":"))
-            end_hour, end_minute = (int(part) for part in end.split(":"))
-        except (TypeError, ValueError):
-            continue
-        duration = (end_hour * 60 + end_minute) - (start_hour * 60 + start_minute)
-        if duration <= 0:
-            continue
-        return start, end, duration
-    return None
+    parts = re.split(
+        r"\s+(?:to|until|till|hingga|sehingga)\s+|\s*[-–—]\s*|\s*(?:到|至)\s*",
+        text,
+        maxsplit=1,
+        flags=re.I,
+    )
+    if len(parts) != 2:
+        return None
+    start = extract_time_from_message(parts[0])
+    end = extract_time_from_message(parts[1])
+    if not start or not end or is_period_token(start) or is_period_token(end):
+        return None
+    try:
+        start_hour, start_minute = (int(part) for part in start.split(":"))
+        end_hour, end_minute = (int(part) for part in end.split(":"))
+    except (TypeError, ValueError):
+        return None
+    duration = (end_hour * 60 + end_minute) - (start_hour * 60 + start_minute)
+    if duration <= 0:
+        return None
+    return start, end, duration
 
 
 def is_period_token(value: str) -> bool:

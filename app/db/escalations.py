@@ -3,10 +3,8 @@
 from __future__ import annotations
 
 from datetime import datetime
-from zoneinfo import ZoneInfo
 
 from app.db.supabase_client import get_supabase_client
-from app.db.time_normalization import BUSINESS_TIMEZONE
 
 
 def save_staff_enquiry(
@@ -27,11 +25,7 @@ def save_staff_enquiry(
     if not message:
         raise ValueError("Cannot create a staff enquiry from an empty message")
 
-    # Business-local (Asia/Kuala_Lumpur), not naive server time — the
-    # container runs in UTC, so a bare datetime.now() recorded a
-    # receive_date/receive_time up to 8 hours off (and, near midnight
-    # either side, the wrong calendar date) on the staff dashboard.
-    now = datetime.now(ZoneInfo(BUSINESS_TIMEZONE))
+    now = datetime.now()
     payload = {
         "company_id": int(company_id),
         "sender_type": "customer",

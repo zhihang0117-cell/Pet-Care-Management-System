@@ -97,11 +97,6 @@ gcloud run deploy pawfectai-ai \
 
 (Create those Secret Manager secrets first — `gcloud secrets create supabase-url --data-file=-`, etc. — or swap `--set-secrets` for a second `--set-env-vars` block if you'd rather manage them as plain env vars; the `SUPABASE_SERVICE_ROLE_KEY` and the API keys are the ones actually worth keeping in Secret Manager.)
 
-At startup, the service performs a read-only PostgREST OpenAPI preflight and
-refuses to serve traffic when a required database RPC is missing. Apply the
-manual migrations in `backend/sql/README.md` before deploying; in particular,
-membership registration requires `loyalty_member_registration_migration.sql`.
-
 - **`OPENAI_API_KEY` is required for every single `/chat` call, not just RAG**
   — `app/orchestrator.py`'s `ChatOpenAI(...)` (the gpt-4o-mini call itself)
   reads this from the environment; it is unrelated to `EMBEDDING_PROVIDER`
@@ -123,15 +118,17 @@ membership registration requires `loyalty_member_registration_migration.sql`.
   it looks like a random mid-request crash, not an obvious memory error,
   unless you already know to look for it.
 - **`--min-instances 1 --max-instances 1` is required for correctness, not
-  just cost** — `app/context/memory.py` (conversation state) is still an
-  in-process store, so Cloud Run's default autoscaling could route consecutive
-  messages to different instances and silently lose conversation context.
-  Slot holds use the shared Supabase `booking_slot_hold` table after
-  `backend/sql/booking_slot_holds_migration.sql` is applied, with the local
-  registry retained only as a compatibility fallback; without that migration,
-  multiple workers can still offer the same provisional slot. Pinning to one
-  instance remains the correct interim deployment until conversation state is
-  also shared. `min-instances=1` also avoids the
+  just cost** — `app/context/memory.py` (conversation state) and
+  `app/context/slot_holds.py` (booking-slot holds) are both in-process,
+  in-memory stores with no shared backing store today. Cloud Run's default
+  autoscaling (`min-instances=0`, unbounded max) would let two container
+  instances run at once under real concurrent traffic, and each gets its
+  own independent copy of both — a customer's conversation could silently
+  lose context mid-flow depending which instance handles which message.
+  Pinning to exactly one instance is the correct interim fix at this
+  traffic scale (a single pet-care business) without the larger work of
+  moving that state into Supabase; revisit this the moment real traffic
+  needs more than one instance. `min-instances=1` also avoids the
   BGE-Large model being re-downloaded from Hugging Face on every cold start
   (the container filesystem is not persisted across restarts), which
   `main.py`'s startup warmup hook (`_warm_up_embedding_model`) would

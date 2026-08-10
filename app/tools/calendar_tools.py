@@ -16,7 +16,8 @@ from app.tools.booking_window import today_business
 def resolve_datetime(text: str) -> dict:
     """
     Resolve natural-language date/time text (e.g. "tomorrow", "this Saturday",
-    "3pm", "afternoon", "next week") using the configured business clock.
+    "3pm", "afternoon", "next week") using the business's own date/time
+    normalizers (business-local time, Asia/Kuala_Lumpur).
 
     Returns date (YYYY-MM-DD or None) for a single specific day, date_range
     ({"start":..., "end":...} or None) for vague week-level phrases like
@@ -27,28 +28,13 @@ def resolve_datetime(text: str) -> dict:
 
     If date_range comes back instead of date, use check_availability_range
     (not check_availability) — do not ask the customer to narrow a range
-    down to one specific day first. EXCEPT for BOARDING: check_availability_range
-    does not support BOARDING at all — once the customer has picked a room,
-    call check_availability (singular) instead, with date_range's "start" as
-    the check-in date and "end" as check_out_date, even though a range (not
-    a single date) is what resolve_datetime actually returned.
-
-    A period is a filter, not a bookable time: needs_time_selection is true
-    whenever only a period came back (no exact clock time) — it means the
-    customer gave a vague window like "noon"/"morning", not a specific slot.
-    When true, call check_availability with this period, present the real
-    available_slots it returns, and get the customer's pick before calling
-    create_booking. Never substitute a fixed clock time for a period
-    yourself (e.g. treating "noon" as 12:00) — the customer must choose the
-    actual slot.
+    down to one specific day first.
     """
-    # Always provide the configured business date explicitly so relative
-    # expressions never depend on the host machine's calendar date.
-    reference_today = today_business()
-    parsed_date = extract_customer_date(text, today=reference_today)
+    reference_date = today_business()
+    parsed_date = extract_customer_date(text, today=reference_date)
     date_range = None
     if parsed_date is None:
-        range_result = parse_week_range(text, today=reference_today)
+        range_result = parse_week_range(text, today=reference_date)
         if range_result:
             date_range = {"start": range_result[0].isoformat(), "end": range_result[1].isoformat()}
 
@@ -65,6 +51,5 @@ def resolve_datetime(text: str) -> dict:
         "period": period,
         "duration_minutes": duration_minutes,
         "ambiguous": parsed_date is None and date_range is None and not clock_time and not period and duration_minutes is None,
-        "needs_time_selection": bool(period) and not clock_time,
         "raw_text": text,
     }

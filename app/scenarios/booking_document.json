@@ -1,8 +1,0 @@
-{
-  "scenario": "BOOKING_DOCUMENT",
-  "goal": "Resend the selected booking confirmation document requested by the customer.",
-  "required_evidence": ["resolved_customer", "resolved_booking", "explicit_document_request"],
-  "completion_condition": "send_booking_confirmation returned status=success.",
-  "flow_policy": "Only send after an explicit current-message request for the confirmation document or slip.",
-  "step_vocabulary": ["RESOLVE_BOOKING", "SEND_CONFIRMATION"]
-}

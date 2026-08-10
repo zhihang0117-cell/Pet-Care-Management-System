@@ -32,15 +32,12 @@ revoke all on function delete_customer_with_pets(int, int)
 grant execute on function delete_customer_with_pets(int, int)
   to service_role;
 
--- Legacy base implementations retained only as reference/upgrade helpers.
--- The callable create_booking_atomic/update_booking_atomic functions live in
--- booking_conflict_prevention_migration.sql. Keeping distinct names here
--- prevents an out-of-order rerun from removing concurrency protection.
+-- Create the booking first, then its pending payment, and finally link the
+-- payment back to the booking. Any failure rolls back all three steps.
 alter table daycare_booking add column if not exists add_on text;
 alter table daycare_booking add column if not exists add_on_price numeric default 0;
-alter table grooming_booking add column if not exists duration_minutes int not null default 90;
 
-create or replace function create_booking_atomic_base(
+create or replace function create_booking_atomic(
   p_company_id int,
   p_booking_type text,
   p_booking jsonb,
@@ -61,13 +58,12 @@ begin
   if p_booking_type = 'grooming' then
     insert into grooming_booking (
       company_id, pet_id, staff_id, service_name, booking_date,
-      booking_time, duration_minutes, price, add_on, add_on_price, notes, booking_status,
+      booking_time, price, add_on, add_on_price, notes, booking_status,
       created_date, created_time
     ) values (
       p_company_id, (p_booking->>'pet_id')::int, (p_booking->>'staff_id')::int,
       p_booking->>'service_name', (p_booking->>'booking_date')::date,
-      (p_booking->>'booking_time')::time,
-      coalesce((p_booking->>'duration_minutes')::int, 90), (p_booking->>'price')::numeric,
+      (p_booking->>'booking_time')::time, (p_booking->>'price')::numeric,
       p_booking->>'add_on', (p_booking->>'add_on_price')::numeric, p_booking->>'notes',
       p_booking->>'booking_status', (p_booking->>'created_date')::date,
       (p_booking->>'created_time')::time
@@ -148,7 +144,7 @@ begin
 end;
 $$;
 
-create or replace function update_booking_atomic_base(
+create or replace function update_booking_atomic(
   p_company_id int,
   p_booking_type text,
   p_booking_id int,
@@ -174,7 +170,6 @@ begin
       service_name = coalesce(p_booking_patch->>'service_name', b.service_name),
       booking_date = coalesce((p_booking_patch->>'booking_date')::date, b.booking_date),
       booking_time = coalesce((p_booking_patch->>'booking_time')::time, b.booking_time),
-      duration_minutes = coalesce((p_booking_patch->>'duration_minutes')::int, b.duration_minutes),
       price = coalesce((p_booking_patch->>'price')::numeric, b.price),
       add_on = coalesce(p_booking_patch->>'add_on', b.add_on),
       add_on_price = coalesce((p_booking_patch->>'add_on_price')::numeric, b.add_on_price),
@@ -289,7 +284,9 @@ begin
 end;
 $$;
 
-revoke all on function create_booking_atomic_base(int, text, jsonb, jsonb) from public, anon, authenticated;
-revoke all on function update_booking_atomic_base(int, text, int, jsonb, jsonb) from public, anon, authenticated;
+revoke all on function create_booking_atomic(int, text, jsonb, jsonb) from public, anon, authenticated;
+revoke all on function update_booking_atomic(int, text, int, jsonb, jsonb) from public, anon, authenticated;
 revoke all on function delete_booking_atomic(int, text, int) from public, anon, authenticated;
+grant execute on function create_booking_atomic(int, text, jsonb, jsonb) to service_role;
+grant execute on function update_booking_atomic(int, text, int, jsonb, jsonb) to service_role;
 grant execute on function delete_booking_atomic(int, text, int) to service_role;

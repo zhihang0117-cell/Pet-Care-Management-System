@@ -30,13 +30,6 @@ def retrieve_policy(
 
     pet_type/pet_size remain available for a genuinely species-specific
     policy query, but do not duplicate a catalogue call just to obtain price.
-
-    IMPORTANT: always phrase `query` in English, even when the customer
-    asked in Chinese/Malay/another language. The knowledge base is embedded
-    with an English-only model (BGE-Large-en) — an English `query` is what
-    actually matches the stored chunks; translate the customer's question
-    into English yourself before calling this tool. You still reply to the
-    customer in their own language using whatever the retrieved chunk says.
     """
     return _retriever.search(
         company_id, query, service_type=service_type, pet_type=pet_type, pet_size=pet_size

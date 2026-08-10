@@ -7,7 +7,6 @@ not from the customer message text.
 
 from __future__ import annotations
 
-import hashlib
 import os
 import re
 from dataclasses import dataclass, field
@@ -78,8 +77,6 @@ def resolve_company_id_from_chat_key(chat_api_key: str) -> int | None:
     """
     Look up which company a presented X-Chat-Key belongs to, via the
     company_chat_key table (see backend/sql/chat_api_key_migration.sql).
-    Only a SHA-256 digest is sent to Postgres; plaintext chat credentials are
-    never persisted or included in database query logs.
     Returns None if the key is blank, the table doesn't exist yet (fresh
     deployment that hasn't run the migration), or no row matches — callers
     must fall back to the legacy single-company CHAT_API_KEY env var in that
@@ -88,7 +85,6 @@ def resolve_company_id_from_chat_key(chat_api_key: str) -> int | None:
     key = str(chat_api_key or "").strip()
     if not key:
         return None
-    key_hash = hashlib.sha256(key.encode("utf-8")).hexdigest()
     try:
         from app.db.supabase_client import get_supabase_client
 
@@ -96,7 +92,7 @@ def resolve_company_id_from_chat_key(chat_api_key: str) -> int | None:
             get_supabase_client()
             .table("company_chat_key")
             .select("company_id")
-            .eq("chat_api_key_hash", key_hash)
+            .eq("chat_api_key", key)
             .limit(1)
             .execute()
             .data

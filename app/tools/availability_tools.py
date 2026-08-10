@@ -7,13 +7,9 @@ from typing import Literal
 from langchain_core.tools import tool
 
 from app.db.relational_provider import get_relational_repository
-from app.tools.booking_window import (
-    DEFAULT_SUGGESTION_WINDOW_DAYS,
-    booking_window_error,
-    max_bookable_date,
-    resolve_date_string,
-)
-from app.tools.time_periods import filter_slots_by_period
+from app.tools.booking_window import booking_window_error, max_bookable_date, resolve_date_string
+from app.tools.time_periods import PERIOD_WINDOWS, filter_slots_by_period
+from app.db.time_normalization import normalize_time, normalize_time_to_slot
 
 
 _TRANSIENT_DATABASE_MARKERS = (
@@ -26,7 +22,6 @@ _TRANSIENT_DATABASE_MARKERS = (
     "temporary failure",
 )
 ServiceType = Literal["GROOMING", "DAYCARE", "BOARDING"]
-SelectionTarget = Literal["CHECK_IN", "CHECK_OUT"]
 
 
 def _is_transient_database_result(result: dict) -> bool:
@@ -59,13 +54,9 @@ def check_availability(
     room_type: str = "",
     check_out_date: str = "",
     customer_id: str | int = "",
-    pet_id: str | int = "",
     exclude_booking_id: str | int = "",
     duration_minutes: int | None = None,
     check_out_time: str = "",
-    preferred_staff: str = "",
-    selection_target: SelectionTarget = "CHECK_IN",
-    check_in_time: str = "",
 ) -> dict:
     """
     Check real availability (staff + leave + existing bookings) for a
@@ -78,21 +69,12 @@ def check_availability(
     suggestion window but an explicit further-out date is still checked
     normally (see BOOKING WINDOW).
 
-    Set selection_target="CHECK_IN" when choosing a drop-off/check-in time;
-    `time` is then the customer's requested check-in period or exact time,
-    and matching choices are returned in available_slots. For DAYCARE also
-    pass check_out_time or duration_minutes so every offered start can fit
-    the complete visit.
-
-    Set selection_target="CHECK_OUT" when the check-in time is already
-    selected and the customer needs pickup/check-out choices. Pass that
-    fixed start as check_in_time; `time` now filters the requested pickup
-    period or exact pickup clock time. Present only available_check_out_times.
-    For BOARDING, also pass room_type and check_out_date. Never treat a
-    requested pickup time as the service's start time.
-
-    If the customer requests a specific staff member, pass preferred_staff so
-    every offered slot is validated for that person rather than for any staff.
+    Pass the customer's stated period (morning/afternoon/evening/night) or
+    exact time as `time` — matching slots are pre-filtered into
+    available_slots for you; do not present slots outside what the
+    customer asked for. For DAYCARE, also pass check_out_time or
+    duration_minutes so the entire visit (not only drop-off) is checked
+    against staff conflicts and closing time.
 
     For BOARDING, once the customer has picked a room (room_type, matching
     a real room_type from get_booking_service_options) and you know
@@ -114,33 +96,6 @@ def check_availability(
     window_error = booking_window_error(date)
     if window_error:
         return window_error
-
-    normalized_service = str(service_type or "").strip().upper()
-    normalized_target = str(selection_target or "CHECK_IN").strip().upper()
-    if normalized_target not in {"CHECK_IN", "CHECK_OUT"}:
-        return {
-            "status": "error",
-            "data": {},
-            "error": "selection_target must be CHECK_IN or CHECK_OUT.",
-        }
-    if normalized_target == "CHECK_OUT":
-        if normalized_service not in {"DAYCARE", "BOARDING"}:
-            return {
-                "status": "error",
-                "data": {},
-                "error": "CHECK_OUT choices are only supported for DAYCARE or BOARDING.",
-            }
-        if not str(check_in_time or "").strip():
-            return {
-                "status": "missing_information",
-                "data": {
-                    "service_type": normalized_service,
-                    "selection_target": normalized_target,
-                    "missing_fields": ["check_in_time"],
-                    "available_check_out_times": [],
-                },
-                "error": "Select the check-in time before offering pickup/check-out choices.",
-            }
 
     if check_out_date:
         resolved_check_out = resolve_date_string(check_out_date)
@@ -166,48 +121,53 @@ def check_availability(
             }
 
     intent_json = None
-    if (
-        room_type or check_out_date or customer_id or pet_id or exclude_booking_id
-        or duration_minutes or check_out_time or preferred_staff
-        or normalized_target == "CHECK_OUT" or check_in_time
-    ):
+    if room_type or check_out_date or customer_id or exclude_booking_id or duration_minutes or check_out_time:
         intent_json = {
             "entities": {
                 "room_type": room_type,
                 "check_out_date": check_out_date,
                 "customer_id": customer_id,
-                "pet_id": pet_id,
                 "exclude_booking_id": exclude_booking_id,
                 "duration_minutes": duration_minutes,
                 "check_out_time": check_out_time,
-                "preferred_staff": preferred_staff,
-                "selection_target": normalized_target,
-                "check_in_time": check_in_time,
-                "requested_check_out_filter": time if normalized_target == "CHECK_OUT" else "",
             }
         }
     result = _check_with_transient_retry(
         get_relational_repository(), int(company_id),
-        service=service_type,
-        date=date,
-        time=check_in_time if normalized_target == "CHECK_OUT" else time,
-        intent_json=intent_json,
+        service=service_type, date=date, time=time, intent_json=intent_json
     )
     if result.get("status") == "success":
         data = dict(result.get("data") or {})
-        choices_key = (
-            "available_check_out_times"
-            if normalized_target == "CHECK_OUT"
-            else "available_slots"
-        )
-        all_slots = data.get(choices_key, [])
-        filtered = filter_slots_by_period(all_slots, time)
-        if filtered is not None:
-            data[choices_key] = filtered
-        elif str(time or "").strip():
-            requested_clock = str(time).strip()[:5]
-            exact = [slot for slot in all_slots if str(slot)[:5] == requested_clock]
-            data[choices_key] = exact
+        all_slots = list(data.get("available_slots", []) or [])
+        requested = str(time or "").strip()
+
+        # Broad period requests ("afternoon", "morning", ...) return that
+        # period's verified subset. Exact clock requests are different: the
+        # caller must never receive the whole day's list as if the requested
+        # time itself were verified. Return exactly the requested slot when it
+        # is free, otherwise an empty ``available_slots`` plus the real current
+        # alternatives in ``all_available_slots``. This removes the old
+        # ambiguity where the model could say "2:30 is unavailable" while
+        # simultaneously reprinting a stale/full list containing 2:30.
+        period_key = requested.lower()
+        if period_key in PERIOD_WINDOWS:
+            filtered = filter_slots_by_period(all_slots, requested) or []
+            data["available_slots"] = filtered
+            data["all_available_slots"] = all_slots
+            data["availability_scope"] = "period"
+        elif requested:
+            exact = normalize_time(requested)
+            if exact and exact not in PERIOD_WINDOWS:
+                exact_slot = normalize_time_to_slot(exact)
+                matches = [
+                    slot for slot in all_slots
+                    if normalize_time_to_slot(str(slot)) == exact_slot
+                ]
+                data["requested_time"] = exact
+                data["requested_time_available"] = bool(matches)
+                data["availability_scope"] = "exact"
+                data["all_available_slots"] = all_slots
+                data["available_slots"] = matches
         result = {**result, "data": data}
     return result
 
@@ -216,10 +176,6 @@ def check_availability(
 def check_availability_range(
     company_id: str | int, service_type: ServiceType, start_date: str, end_date: str, time: str = "",
     duration_minutes: int | None = None,
-    customer_id: str | int = "",
-    pet_id: str | int = "",
-    exclude_booking_id: str | int = "",
-    preferred_staff: str = "",
 ) -> dict:
     """
     Check real availability across a range of days (e.g. "next week", "this
@@ -227,19 +183,6 @@ def check_availability_range(
     returned a date_range rather than a single date — do not ask the
     customer to narrow it down to one specific day first. The range is
     automatically capped at the 14-day booking window.
-
-    NEVER call this for BOARDING, even when resolve_datetime returned a
-    date_range for the stay (e.g. "Tuesday to Thursday") — it always
-    returns missing_information for BOARDING and calling it again after
-    that, or re-resolving the same dates, will not help. Once the customer
-    has picked a room, call check_availability (singular) instead, with
-    room_type set to their pick, date set to the range's start (check-in),
-    and check_out_date set to the range's end — this is true even though a
-    date_range came back, not a single date.
-
-    Pass customer_id and pet_id whenever they are known so every day is
-    checked against the selected pet's other bookings. For rescheduling pass
-    exclude_booking_id; for a requested staff member pass preferred_staff.
 
     Pass the customer's stated period (morning/afternoon/evening/night) or
     exact time as `time` — each day's available_slots is pre-filtered for
@@ -251,127 +194,35 @@ def check_availability_range(
         return {"status": "error", "data": {}, "error": "Could not resolve a start_date/end_date."}
     start_date, end_date = resolved_start, resolved_end
 
-    start = date_cls.fromisoformat(start_date)
-    requested_end = date_cls.fromisoformat(end_date)
-    if requested_end < start:
-        return {
-            "status": "error",
-            "data": {"start_date": start_date, "end_date": end_date, "days": []},
-            "error": "end_date must be on or after start_date.",
-        }
-
-    normalized_service = str(service_type or "").strip().upper()
-    if normalized_service not in {"GROOMING", "DAYCARE", "BOARDING"}:
-        return {
-            "status": "error",
-            "data": {},
-            "error": "service_type must be GROOMING, DAYCARE, or BOARDING.",
-        }
-    if normalized_service == "BOARDING":
-        # Confirmed live: without an explicit tool-name redirect here, the
-        # model repeatedly re-resolved the same dates and retried this same
-        # call instead of switching tools — burning through
-        # MAX_TOOL_ITERATIONS without ever converging on a response.
-        return {
-            "status": "missing_information",
-            "data": {
-                "service_type": normalized_service,
-                "missing_fields": ["specific_check_in_date", "room_type", "check_out_date"],
-                "days": [],
-            },
-            "error": (
-                "check_availability_range does not support BOARDING and never will, "
-                "regardless of what arguments are retried here. Call check_availability "
-                "(singular) instead: room_type = the room the customer picked, "
-                f"date = {start_date} (check-in), check_out_date = {end_date} (check-out). "
-                "Do not call resolve_datetime again for these same dates first."
-            ),
-        }
-    if normalized_service == "DAYCARE" and duration_minutes in (None, ""):
-        return {
-            "status": "missing_information",
-            "data": {
-                "service_type": normalized_service,
-                "missing_fields": ["duration_minutes"],
-                "days": [],
-            },
-            "error": "Daycare choices require the visit duration before final time slots can be offered.",
-        }
-
     window_error = booking_window_error(start_date)
     if window_error:
         return window_error
 
     repo = get_relational_repository()
-    end = min(
-        requested_end,
-        max_bookable_date(),
-        start + timedelta(days=DEFAULT_SUGGESTION_WINDOW_DAYS - 1),
-    )
+    start = date_cls.fromisoformat(start_date)
+    end = min(date_cls.fromisoformat(end_date), max_bookable_date())
 
     days = []
-    failures = []
     current = start
     while current <= end:
-        day_entities = {
-            "duration_minutes": duration_minutes,
-            "customer_id": customer_id,
-            "pet_id": pet_id,
-            "exclude_booking_id": exclude_booking_id,
-            "preferred_staff": preferred_staff,
-        }
         result = _check_with_transient_retry(
             repo, int(company_id), service=service_type, date=current.isoformat(), time=time,
-            intent_json={
-                "entities": {
-                    key: value
-                    for key, value in day_entities.items()
-                    if value not in (None, "")
-                }
-            },
+            intent_json={"entities": {"duration_minutes": duration_minutes}} if duration_minutes else None,
         )
-        if result.get("status") != "success":
-            failures.append(
-                {
-                    "date": current.isoformat(),
-                    "status": result.get("status") or "error",
-                    "error": result.get("error") or "Availability query failed",
-                }
-            )
-            current += timedelta(days=1)
-            continue
-        data = result.get("data") or {}
+        data = (result.get("data") or {}) if result.get("status") == "success" else {}
         all_slots = data.get("available_slots", [])
         filtered = filter_slots_by_period(all_slots, time)
-        if filtered is None and str(time or "").strip():
-            requested_clock = str(time).strip()[:5]
-            filtered = [slot for slot in all_slots if str(slot)[:5] == requested_clock]
         day_entry = {
             "date": current.isoformat(),
             "weekday": current.strftime("%A"),
             "available_slots": filtered if filtered is not None else all_slots,
-            "closed_reason": data.get("closed_reason"),
-            "preferred_staff": preferred_staff or None,
         }
+        if filtered is not None:
+            day_entry["all_available_slots"] = all_slots
         days.append(day_entry)
         current += timedelta(days=1)
 
-    if failures:
-        return {
-            "status": "error",
-            "service_type": service_type,
-            "start_date": start_date,
-            "end_date": end.isoformat(),
-            "days": [],
-            "failed_days": failures,
-            "error": (
-                "Availability could not be verified for every requested day; no slots "
-                "should be offered from this incomplete result."
-            ),
-        }
-
     return {
-        "status": "success",
         "service_type": service_type,
         "start_date": start_date,
         "end_date": end.isoformat(),

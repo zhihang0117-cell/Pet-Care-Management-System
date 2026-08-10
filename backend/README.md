@@ -29,33 +29,19 @@ data exists in the same Supabase project.
 Open your Supabase project → SQL Editor and run these files in order:
 
 1. `sql/company_settings_migration.sql`
-2. `sql/company_availability_settings_migration.sql`
-3. `sql/fix_missing_identity_columns.sql`
-4. `sql/verify_payment_function.sql`
-5. `sql/enquiry_refund_logo_migration.sql`
-6. `sql/crud_consistency_functions.sql`
-7. `sql/rls_policies.sql`
-8. `sql/crud_hardening_migration.sql`
-9. `sql/register_company_function.sql`
-10. `sql/company_documents_migration.sql`
-11. `sql/002_add_document_id_to_chunks_bge_large.sql`
-12. `sql/redemption_rejection_reason_migration.sql` — adds `rejection_reason`
+2. `sql/verify_payment_function.sql`
+3. `sql/enquiry_refund_logo_migration.sql`
+4. `sql/crud_consistency_functions.sql`
+5. `sql/rls_policies.sql`
+6. `sql/crud_hardening_migration.sql`
+7. `sql/register_company_function.sql`
+8. `sql/company_documents_migration.sql`
+9. `sql/002_add_document_id_to_chunks_bge_large.sql`
+10. `sql/booking_conflict_prevention_migration.sql`
+11. `sql/redemption_rejection_reason_migration.sql` — adds `rejection_reason`
     to `redemption` and a matching `decide_redemption` parameter; without
     this, rejecting a loyalty redemption from `loyalty.html` fails.
-13. `sql/staff_service_capability_migration.sql`
-14. `sql/chat_api_key_migration.sql` — adds the backend-only
-    `company_chat_key` table. It stores only SHA-256 key digests; never put a
-    plaintext X-Chat-Key in Postgres.
-15. `sql/security_integrity_hardening_migration.sql` — blocks anonymous RAG/
-    backup-table reads, canonicalizes workflow statuses, and adds same-company
-    composite foreign keys.
-16. `sql/booking_conflict_prevention_migration.sql` — run this after
-    `crud_consistency_functions.sql`, because both define the booking create/
-    update RPCs and this is the locking/conflict-aware version.
-17. `sql/cancel_booking_atomic_migration.sql` — atomically cancels the booking
-    and refunds/cancels its linked payment and redemption.
-
-`chat_api_key_migration.sql` adds the table the
+12. `sql/chat_api_key_migration.sql` — adds the `company_chat_key` table the
     Python `/chat` endpoint uses to resolve which company an X-Chat-Key
     belongs to (see `app/db/customer_context.py`
     `resolve_company_id_from_chat_key`). Optional for a single-company

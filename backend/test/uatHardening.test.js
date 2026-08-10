@@ -52,33 +52,6 @@ test("SQL migration index documents the live booking conflict migration", async 
   assert.match(readme, /\[check_in_date, check_out_date\)/);
 });
 
-test("member enrollment is unique and atomic across AI and dashboard writes", async () => {
-  const sql = await readFile(new URL("../sql/loyalty_member_registration_migration.sql", import.meta.url), "utf8");
-  const route = await readFile(new URL("../src/routes/memberInfo.js", import.meta.url), "utf8");
-
-  assert.match(sql, /unique \(company_id, customer_id\)/);
-  assert.match(sql, /create or replace function register_loyalty_member_atomic/);
-  assert.match(sql, /pg_advisory_xact_lock/);
-  assert.match(route, /rpc\("register_loyalty_member_atomic"/);
-});
-
-test("grooming conflicts persist and use the selected duration", async () => {
-  const sql = await readFile(new URL("../sql/booking_conflict_prevention_migration.sql", import.meta.url), "utf8");
-  const service = await readFile(new URL("../src/lib/bookingService.js", import.meta.url), "utf8");
-
-  // The SQL column/RPC default is deliberately still 90 (2026-08-10: a
-  // live schema/RPC default change is a separate decision from the app's
-  // own default duration, and every row Node/Python actually write always
-  // carries an explicit duration_minutes — this SQL fallback is only for
-  // a row that somehow has none at all).
-  assert.match(sql, /duration_minutes int not null default 90/);
-  assert.match(sql, /make_interval\(mins => coalesce\(b\.duration_minutes, 90\)\)/);
-  assert.match(service, /duration_minutes: body\.duration_minutes/);
-  // 60, not 90 (2026-08-10): grooming's own default duration when none is
-  // given — see app/db/availability_service.py's matching Python default.
-  assert.match(service, /endMinutes: Number\(booking\.duration_minutes\) \|\| 60/);
-});
-
 test("eval console has a persistent structured tool-call inspector", async () => {
   const consoleHtml = await readFile(new URL("../../frontend/eval_console.html", import.meta.url), "utf8");
   assert.match(consoleHtml, /id="traceHistory"/);
@@ -111,22 +84,16 @@ test("confirmation documents have a resend tool and a typed console attachment c
 
 test("Python tool trace records iteration, execution mode, tool id, and per-call duration", async () => {
   const orchestrator = await readFile(new URL("../../app/orchestrator.py", import.meta.url), "utf8");
-  // tool_batch_execution.py was merged into tool_loop.py during the
-  // app/agent module consolidation (12 single-purpose files -> a few
-  // grouped-by-concern ones) — this test still needs the same combined
-  // source text, just from its new home.
-  const toolLoop = await readFile(new URL("../../app/agent/tool_loop.py", import.meta.url), "utf8");
-  const runtime = `${orchestrator}\n${toolLoop}`;
-  assert.match(runtime, /"iteration": iteration_index \+ 1/);
-  assert.match(runtime, /"tool_call_id": tool_call\["id"\]/);
-  assert.match(runtime, /"execution_mode": execution_mode/);
-  assert.match(runtime, /"parallel_block_reason": parallel_block_reason/);
-  assert.match(runtime, /"batch_duration_ms": batch_duration_ms/);
-  assert.match(runtime, /_TOOL_EXECUTOR\.submit\(run_timed, tool_call\)/);
-  assert.match(runtime, /future\.result\(timeout=remaining_seconds\)/);
-  assert.match(runtime, /"executor_max_workers": TOOL_EXECUTOR_MAX_WORKERS/);
-  assert.match(runtime, /"execution_order": record\["execution_order"\]/);
-  assert.match(runtime, /"queue_wait_ms": record\["queue_wait_ms"\]/);
-  assert.match(runtime, /"duration_ms": record\["duration_ms"\]/);
-  assert.match(runtime, /perf_counter\(\)/);
+  assert.match(orchestrator, /"iteration": iteration_index \+ 1/);
+  assert.match(orchestrator, /"tool_call_id": tool_call\["id"\]/);
+  assert.match(orchestrator, /"execution_mode": execution_mode/);
+  assert.match(orchestrator, /"parallel_block_reason": parallel_block_reason/);
+  assert.match(orchestrator, /"batch_duration_ms": batch_duration_ms/);
+  assert.match(orchestrator, /_TOOL_EXECUTOR\.submit\(run_timed, tool_call\)/);
+  assert.match(orchestrator, /future\.result\(timeout=remaining_seconds\)/);
+  assert.match(orchestrator, /"executor_max_workers": TOOL_EXECUTOR_MAX_WORKERS/);
+  assert.match(orchestrator, /"execution_order": record\["execution_order"\]/);
+  assert.match(orchestrator, /"queue_wait_ms": record\["queue_wait_ms"\]/);
+  assert.match(orchestrator, /"duration_ms": record\["duration_ms"\]/);
+  assert.match(orchestrator, /time_module\.perf_counter\(\)/);
 });
