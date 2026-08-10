@@ -155,14 +155,16 @@ def create_booking(
     check_out_date silently loses however many nights the customer actually
     asked for.
 
-    For DAYCARE with an hourly-rate package (e.g. "Hourly Care" — check the
-    package name/RAG content for "per hour" pricing, as opposed to a flat
-    per-day package): pass check_out_time reflecting the actual pickup time
-    the customer stated, and set price to (hourly rate x number of hours),
-    not the bare hourly rate — state that computed total to the customer
-    before confirming. If the customer states a duration rather than a
-    pickup clock time, pass duration_minutes from resolve_datetime and the
-    server derives/validates check_out_time.
+    For DAYCARE: `price` is computed by the server, deterministically, from
+    the real duration — under 3 hours is RM20/hour, 3 hours or more is a
+    flat RM55 — never something you need to know or calculate yourself; any
+    value you pass for `price` is ignored. What you DO need to get right is
+    the duration: pass check_out_time if the customer stated an actual
+    pickup clock time, or pass duration_minutes (from resolve_datetime) if
+    they stated a length instead — either way the server derives the other
+    side and prices the real result, so state the ACTUAL computed total
+    back to the customer only after this call returns it, never a number
+    you worked out yourself.
     """
     resolved_date = resolve_date_string(date)
     if resolved_date is None:
@@ -184,7 +186,12 @@ def create_booking(
                 "create_booking with the real package_name and price."
             ),
         }
-    if not price:
+    normalized_service = str(service_type).strip().upper()
+    # DAYCARE's price is now always computed deterministically from the
+    # real duration below (RM20/hour under 3 hours, flat RM55 at 3 hours
+    # or more) — the model no longer needs to know or state it, so this
+    # check no longer applies to DAYCARE. Unchanged for GROOMING/BOARDING.
+    if not price and normalized_service != "DAYCARE":
         return {
             "error": "MISSING_PRICE",
             "message": (
@@ -204,7 +211,6 @@ def create_booking(
                 "create_booking with it set."
             ),
         }
-    normalized_service = str(service_type).strip().upper()
     has_add_on_name = str(add_on or "").strip() not in {"", "-"}
     has_add_on_price = add_on_price is not None
     if normalized_service == "BOARDING" and (has_add_on_name or has_add_on_price):
@@ -314,10 +320,51 @@ def create_booking(
                     "server can derive it without relying on LLM time arithmetic."
                 ),
             }
-    if normalized_service in {"GROOMING", "DAYCARE"}:
+    if normalized_service == "DAYCARE":
+        # Deterministic tiered pricing (explicit business rule, 2026-08-10):
+        # under 3 hours is billed hourly at RM20/hour; 3 hours or more is a
+        # flat RM55, regardless of exactly how much longer than 3 hours the
+        # stay is. Computed here from the REAL duration in minutes — never
+        # trusted from the model's own price argument (see MISSING_PRICE
+        # above, which still requires one be passed, but it is silently
+        # overridden below) — so the rule is enforced the same way whether
+        # the customer's stated duration reached this point in English,
+        # Chinese, Malay, or any other wording; by the time execution
+        # reaches here it has already been normalized to plain minutes, so
+        # the source language was never relevant to begin with. Covers both
+        # ways a DAYCARE duration can legitimately arrive: the customer
+        # gave both a drop-off and a pickup clock time directly (check_out_
+        # time already set before this point), or gave just a drop-off time
+        # plus a duration and had check_out_time derived from it just above
+        # — either way, by here both time and check_out_time are real clock
+        # times and the actual duration can be computed the same way.
+        from app.db.time_normalization import normalize_time
+
+        start = normalize_time(time)
+        end = normalize_time(check_out_time)
+        try:
+            start_hour, start_minute = (int(part) for part in start.split(":"))
+            end_hour, end_minute = (int(part) for part in end.split(":"))
+            real_duration_minutes = (end_hour * 60 + end_minute) - (start_hour * 60 + start_minute)
+        except (TypeError, ValueError):
+            real_duration_minutes = None
+        if not real_duration_minutes or real_duration_minutes <= 0:
+            return {
+                "error": "INVALID_DAYCARE_DURATION",
+                "message": (
+                    f"check_out_time ({check_out_time!r}) is not after time ({time!r}) — "
+                    "cannot compute a real duration to price this DAYCARE visit."
+                ),
+            }
+        price = (
+            round(20 * real_duration_minutes / 60, 2)
+            if real_duration_minutes < 180
+            else 55.0
+        )
+    if normalized_service == "GROOMING":
         catalogue_pet_type = ""
         catalogue_pet_size = ""
-        if normalized_service == "GROOMING" and pet_id:
+        if pet_id:
             try:
                 from app.tools.customer_tools import _pet_details_for
 

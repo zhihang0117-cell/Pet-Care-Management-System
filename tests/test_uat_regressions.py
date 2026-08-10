@@ -1,5 +1,9 @@
+import json
+from datetime import date
 from pathlib import Path
 from types import SimpleNamespace
+
+from langchain_core.messages import AIMessage
 
 from app.context.state import ConversationState
 from app.db.customer_context import canonical_phone_number, phones_match, validate_phone_number
@@ -14,6 +18,7 @@ from app.db.customer_context import CustomerContext
 from app.db.time_normalization import extract_duration_minutes, extract_time_from_message, extract_time_range
 from app.documents import service as document_service
 from app.orchestrator import PawfectOrchestrator
+from app.tools import booking_tools
 
 
 def test_phone_identity_never_matches_a_short_suffix():
@@ -26,6 +31,30 @@ def test_phone_identity_never_matches_a_short_suffix():
         pass
     else:
         raise AssertionError("short phone fragments must be rejected")
+
+
+def test_next_weekday_rolls_a_full_week_forward_like_a_human_would():
+    """Real gap confirmed live 2026-08-10 ("次不是...次要像人类的做
+    法"): "next Wednesday"/"this Friday" both landed in the CURRENT week
+    — the `modifier == "next"` branch in date_normalization.py's English
+    weekday parser was dead code (already implied by, and never reachable
+    without, `days_ahead == 0` on the same line, thanks to `and` binding
+    tighter than `or`), so "next" was silently ignored whenever the named
+    weekday hadn't happened yet this week — "next Wednesday", said on a
+    Monday, resolved to THIS week's Wednesday (2 days away) instead of
+    next week's (9 days away). The Chinese/Malay parsers in the same file
+    already had this right; this locks the English one in to match."""
+    reference = date(2026, 8, 10)  # a real Monday
+    assert extract_customer_date("this Friday", today=reference) == date(2026, 8, 14)
+    assert extract_customer_date("Friday", today=reference) == date(2026, 8, 14)
+    assert extract_customer_date("next Wednesday", today=reference) == date(2026, 8, 19)
+    assert extract_customer_date("this Wednesday", today=reference) == date(2026, 8, 12)
+    assert extract_customer_date("next Friday", today=reference) == date(2026, 8, 21)
+    # Today's own weekday, bare or "this"-modified, means the NEXT
+    # occurrence (repeating today back at the customer isn't useful);
+    # "next" always means a full week forward regardless.
+    assert extract_customer_date("Monday", today=reference) == date(2026, 8, 17)
+    assert extract_customer_date("next Monday", today=reference) == date(2026, 8, 17)
 
 
 def test_create_pet_database_boundary_refuses_missing_or_species_as_breed():
@@ -206,6 +235,109 @@ def test_cancel_booking_calls_the_dedicated_atomic_rpc_not_update_booking_atomic
         "cancel_booking_atomic",
         {"p_company_id": 1, "p_booking_type": "grooming", "p_booking_id": 723},
     )]
+
+
+def test_daycare_price_is_computed_deterministically_by_tiered_duration(monkeypatch):
+    """Explicit business rule, 2026-08-10 ("daycare只要少于三个小时...就
+    是20块一个小时，如果是大于3个小时，都是55块"): DAYCARE is billed
+    RM20/hour under 3 hours, flat RM55 at 3 hours or more — computed
+    server-side from the real duration, never trusted from the model's own
+    `price` argument (which used to be relied on for hourly arithmetic:
+    "set price to hourly rate x number of hours"). Covers both ways a
+    DAYCARE duration can legitimately arrive: an explicit drop-off +
+    pickup clock time pair, or a drop-off time plus duration_minutes with
+    pickup derived. GROOMING/BOARDING are unaffected (not touched by this
+    change)."""
+    captured = []
+
+    class _FakeRepo:
+        def create_booking(self, company_id, command):
+            captured.append(command)
+            return {"status": "success", "data": {"booking_id": 1}}
+
+    monkeypatch.setattr(booking_tools, "get_relational_repository", lambda: _FakeRepo())
+    monkeypatch.setattr(booking_tools, "booking_window_error", lambda _date: None)
+    monkeypatch.setattr(booking_tools, "resolve_date_string", lambda value: value)
+
+    base_args = dict(
+        company_id=1, customer_id=1, pet_id=1, pet_name="Milo",
+        service_type="DAYCARE", package_name="Hourly Care", date="2026-08-20",
+    )
+
+    # Under 3 hours, via an explicit duration + derived pickup: 90 minutes
+    # -> RM20 * 1.5 = RM30, not whatever the model passed as `price`.
+    result = booking_tools.create_booking.func(
+        **base_args, time="09:00", price=999, duration_minutes=90,
+    )
+    assert result.get("status") == "success"
+    assert captured[-1].price_quote == 30.0
+    assert captured[-1].check_out_time == "10:30"
+
+    # Exactly 3 hours (the boundary) counts as "3 hours or more" -> flat
+    # RM55, via an explicit drop-off + pickup pair (no duration_minutes).
+    result = booking_tools.create_booking.func(
+        **base_args, time="09:00", check_out_time="12:00", price=None,
+    )
+    assert result.get("status") == "success"
+    assert captured[-1].price_quote == 55.0
+
+    # Well over 3 hours -> still flat RM55, not scaled further.
+    result = booking_tools.create_booking.func(
+        **base_args, time="09:00", check_out_time="17:00", price=1,
+    )
+    assert result.get("status") == "success"
+    assert captured[-1].price_quote == 55.0
+
+    # DAYCARE no longer requires the model to pass a price at all.
+    result = booking_tools.create_booking.func(
+        **base_args, time="09:00", duration_minutes=60, price=None,
+    )
+    assert result.get("status") == "success"
+    assert captured[-1].price_quote == 20.0
+
+
+def test_daycare_price_grounding_corrects_a_stale_self_quoted_price():
+    """Real gap confirmed live 2026-08-10: create_booking's own real,
+    deterministic DAYCARE price (see the tiered-pricing test above) is
+    correct in the actual database write, but the model was observed
+    restating whatever price it had guessed BEFORE that call in its final
+    confirmation text — a 90-minute booking was billed RM30 for real while
+    the customer was told RM55 in the chat reply. This corrects that
+    specific, narrow case (exactly one RM mention in the whole reply,
+    disagreeing with the tool's own real result)."""
+    trace = [{
+        "tool": "create_booking",
+        "result": json.dumps({
+            "success": True,
+            "data": {"service_type": "DAYCARE", "price": 30.0},
+        }),
+    }]
+
+    wrong = AIMessage(content="Booked! **Price**: RM55. Booking confirmed.")
+    corrected = PawfectOrchestrator._ground_daycare_price_response(wrong, trace)
+    assert "RM30" in corrected.content
+    assert "RM55" not in corrected.content
+
+    # Already correct — must be left alone, not just coincidentally re-set.
+    right = AIMessage(content="Booked! **Price**: RM30. Booking confirmed.")
+    untouched = PawfectOrchestrator._ground_daycare_price_response(right, trace)
+    assert untouched is right
+
+    # More than one RM mention (e.g. base price + a separate add-on price)
+    # — deliberately left alone rather than guessing which one is wrong.
+    ambiguous = AIMessage(content="Price: RM55. Add-on: RM15.")
+    assert PawfectOrchestrator._ground_daycare_price_response(ambiguous, trace) is ambiguous
+
+    # Not a DAYCARE booking — must never touch a GROOMING/BOARDING reply.
+    grooming_trace = [{
+        "tool": "create_booking",
+        "result": json.dumps({
+            "success": True,
+            "data": {"service_type": "GROOMING", "price": 80.0},
+        }),
+    }]
+    grooming_reply = AIMessage(content="Booked! **Price**: RM999.")
+    assert PawfectOrchestrator._ground_daycare_price_response(grooming_reply, grooming_trace) is grooming_reply
 
 
 def test_sql_blocks_full_daycare_interval_and_links_redemption_to_payment():

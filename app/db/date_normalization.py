@@ -261,7 +261,21 @@ def parse_customer_date(value: str | None, *, today: date | None = None) -> date
             "sunday",
         ).index(weekday_text.lower())
         days_ahead = (weekday_index - reference.weekday()) % 7
-        if days_ahead == 0 or modifier == "next" and days_ahead == 0:
+        # Real gap confirmed live 2026-08-10 ("我要怎样调才能像人类的做
+        # 法"): "next Wednesday"/"this Friday" both landed in the CURRENT
+        # week — the `modifier == "next"` branch was dead code (already
+        # implied by, and never reachable without, `days_ahead == 0` on
+        # the same line thanks to `and` binding tighter than `or`), so
+        # "next" was silently ignored whenever the named weekday hadn't
+        # happened yet this week. _parse_chinese_date/_parse_malay_date
+        # (same file) already had this right — "next" always rolls a full
+        # week forward, not just "the nearest upcoming occurrence"; only
+        # a bare/"this"-modified name that names TODAY's own weekday rolls
+        # forward (repeating today back at the customer as a date isn't
+        # useful). Mirrors that exact logic here.
+        if modifier == "next":
+            days_ahead += 7
+        elif days_ahead == 0:
             days_ahead = 7
         return reference + timedelta(days=days_ahead)
 

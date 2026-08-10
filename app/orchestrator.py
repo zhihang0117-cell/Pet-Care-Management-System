@@ -2614,6 +2614,64 @@ class PawfectOrchestrator:
         return response.model_copy(update={"content": cleaned})
 
     @staticmethod
+    def _ground_daycare_price_response(response, trace: list[dict]):
+        """Never let prose repeat a stale/self-computed DAYCARE price once
+        the real one is known.
+
+        Real gap confirmed live 2026-08-10: app.tools.booking_tools.
+        create_booking now computes DAYCARE's real price deterministically
+        server-side (RM20/hour under 3 hours, flat RM55 at 3+ hours) — the
+        actual database write is correct. But the model was observed
+        restating whatever price it had guessed/quoted BEFORE that call
+        (from the RAG catalogue's flat-package line) in its final
+        confirmation text, even though the tool's own result carried the
+        different, real, correct number — a 90-minute booking was billed
+        RM30 for real, while the customer was told RM55. Deliberately
+        narrow: only corrects when exactly ONE "RM<number>" appears in the
+        whole reply and it doesn't match the real price — a message with
+        several legitimate RM mentions (e.g. base price and a separate
+        add-on price both stated) is left alone rather than guessing which
+        one was wrong.
+        """
+        attempts = [item for item in trace if item.get("tool") == "create_booking"]
+        if not attempts:
+            return response
+        try:
+            result = json.loads(attempts[-1].get("result") or "{}")
+        except (TypeError, json.JSONDecodeError):
+            return response
+        if not isinstance(result, dict) or not result.get("success"):
+            return response
+        data = result.get("data") or {}
+        if str(data.get("service_type") or "").upper() != "DAYCARE":
+            return response
+        real_price = data.get("price")
+        if real_price is None:
+            return response
+        try:
+            real_price = round(float(real_price), 2)
+        except (TypeError, ValueError):
+            return response
+        content = response.content or ""
+        stated = re.findall(r"RM\s*(\d+(?:\.\d{1,2})?)", content, re.IGNORECASE)
+        if len(stated) != 1:
+            return response
+        try:
+            stated_price = round(float(stated[0]), 2)
+        except (TypeError, ValueError):
+            return response
+        if abs(stated_price - real_price) <= 0.01:
+            return response
+        corrected = re.sub(
+            r"RM\s*\d+(?:\.\d{1,2})?",
+            f"RM{real_price:g}",
+            content,
+            count=1,
+            flags=re.IGNORECASE,
+        )
+        return response.model_copy(update={"content": corrected})
+
+    @staticmethod
     def _ground_document_delivery_response(response, user_message: str, trace: list[dict]):
         """Never let prose turn a failed document dispatch into fake success."""
         document_intent = bool(re.search(
@@ -2927,6 +2985,7 @@ class PawfectOrchestrator:
                     continue
 
                 final_customer = self._customer_context_for_state(customer, state)
+                response = self._ground_daycare_price_response(response, trace)
                 response = self._ground_document_delivery_response(
                     response, user_message, trace
                 )
