@@ -2818,7 +2818,35 @@ def cancel_booking(context: CustomerContext, intent_json: dict) -> dict:
 
     service_type = str(booking.get("service_type") or intent_json.get("service_type") or "GROOMING")
     booking_id = int(booking.get("booking_id"))
-    update_result = update_booking(context, booking_id, service_type, {"booking_status": "Cancelled"})
+    # Real gap confirmed live 2026-08-10 ("why can't my customer cancel the
+    # booking"): this used to go through the generic update_booking() ->
+    # update_booking_atomic RPC path to set booking_status="Cancelled" —
+    # but the live database has since grown a guard inside
+    # update_booking_atomic that explicitly REJECTS being used for
+    # cancellation ("Use cancel_booking_atomic to cancel a booking",
+    # P0001), requiring this dedicated RPC instead. That guard is not
+    # captured in any committed SQL migration (cancel_booking_atomic
+    # itself isn't either — it exists only in the live database), so this
+    # was a real, live-only schema/code drift: every single cancellation
+    # attempt failed with a raw database error surfaced as a generic
+    # "technical hiccup, staff will follow up" instead of ever cancelling
+    # anything. cancel_booking_atomic also handles the payment-side status
+    # transition itself (confirmed live against a real unpaid booking) —
+    # calling _void_payment_for_booking again afterward would be redundant
+    # and, worse, would see the payment's now-non-"paid"/non-"pending"
+    # status and delete the row outright, destroying the audit history the
+    # atomic RPC just correctly wrote.
+    #
+    # Known remaining gap, NOT fixed here (needs the live function's real
+    # source, not guessed at blind): cancel_booking_atomic itself fails
+    # for an already-PAID booking — confirmed live against a throwaway
+    # test booking+payment — its internal refund_payment(...) call passes
+    # a bigint where an integer is expected and untyped NULLs, which
+    # Postgres cannot resolve to any real overload. That surfaces here as
+    # a normal "error" result (handoff_required=True), same as any other
+    # genuine write failure — not a crash, but cancellation for an
+    # already-paid booking still won't succeed until that SQL is fixed.
+    update_result = _cancel_booking_atomic(context, booking_id, service_type)
     final = _finalize_booking_write(
         "cancel_booking",
         context,
@@ -2827,19 +2855,41 @@ def cancel_booking(context: CustomerContext, intent_json: dict) -> dict:
         update_result,
         expected={"booking_status": "cancelled"},
     )
-    if final.get("status") == "success":
-        try:
-            _void_payment_for_booking(context.company_id, final.get("data") or {})
-        except Exception as exc:
-            return _result(
-                "cancel_booking",
-                "error",
-                dict(final.get("data") or {}),
-                str(exc),
-                handoff_required=True,
-                handoff_reason="DATABASE_ERROR",
-            )
     return final
+
+
+def _cancel_booking_atomic(context: CustomerContext, booking_id: int, service_type: str) -> dict:
+    """Same RPC-call shape as update_booking()'s own update_booking_atomic
+    path (see its docstring) — this is cancel_booking's dedicated
+    equivalent, required by the live database (see cancel_booking's own
+    comment above)."""
+    try:
+        client = get_supabase_client()
+        table = _booking_table_meta(service_type)[0]
+        atomic = (
+            client.rpc(
+                "cancel_booking_atomic",
+                {
+                    "p_company_id": context.company_id,
+                    "p_booking_type": str(service_type).strip().lower(),
+                    "p_booking_id": int(booking_id),
+                },
+            )
+            .execute()
+            .data
+        )
+        if not atomic:
+            return _result("cancel_booking", "not_found", {"booking_id": booking_id})
+        return _result("cancel_booking", "success", _serialize_booking_row(table, dict(atomic)))
+    except Exception as exc:
+        return _result(
+            "cancel_booking",
+            "error",
+            {"booking_id": booking_id},
+            str(exc),
+            handoff_required=True,
+            handoff_reason="DATABASE_ERROR",
+        )
 
 
 def reschedule_booking(context: CustomerContext, intent_json: dict) -> dict:

@@ -5,6 +5,7 @@ from app.context.state import ConversationState
 from app.db.customer_context import canonical_phone_number, phones_match, validate_phone_number
 from app.db.date_normalization import extract_customer_date, parse_week_range
 from app.db.relational_actions import (
+    _cancel_booking_atomic,
     _room_capacity_status,
     _serialize_daycare_booking,
     create_pet,
@@ -161,6 +162,50 @@ def test_boarding_room_is_occupied_on_every_intermediate_date(monkeypatch):
     after_checkout = _room_capacity_status(context, "Mars", "2026-08-10", "2026-08-11")
     assert middle == {"capacity": 1, "booked_count": 1, "available": False, "held_for_minutes": None}
     assert after_checkout == {"capacity": 1, "booked_count": 0, "available": True, "held_for_minutes": None}
+
+
+def test_cancel_booking_calls_the_dedicated_atomic_rpc_not_update_booking_atomic(monkeypatch):
+    """Real gap confirmed live 2026-08-10 ("why can't my customer cancel
+    the booking"): cancel_booking used to route through the generic
+    update_booking() -> update_booking_atomic RPC to set booking_status=
+    "Cancelled" — the live database has since grown a guard inside
+    update_booking_atomic that explicitly REJECTS that ("Use
+    cancel_booking_atomic to cancel a booking", P0001 — a schema/code
+    drift not captured in any committed migration), requiring the
+    dedicated cancel_booking_atomic RPC instead. Confirmed live: every
+    cancellation attempt failed with a raw database error before this
+    fix. Locks in that cancel_booking's write path now calls the right
+    RPC with the right arguments."""
+    calls = []
+
+    class _RPC:
+        def __init__(self, name, params):
+            self.name = name
+            self.params = params
+
+        def execute(self):
+            calls.append((self.name, self.params))
+            return SimpleNamespace(data={
+                "grooming_booking_id": 723,
+                "booking_status": "Cancelled",
+                "pet_id": 1,
+                "price": 80.0,
+            })
+
+    class _Client:
+        def rpc(self, name, params):
+            return _RPC(name, params)
+
+    monkeypatch.setattr("app.db.relational_actions.get_supabase_client", lambda: _Client())
+    context = CustomerContext(company_id=1)
+
+    result = _cancel_booking_atomic(context, 723, "GROOMING")
+
+    assert result["status"] == "success"
+    assert calls == [(
+        "cancel_booking_atomic",
+        {"p_company_id": 1, "p_booking_type": "grooming", "p_booking_id": 723},
+    )]
 
 
 def test_sql_blocks_full_daycare_interval_and_links_redemption_to_payment():
