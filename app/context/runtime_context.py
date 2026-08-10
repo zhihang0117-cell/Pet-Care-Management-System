@@ -90,6 +90,33 @@ def resolve_identity(
             )
             if hydrate_booking else None
         )
+        # Fetched alongside latest_booking, not instead of it — see
+        # ConversationState.recent_booking/upcoming_booking for why a single
+        # "latest" blend can't represent both concepts at once. Guarded with
+        # getattr (not a hard repo.get_recent_completed_booking call) so a
+        # test double/fake repository implementing only the older
+        # get_latest_booking surface keeps working unchanged instead of
+        # hard-failing on a missing attribute.
+        recent_fn = getattr(repo, "get_recent_completed_booking", None)
+        recent_future = (
+            tool_executor.submit(recent_fn, int(company_id), int(state.customer_id))
+            if hydrate_booking and recent_fn is not None else None
+        )
+        upcoming_fn = getattr(repo, "get_upcoming_booking", None)
+        upcoming_future = (
+            tool_executor.submit(upcoming_fn, int(company_id), int(state.customer_id))
+            if hydrate_booking and upcoming_fn is not None else None
+        )
+        # Real gap confirmed 2026-08-10: hydrated once per session here
+        # (not per turn — loyalty_context_status stays "available" once
+        # set), same reasoning and same getattr-guarded pattern as
+        # recent/upcoming above. See ConversationState.loyalty_account.
+        hydrate_loyalty = state.loyalty_context_status != "available"
+        loyalty_fn = getattr(repo, "get_loyalty_account", None)
+        loyalty_future = (
+            tool_executor.submit(loyalty_fn, int(company_id), int(state.customer_id))
+            if hydrate_loyalty and loyalty_fn is not None else None
+        )
         prefetch_deadline = time_module.monotonic() + timeout_seconds
 
         def remaining_prefetch_time() -> float:
@@ -117,6 +144,39 @@ def resolve_identity(
                 logger.exception("Booking prefetch failed: %s", exc)
         else:
             booking_result = None
+        if recent_future is not None:
+            try:
+                recent_result = recent_future.result(timeout=remaining_prefetch_time())
+            except FutureTimeoutError:
+                recent_future.cancel()
+                recent_result = {"status": "error", "error": "PREFETCH_TIMEOUT"}
+            except Exception as exc:
+                recent_result = {"status": "error", "error": f"PREFETCH_FAILED:{exc}"}
+                logger.exception("Recent-booking prefetch failed: %s", exc)
+        else:
+            recent_result = None
+        if upcoming_future is not None:
+            try:
+                upcoming_result = upcoming_future.result(timeout=remaining_prefetch_time())
+            except FutureTimeoutError:
+                upcoming_future.cancel()
+                upcoming_result = {"status": "error", "error": "PREFETCH_TIMEOUT"}
+            except Exception as exc:
+                upcoming_result = {"status": "error", "error": f"PREFETCH_FAILED:{exc}"}
+                logger.exception("Upcoming-booking prefetch failed: %s", exc)
+        else:
+            upcoming_result = None
+        if loyalty_future is not None:
+            try:
+                loyalty_result = loyalty_future.result(timeout=remaining_prefetch_time())
+            except FutureTimeoutError:
+                loyalty_future.cancel()
+                loyalty_result = {"status": "error", "error": "PREFETCH_TIMEOUT"}
+            except Exception as exc:
+                loyalty_result = {"status": "error", "error": f"PREFETCH_FAILED:{exc}"}
+                logger.exception("Loyalty prefetch failed: %s", exc)
+        else:
+            loyalty_result = None
 
         if pets_result is not None:
             if pets_result.get("status") == "success":
@@ -150,6 +210,22 @@ def resolve_identity(
                 # "this customer has no booking history". The unavailable
                 # status remains retryable on the next customer turn.
                 state.booking_context_status = "unavailable"
+        if recent_result is not None and recent_result.get("status") in ("success", "not_found"):
+            state.recent_booking = recent_result.get("data") if recent_result.get("status") == "success" else None
+        if upcoming_result is not None and upcoming_result.get("status") in ("success", "not_found"):
+            state.upcoming_booking = upcoming_result.get("data") if upcoming_result.get("status") == "success" else None
+        if loyalty_result is not None:
+            # "not_found" (a real, verified non-member) is just as
+            # complete an answer as "success" — both mark hydration done
+            # so this isn't re-queried every turn. A real read failure
+            # leaves status unset (None), retryable on a later turn,
+            # exactly like pets/booking_context_status above.
+            if loyalty_result.get("status") == "success":
+                state.loyalty_account = loyalty_result.get("data")
+                state.loyalty_context_status = "available"
+            elif loyalty_result.get("status") == "not_found":
+                state.loyalty_account = None
+                state.loyalty_context_status = "available"
 
         customer["pets"] = (
             state.known_pets if state.pets_context_status == "available" else None
@@ -161,6 +237,12 @@ def resolve_identity(
         customer["booking_context_status"] = (
             state.booking_context_status or "unavailable"
         )
+        customer["recent_booking"] = state.recent_booking
+        customer["upcoming_booking"] = state.upcoming_booking
+        customer["loyalty_account"] = (
+            state.loyalty_account if state.loyalty_context_status == "available" else None
+        )
+        customer["loyalty_context_status"] = state.loyalty_context_status or "unavailable"
         # Deterministic formatting only (see text_formatting.py) — the
         # model still decides what to say; this just removes
         # "Milo, Luna and Coco" vs "Milo, Luna,
@@ -197,6 +279,13 @@ def customer_context_for_state(customer: dict, state: Any) -> dict:
             state.latest_booking if state.booking_context_status == "available" else None
         )
         merged["booking_context_status"] = state.booking_context_status
+        merged["recent_booking"] = state.recent_booking
+        merged["upcoming_booking"] = state.upcoming_booking
+    if state.loyalty_context_status:
+        merged["loyalty_account"] = (
+            state.loyalty_account if state.loyalty_context_status == "available" else None
+        )
+        merged["loyalty_context_status"] = state.loyalty_context_status
     if merged.get("found"):
         merged["first_name"] = first_name(merged.get("full_name"))
         merged["pets_formatted"] = format_pet_names(merged.get("pets") or [])

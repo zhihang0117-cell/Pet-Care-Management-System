@@ -1,9 +1,17 @@
 """
 Minimal HTTP entrypoint for the LangChain harness in app/.
 
-app/orchestrator.py is a plain importable library (no server assumptions).
-This file just exposes it over HTTP so the eval console (frontend/eval_console.html)
-and, eventually, a WhatsApp webhook can call it.
+app.agent.runtime.handle_turn() is a plain importable function (no server
+assumptions). This file just exposes it over HTTP so the eval console
+(frontend/eval_console.html) and, eventually, a WhatsApp webhook can call
+it.
+
+V1 decommission (2026-08-10): app/orchestrator.py's PawfectOrchestrator
+("v1") and the Phase 9 runtime v1/v2 switch this file used to expose are
+gone — /chat now always calls handle_turn() ("v2", the constrained-agent,
+reference-based-tools architecture; see REFACTOR_PLAN.md). Live rollback
+if a deployment misbehaves is now a Cloud Run/Render previous-revision
+rollback, not a runtime engine flip.
 """
 
 from __future__ import annotations
@@ -131,7 +139,8 @@ def _require_internal_key(x_internal_key: str = Header(default="")) -> None:
 from app.context.memory import ConversationMemory
 from app.context.company import get_company_config
 from app.db.customer_context import get_relational_company_id
-from app.orchestrator import PawfectOrchestrator
+from app.agent.evidence import EvidenceStoreRegistry
+from app.agent.runtime import handle_turn
 from app.documents.company_profile import get_billing_profile
 from app.documents.pdf_builder import build_booking_confirmation_pdf, build_invoice_pdf
 from app.documents.service import generate_and_send_invoice
@@ -155,8 +164,18 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-_orchestrator: PawfectOrchestrator | None = None
 _memory = ConversationMemory()
+_evidence_registry = EvidenceStoreRegistry()
+_agent_model = None
+
+
+def _get_agent_model():
+    global _agent_model
+    if _agent_model is None:
+        from langchain_openai import ChatOpenAI
+
+        _agent_model = ChatOpenAI(model="gpt-4o-mini", temperature=0, timeout=30, max_retries=2)
+    return _agent_model
 
 
 @app.on_event("startup")
@@ -216,7 +235,7 @@ def _documents_from_trace(trace: list[dict]) -> list[dict]:
     seen_urls: set[str] = set()
     for item in trace or []:
         if item.get("tool") not in {
-            "create_booking", "reschedule_booking", "send_booking_confirmation"
+            "confirm_booking", "reschedule_booking", "send_booking_confirmation",
         }:
             continue
         raw_result = item.get("result")
@@ -257,13 +276,6 @@ def _documents_from_trace(trace: list[dict]) -> list[dict]:
             "source_tool": item.get("tool"),
         })
     return documents
-
-
-def _get_orchestrator() -> PawfectOrchestrator:
-    global _orchestrator
-    if _orchestrator is None:
-        _orchestrator = PawfectOrchestrator()
-    return _orchestrator
 
 
 class ChatRequest(BaseModel):
@@ -317,7 +329,17 @@ def _chat_locked(request: ChatRequest, phone_number: str, company_id: str):
         # failure here must reach the customer fallback/staff escalation rather
         # than escaping as an unhandled FastAPI 500 before the try block.
         company_context = get_company_config(company_id)
-        response, trace = _get_orchestrator().invoke_with_trace(company_context, state, request.message)
+        # handle_turn() fetches/saves the SAME ConversationState object via
+        # _memory (same dict-backed store, same phone/company key — no
+        # copy), so state mutations it makes are visible through this
+        # function's own `state` reference too, and the downstream
+        # _memory.save(state) call below is a harmless redundant save.
+        result = handle_turn(
+            memory=_memory, evidence_registry=_evidence_registry, model=_get_agent_model(),
+            company_context=company_context, phone_number=phone_number, user_message=request.message,
+        )
+        response_text = result.reply
+        trace = result.trace
     except Exception as exc:
         import traceback
 
@@ -395,7 +417,7 @@ def _chat_locked(request: ChatRequest, phone_number: str, company_id: str):
     latency_ms = round((time.perf_counter() - started_at) * 1000, 1)
     _memory.save(state)
 
-    delivery = send_whatsapp_text(phone_number, response.content)
+    delivery = send_whatsapp_text(phone_number, response_text)
     delivery_escalation_saved = False
     if delivery.get("status") not in {"sent", "sent_console"} and state.customer_id is not None:
         try:
@@ -408,7 +430,7 @@ def _chat_locked(request: ChatRequest, phone_number: str, company_id: str):
             # replace it with a fake sent status if this secondary alert also fails.
             logging.getLogger(__name__).exception("Could not persist WhatsApp delivery escalation: %s", exc)
     return {
-        "reply": response.content,
+        "reply": response_text,
         "phone_number": phone_number,
         "company_id": company_id,
         "customer_id": state.customer_id,
@@ -432,11 +454,28 @@ def _require_debug_mode() -> None:
         raise HTTPException(status_code=404, detail="Not found")
 
 
+def _canonical_or_raw_phone(phone: str) -> str:
+    """/chat stores every session/outbox entry under canonical_phone_number
+    (e.g. "+60 12-345 6701" -> "+60123456701") — reading/clearing debug
+    state with the raw typed string instead silently misses it for any
+    phone with spaces/dashes, exactly the shape the eval console's own
+    default test-phone field uses. Confirmed live: /debug/clear-session
+    returned cleared:false while the real session stayed fully intact,
+    contaminating every "reset" test that followed with leftover history
+    from earlier turns."""
+    from app.db.customer_context import canonical_phone_number
+
+    try:
+        return canonical_phone_number(phone)
+    except ValueError:
+        return phone  # fall back to the raw key exactly as typed
+
+
 @app.post("/debug/clear-session")
 def clear_session(request: ClearSessionRequest):
     """Local testing only: reset in-memory conversation state for a phone number."""
     _require_debug_mode()
-    phone = request.phone_number.strip()
+    phone = _canonical_or_raw_phone(request.phone_number.strip())
     cleared = _memory.clear(phone)
     return {"status": "success", "cleared": cleared, "phone_number": phone}
 
@@ -451,15 +490,17 @@ def debug_outbox(phone_number: str):
     notices — without needing real WhatsApp credentials.
     """
     _require_debug_mode()
-    return {"phone_number": phone_number, "entries": get_outbox(phone_number.strip())}
+    phone = _canonical_or_raw_phone(phone_number.strip())
+    return {"phone_number": phone, "entries": get_outbox(phone)}
 
 
 @app.post("/debug/clear-outbox")
 def debug_clear_outbox(request: ClearSessionRequest):
     """Local testing only: clear the simulated WhatsApp outbox for one phone number."""
     _require_debug_mode()
-    clear_outbox(request.phone_number.strip())
-    return {"status": "success", "phone_number": request.phone_number}
+    phone = _canonical_or_raw_phone(request.phone_number.strip())
+    clear_outbox(phone)
+    return {"status": "success", "phone_number": phone}
 
 
 class ProcessDocumentRequest(BaseModel):

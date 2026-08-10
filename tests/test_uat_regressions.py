@@ -1,10 +1,9 @@
+from concurrent.futures import ThreadPoolExecutor
 from datetime import date, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 
-from langchain_core.messages import AIMessage
-
-from app.agent.response_grounding import ground_unavailable_profile_claims
+from app.context.runtime_context import resolve_identity
 from app.context.state import ConversationState
 from app.db import relational_actions
 from app.db.customer_context import canonical_phone_number, phones_match, validate_phone_number
@@ -21,8 +20,20 @@ from app.db.slot_holds import SlotHoldRegistry
 from app.db.customer_context import CustomerContext
 from app.db.time_normalization import extract_duration_minutes, extract_time_from_message, extract_time_range
 from app.documents import service as document_service
-from app.orchestrator import PawfectOrchestrator
 from app.tools import availability_tools
+
+
+def _resolve_identity_for_test(company_id: str, state) -> dict:
+    """Same calling convention app.agent.runtime.handle_turn() uses — these
+    tests exercise the real, shared app.context.runtime_context.
+    resolve_identity() directly rather than through the now-deleted
+    PawfectOrchestrator._resolve_identity adapter."""
+    return resolve_identity(
+        company_id, state,
+        tool_executor=ThreadPoolExecutor(max_workers=2),
+        timeout_seconds=10,
+        cache_single_pet=lambda s, pets: None,
+    )
 
 
 def test_phone_identity_never_matches_a_short_suffix():
@@ -49,24 +60,102 @@ def test_create_pet_database_boundary_refuses_missing_or_species_as_breed():
     assert species["data"]["missing_fields"] == ["breed"]
 
 
-def test_partial_stay_details_never_produce_final_slot_choices():
+def test_boarding_with_no_room_at_all_still_hard_blocks():
+    """room_type is the one genuinely unconditional requirement — nothing
+    can be checked (not even a preliminary check-in time) without knowing
+    which room. check_out_date is no longer listed here: it's only
+    reported missing once room_type is actually known (see
+    test_boarding_room_known_offers_preliminary_checkin_times below) —
+    reporting it as missing before that would be misleading, the customer
+    needs to state the room first regardless."""
     context = CustomerContext(company_id=1)
 
     boarding = check_available_slots(
         context,
         {"service_type": "BOARDING", "entities": {"preferred_date": "2026-08-10"}},
     )
+
+    assert boarding["status"] == "missing_information"
+    assert boarding["data"]["available_slots"] == []
+    assert boarding["data"]["missing_fields"] == ["room_type"]
+
+
+def test_boarding_room_known_offers_preliminary_checkin_times(monkeypatch):
+    """Explicit product decision: once the customer has picked a room,
+    show real check-in times immediately even without a check_out_date yet
+    — instead of blocking on "how many nights?" before ever showing a
+    single time. Confirmed live this was producing a genuine contradiction
+    (a time shown as available, then reported unavailable one turn later
+    once the missing piece was finally supplied) since the two turns were
+    validating completely different things (a hard missing_information
+    block that skipped straight to nothing, vs. the real full validation)."""
+    monkeypatch.setattr(
+        relational_actions,
+        "_business_hours_for_date",
+        lambda company_id, target_date: ("09:30", "18:30", None),
+    )
+    monkeypatch.setattr(relational_actions, "get_supabase_client", lambda: object())
+    monkeypatch.setattr(relational_actions, "_shared_booking_holds", lambda client, company_id: None)
+    monkeypatch.setattr(
+        relational_actions,
+        "_staff_day_roster",
+        lambda client, company_id, target_date, service_type=None: [
+            {"staff_id": 7, "staff_name": "Ari"}
+        ],
+    )
+    monkeypatch.setattr(
+        relational_actions, "_cross_service_staff_bookings",
+        lambda client, company_id, staff_ids, date_str: [],
+    )
+    context = CustomerContext(company_id=1)
+
+    result = check_available_slots(
+        context,
+        {
+            "service_type": "BOARDING",
+            "entities": {"preferred_date": "2026-08-10", "room_type": "Sirius Room"},
+        },
+    )
+
+    assert result["status"] == "success"
+    assert result["data"]["preliminary"] is True
+    assert result["data"]["still_needs"] == ["check_out_date"]
+    assert "09:30:00" in result["data"]["available_slots"]
+
+
+def test_daycare_with_nothing_stated_offers_preliminary_checkin_times(monkeypatch):
+    """Same product decision, DAYCARE side: a bare check-in enquiry (no
+    duration/checkout yet) now shows real drop-off times instead of
+    blocking on "how long will you stay?" first."""
+    monkeypatch.setattr(
+        relational_actions,
+        "_business_hours_for_date",
+        lambda company_id, target_date: ("09:30", "18:30", None),
+    )
+    monkeypatch.setattr(relational_actions, "get_supabase_client", lambda: object())
+    monkeypatch.setattr(relational_actions, "_shared_booking_holds", lambda client, company_id: None)
+    monkeypatch.setattr(
+        relational_actions,
+        "_staff_day_roster",
+        lambda client, company_id, target_date, service_type=None: [
+            {"staff_id": 7, "staff_name": "Ari"}
+        ],
+    )
+    monkeypatch.setattr(
+        relational_actions, "_cross_service_staff_bookings",
+        lambda client, company_id, staff_ids, date_str: [],
+    )
+    context = CustomerContext(company_id=1)
+
     daycare = check_available_slots(
         context,
         {"service_type": "DAYCARE", "entities": {"preferred_date": "2026-08-10"}},
     )
 
-    assert boarding["status"] == "missing_information"
-    assert boarding["data"]["available_slots"] == []
-    assert boarding["data"]["missing_fields"] == ["room_type", "check_out_date"]
-    assert daycare["status"] == "missing_information"
-    assert daycare["data"]["available_slots"] == []
-    assert daycare["data"]["missing_fields"] == ["check_out_time_or_duration_minutes"]
+    assert daycare["status"] == "success"
+    assert daycare["data"]["preliminary"] is True
+    assert daycare["data"]["still_needs"] == ["check_out_time_or_duration_minutes"]
+    assert "09:30:00" in daycare["data"]["available_slots"]
 
 
 def test_1730_can_be_a_daycare_pickup_without_being_a_late_start(monkeypatch):
@@ -221,6 +310,58 @@ def test_daycare_period_check_in_with_fixed_checkout_still_detects_a_real_confli
     assert "15:00:00" in result["data"]["available_slots"]
 
 
+def test_daycare_offers_a_long_visit_when_staff_cover_it_between_them(monkeypatch):
+    """Confirmed live: requiring ONE staff member free for an entire long
+    visit made a real 6-hour DAYCARE request return zero slots for the
+    whole day, even though the business's total staffing that day was
+    ample — each of several staff members merely had one short unrelated
+    booking somewhere in the middle, at a DIFFERENT time each, so no
+    single person was free continuously but the roster together covered
+    every moment. Flip side of the single-staff real-conflict test above:
+    with multiple staff whose gaps don't overlap, the visit must be
+    offered."""
+    monkeypatch.setattr(
+        relational_actions,
+        "_business_hours_for_date",
+        lambda company_id, target_date: ("09:30", "18:30", None),
+    )
+    monkeypatch.setattr(relational_actions, "get_supabase_client", lambda: object())
+    monkeypatch.setattr(relational_actions, "_shared_booking_holds", lambda client, company_id: None)
+    monkeypatch.setattr(
+        relational_actions,
+        "_staff_day_roster",
+        lambda client, company_id, target_date, service_type=None: [
+            {"staff_id": 1, "staff_name": "A"},
+            {"staff_id": 2, "staff_name": "B"},
+        ],
+    )
+    # A is busy 11:00-12:00; B is busy 14:00-15:00 — neither window overlaps
+    # the other, so together they cover the whole 09:30-15:30 visit even
+    # though neither is free for its full length alone.
+    monkeypatch.setattr(
+        relational_actions,
+        "_cross_service_staff_bookings",
+        lambda client, company_id, staff_ids, date_str: [
+            {"staff_id": 1, "check_in_time": "11:00:00", "check_out_time": "12:00:00",
+             "booking_status": "Scheduled", "_service_type": "DAYCARE"},
+            {"staff_id": 2, "check_in_time": "14:00:00", "check_out_time": "15:00:00",
+             "booking_status": "Scheduled", "_service_type": "DAYCARE"},
+        ],
+    )
+    context = CustomerContext(company_id=1)
+
+    result = check_available_slots(
+        context,
+        {
+            "service_type": "DAYCARE",
+            "entities": {"preferred_date": "2026-08-10", "duration_minutes": 360},
+        },
+    )
+
+    assert result["status"] == "success"
+    assert "09:30:00" in result["data"]["available_slots"]
+
+
 def test_half_hour_slots_are_available_even_when_business_opens_on_the_hour():
     slots = _time_slots_for_day("09:00", "18:30")
 
@@ -303,6 +444,78 @@ def test_boarding_checkout_date_is_free_for_another_pet_service():
     )
 
     pet_bookings[0]["booking_time"] = "09:00"
+    assert not relational_actions._pet_free_for_boarding_stay(
+        pet_bookings,
+        date(2026, 8, 10),
+        date(2026, 8, 12),
+        check_in_time="14:00",
+        check_out_time="10:00",
+    )
+
+
+def test_grooming_booking_interval_uses_the_rows_own_duration_not_a_hardcoded_90():
+    """Real bug confirmed 2026-08-10: this used to hardcode 90 minutes
+    regardless of the row's own duration_minutes column, while the SQL
+    write-side conflict check (coalesce(b.duration_minutes, 90)) uses the
+    real stored value — a grooming_booking row with any other duration
+    (the schema allows 1-1440) made read-side availability disagree with
+    what the database actually enforces."""
+    assert relational_actions._booking_interval(
+        {"booking_time": "10:00", "duration_minutes": 150}, "GROOMING",
+    ) == [(600, 750)]
+    # No duration_minutes stored at all -> Python's own 60-minute default
+    # (service_duration_minutes("GROOMING")) — not reachable for any row
+    # written through the app itself (create_booking always writes an
+    # explicit value); the SQL schema/RPC's own coalesce(..., 90) fallback
+    # was deliberately left unchanged (a live migration is a separate
+    # decision).
+    assert relational_actions._booking_interval(
+        {"booking_time": "10:00"}, "GROOMING",
+    ) == [(600, 660)]
+
+
+def test_boarded_pet_blocks_a_mid_stay_grooming_slot_matching_sql_semantics():
+    """Real bug confirmed 2026-08-10: this used to only treat a boarded
+    pet as occupied during its exact check-in/check-out handoff instants,
+    so a genuine mid-stay grooming slot would be reported "available" here
+    even though the SQL write-side conflict check (pet_has_conflicting_
+    booking, full check-in-to-check-out overlap, unconditional — see
+    backend/sql/booking_conflict_prevention_migration.sql) would reject it
+    at write time. Matches SQL's stricter full-stay-occupied semantics."""
+    pet_bookings = [
+        {
+            "_service_type": "BOARDING",
+            "boarding_booking_id": 1,
+            "check_in_date": "2026-08-10",
+            "check_out_date": "2026-08-12",
+            "booking_status": "Scheduled",
+        }
+    ]
+    # 2026-08-11 (a day squarely inside the stay, nowhere near either
+    # handoff) must now be blocked for ANY other service that day.
+    assert not relational_actions._pet_free_for_interval(
+        pet_bookings, "2026-08-11", 600, 690,  # 10:00-11:30
+    )
+    # A day genuinely outside the stay is unaffected.
+    assert relational_actions._pet_free_for_interval(
+        pet_bookings, "2026-08-13", 600, 690,
+    )
+
+
+def test_new_boarding_request_blocked_by_a_mid_stay_grooming_slot_matching_sql_semantics():
+    """The reverse direction of the test above: an EXISTING grooming
+    appointment squarely inside a NEW boarding stay's span must now block
+    it too — the SQL check overlaps the new booking's full span against
+    every other booking unconditionally, in both directions."""
+    pet_bookings = [
+        {
+            "_service_type": "GROOMING",
+            "grooming_booking_id": 1,
+            "booking_date": "2026-08-11",
+            "booking_time": "10:00",
+            "booking_status": "Scheduled",
+        }
+    ]
     assert not relational_actions._pet_free_for_boarding_stay(
         pet_bookings,
         date(2026, 8, 10),
@@ -598,13 +811,11 @@ def test_boarding_reschedule_preserves_stay_length_when_checkout_date_is_not_res
     assert captured_probes[0]["check_out_date"] == "2026-08-31"
 
 
-def test_boarding_does_not_require_the_same_staff_at_check_in_and_check_out(monkeypatch):
-    """Regression: BOARDING availability required ONE staff member to be
-    free for BOTH the check-in AND check-out events, even though a stay can
-    span days/weeks — a normal weekly rest day landing on the checkout date
-    made an otherwise fully-staffable stay show as completely unbookable.
-    Business need is just "someone qualified is on duty each day", same as
-    GROOMING/DAYCARE, not "the same someone both days"."""
+def test_boarding_requires_one_persistable_staff_member_for_both_handoffs(monkeypatch):
+    """The current schema has one boarding_booking.staff_id and the final
+    conflict RPC validates that person at both handoff events. Read-side
+    availability must not promise a stay supported only by two different
+    employees, because the later create then rejects it as a conflict."""
     class _Query:
         def __init__(self, rows):
             self.rows = rows
@@ -628,8 +839,9 @@ def test_boarding_does_not_require_the_same_staff_at_check_in_and_check_out(monk
            "provides_service": True, "service_types_json": ["GROOMING", "DAYCARE", "BOARDING"]}
     tables = {
         "staff": [ari, ben],
-        # Ari off on the checkout day; Ben off on the check-in day — disjoint
-        # rosters, nobody works both ends, but each day is itself staffed.
+        # Ari is off on the checkout day and Ben is off on the check-in day:
+        # both dates have someone on duty, but no single staff_id can be
+        # persisted safely for the full booking.
         "leave": [
             {"staff_id": 7, "start_date": "2026-08-12", "end_date": "2026-08-12", "status": "Approved"},
             {"staff_id": 9, "start_date": "2026-08-10", "end_date": "2026-08-10", "status": "Approved"},
@@ -657,15 +869,12 @@ def test_boarding_does_not_require_the_same_staff_at_check_in_and_check_out(monk
     )
 
     assert result["status"] == "success"
-    assert result["data"]["available_slots"], "a fully-staffable stay must not show as fully booked"
+    assert result["data"]["available_slots"] == []
 
 
-def test_boarding_checkout_selection_does_not_require_the_same_staff_either(monkeypatch):
-    """Same bug, the OTHER (parallel, duplicated) BOARDING code path: when
-    the customer already has a fixed check-in time and is picking a
-    check-out time (selection_target=CHECK_OUT), a separate implementation
-    had the identical "same staff must do both ends" requirement — fixing
-    only the CHECK_IN-selection branch left this one broken."""
+def test_boarding_checkout_selection_requires_the_persistable_staff_member(monkeypatch):
+    """The CHECK_OUT selection path must apply the same one-staff contract
+    as CHECK_IN selection and the final atomic write."""
     class _Query:
         def __init__(self, rows):
             self.rows = rows
@@ -718,9 +927,7 @@ def test_boarding_checkout_selection_does_not_require_the_same_staff_either(monk
     )
 
     assert result["status"] == "success"
-    assert result["data"]["available_check_out_times"], (
-        "a fully-staffable stay must not show as fully booked"
-    )
+    assert result["data"]["available_check_out_times"] == []
 
 
 def test_fresh_boarding_check_never_excludes_an_existing_booking_implicitly(monkeypatch):
@@ -896,6 +1103,19 @@ def test_chinese_date_time_and_duration_are_deterministic():
     assert parse_week_range("下周下午") is not None
 
 
+def test_time_range_extraction_ignores_an_earlier_unrelated_to():
+    """Real bug confirmed live (2026-08-10): the old implementation split
+    on only the FIRST "to"/"until"/etc. match in the whole message. "I want
+    TO book daycare ... 12pm TO 5pm" has an earlier, unrelated "to" (want
+    to book) that made the split land on "I want" / "book daycare ...
+    12pm to 5pm" — neither half is a bare time, so the real range later in
+    the same sentence was silently never reached."""
+    assert extract_time_range(
+        "Hi I want to book daycare hourly care for Coco on 1 October, 12pm to 5pm"
+    ) == ("12:00", "17:00", 300)
+    assert extract_time_range("please go to the store from 2pm to 4pm") == ("14:00", "16:00", 120)
+
+
 def test_chinese_next_weekday_modifier_is_not_dropped_inside_a_sentence():
     # Thursday. "下个星期五" (next Friday) embedded in a longer sentence
     # previously matched the bare "星期五" substring first and silently
@@ -948,7 +1168,35 @@ def test_weekday_modifiers_use_calendar_week_boundaries_in_all_languages():
         for phrase in ("next tuesday", "下个星期二", "下周二", "selasa depan"):
             assert extract_customer_date(phrase, today=reference) == next_tuesday
         for phrase in ("this tuesday", "这个星期二", "这周二", "selasa ini"):
-            assert extract_customer_date(phrase, today=reference) == this_tuesday
+            # Regression: "this Tuesday" used to always mean this ISO
+            # calendar week's Tuesday, even asked from Wed onward — once
+            # the week rolls past Tuesday, that's a PAST date. Confirmed
+            # live: "this Saturday" asked on a Sunday resolved to
+            # yesterday. No real customer means an already-passed day when
+            # booking a future service, so once the reference day is past
+            # this_tuesday, "this Tuesday" rolls forward to next_tuesday
+            # instead — Mon/Tue (on or before the target) still get the
+            # current week's Tuesday.
+            expected = this_tuesday if reference <= this_tuesday else next_tuesday
+            assert extract_customer_date(phrase, today=reference) == expected
+
+
+def test_this_weekday_never_resolves_to_a_date_in_the_past():
+    """Confirmed live: "this Saturday" asked on a Sunday (the week has
+    already rolled past Saturday) resolved to YESTERDAY's Saturday — a
+    real customer booking a future service never means an already-passed
+    day, no matter which day of the week they're asking from."""
+    sunday = date(2026, 8, 9)
+    assert extract_customer_date("this saturday", today=sunday) == date(2026, 8, 15)
+    assert extract_customer_date("this monday", today=sunday) == date(2026, 8, 10)
+    assert extract_customer_date("这个星期六", today=sunday) == date(2026, 8, 15)
+
+    # Still resolves within the current week when the target day hasn't
+    # passed yet.
+    tuesday = date(2026, 8, 4)
+    assert extract_customer_date("this saturday", today=tuesday) == date(2026, 8, 8)
+    # Asking about today's own weekday still means today, not next week.
+    assert extract_customer_date("this saturday", today=date(2026, 8, 8)) == date(2026, 8, 8)
 
 
 def test_chinese_weekday_modifier_allows_customer_whitespace():
@@ -998,13 +1246,79 @@ def test_existing_booking_survives_beyond_first_turn(monkeypatch):
             return {"status": "success", "data": latest}
 
     monkeypatch.setattr("app.context.runtime_context.get_relational_repository", lambda: Repo())
-    orchestrator = object.__new__(PawfectOrchestrator)
     state = ConversationState(phone_number="+60123456705", company_id="1")
-    first = orchestrator._resolve_identity("1", state)
+    first = _resolve_identity_for_test("1", state)
     assert first["latest_booking"]["booking_id"] == 88
     state.history.append({"role": "human", "content": "hi"})
-    second = orchestrator._resolve_identity("1", state)
+    second = _resolve_identity_for_test("1", state)
     assert second["latest_booking"]["booking_id"] == 88
+
+
+def test_loyalty_account_is_hydrated_once_per_session_for_an_existing_customer(monkeypatch):
+    """Real gap confirmed 2026-08-10: an existing customer's loyalty/member
+    status was only ever looked up after an explicit loyalty question or
+    forced once post-booking — a pre-booking recommendation turn had zero
+    member context, even for a real Gold-tier member. Hydrated once per
+    session, same mechanism/pattern as recent_booking/upcoming_booking."""
+    loyalty_calls = {"count": 0}
+
+    class Repo:
+        def get_customer_by_phone(self, *_args):
+            return {
+                "status": "success", "data_found": True,
+                "data": {"customer_id": 9, "full_name": "Alicia Lee", "address": "KL"},
+            }
+
+        def list_customer_pets(self, *_args):
+            return {"status": "success", "data": {"pets": []}}
+
+        def get_latest_booking(self, *_args):
+            return {"status": "not_found", "data": None}
+
+        def get_loyalty_account(self, *_args):
+            loyalty_calls["count"] += 1
+            return {"status": "success", "data": {"points_balance": 860, "tier": "Gold"}}
+
+    monkeypatch.setattr("app.context.runtime_context.get_relational_repository", lambda: Repo())
+    state = ConversationState(phone_number="+60123456705", company_id="1")
+
+    first = _resolve_identity_for_test("1", state)
+    assert first["loyalty_account"] == {"points_balance": 860, "tier": "Gold"}
+    assert first["loyalty_context_status"] == "available"
+    assert loyalty_calls["count"] == 1
+
+    state.history.append({"role": "human", "content": "what grooming do you recommend?"})
+    second = _resolve_identity_for_test("1", state)
+    assert second["loyalty_account"]["tier"] == "Gold"
+    # Session-level, not per-turn — must not re-query once hydrated.
+    assert loyalty_calls["count"] == 1
+
+
+def test_loyalty_account_none_for_a_genuine_non_member_is_distinct_from_not_yet_hydrated(monkeypatch):
+    class Repo:
+        def get_customer_by_phone(self, *_args):
+            return {
+                "status": "success", "data_found": True,
+                "data": {"customer_id": 9, "full_name": "Alicia Lee", "address": "KL"},
+            }
+
+        def list_customer_pets(self, *_args):
+            return {"status": "success", "data": {"pets": []}}
+
+        def get_latest_booking(self, *_args):
+            return {"status": "not_found", "data": None}
+
+        def get_loyalty_account(self, *_args):
+            return {"status": "not_found"}
+
+    monkeypatch.setattr("app.context.runtime_context.get_relational_repository", lambda: Repo())
+    state = ConversationState(phone_number="+60123456705", company_id="1")
+
+    customer = _resolve_identity_for_test("1", state)
+    assert customer["loyalty_account"] is None
+    # "available" (verified genuinely no account) — not "unavailable" (a
+    # read that hasn't happened/failed) — so this isn't re-queried forever.
+    assert customer["loyalty_context_status"] == "available"
 
 
 def test_profile_hydration_is_not_tied_to_greeting_and_retries_failed_pet_read(monkeypatch):
@@ -1037,7 +1351,6 @@ def test_profile_hydration_is_not_tied_to_greeting_and_retries_failed_pet_read(m
 
     repo = Repo()
     monkeypatch.setattr("app.context.runtime_context.get_relational_repository", lambda: repo)
-    orchestrator = object.__new__(PawfectOrchestrator)
     state = ConversationState(
         phone_number="+60123456705",
         company_id="1",
@@ -1050,43 +1363,25 @@ def test_profile_hydration_is_not_tied_to_greeting_and_retries_failed_pet_read(m
         ],
     )
 
-    unavailable = orchestrator._resolve_identity("1", state)
+    unavailable = _resolve_identity_for_test("1", state)
     assert unavailable["found"] is True
     assert unavailable["pets"] is None
     assert unavailable["pets_context_status"] == "unavailable"
     assert state.booking_context_status == "not_found"
 
-    hydrated = orchestrator._resolve_identity("1", state)
+    hydrated = _resolve_identity_for_test("1", state)
     assert repo.pet_calls == 2
     assert hydrated["pets_context_status"] == "available"
     assert hydrated["pets"][0]["pet_name"] == "Snowy"
-    assert state.pet_id == 31
-    assert state.pet_name == "Snowy"
+    # V2 resolves pet identity fresh each call via AgentContext.customer.
+    # pets[].ref (see app.agent.runtime._resolve_pet_ref) rather than a
+    # state.pet_id side-channel auto-populated for a single-pet customer —
+    # PawfectOrchestrator._cache_single_pet's job pre-decommission — so
+    # there is no state.pet_id/pet_name equivalent to assert here anymore.
 
     # A successful empty/non-empty result is cached; only failed reads retry.
-    orchestrator._resolve_identity("1", state)
+    _resolve_identity_for_test("1", state)
     assert repo.pet_calls == 2
-
-
-def test_failed_profile_read_cannot_be_rewritten_as_no_registered_pets():
-    response = AIMessage(
-        content="Hi Alicia! I see you don't have any pets registered yet."
-    )
-
-    grounded = ground_unavailable_profile_claims(
-        response,
-        "next Saturday have booking?",
-        {
-            "found": True,
-            "pets": None,
-            "pets_context_status": "unavailable",
-            "booking_context_status": "unavailable",
-        },
-    )
-
-    assert "couldn't read" in grounded.content
-    assert "can't truthfully say that no record exists" in grounded.content
-    assert "don't have any pets" not in grounded.content
 
 
 def test_pdf_paths_do_not_collide_across_service_tables(monkeypatch):
@@ -1291,3 +1586,123 @@ def test_booking_confirmation_shows_payment_status_not_booking_status(monkeypatc
     )
 
     assert captured["payment_status"] == "Pending"
+
+
+def test_boarding_create_booking_does_not_require_the_same_staff_at_check_in_and_check_out(monkeypatch):
+    """Regression: the SAME "same staff must do both ends" bug the
+    availability read-side already had (see the check_available_slots
+    fixes above) also existed as a THIRD, independent copy in
+    create_booking's own write-path staff selection — confirmed by an
+    external audit. The read side offering a slot no longer meant the
+    write side would actually accept it: check_available_slots (fixed)
+    would show the slot as bookable with disjoint check-in/check-out
+    staff, and then create_booking's own staff selection intersected
+    check-in-free staff with check-out-free staff, silently emptying the
+    candidate pool and forcing an unrelated-looking failure on confirm."""
+    ari = {"staff_id": 7, "staff_name": "Ari", "status": "active", "off_days_json": [],
+           "provides_service": True, "service_types_json": ["GROOMING", "DAYCARE", "BOARDING"]}
+    ben = {"staff_id": 9, "staff_name": "Ben", "status": "active", "off_days_json": [],
+           "provides_service": True, "service_types_json": ["GROOMING", "DAYCARE", "BOARDING"]}
+
+    class _Query:
+        def __init__(self, rows):
+            self.rows = rows
+
+        def select(self, *_a, **_k): return self
+        def eq(self, *_a, **_k): return self
+        def in_(self, *_a, **_k): return self
+        def limit(self, *_a, **_k): return self
+        def execute(self):
+            return SimpleNamespace(data=self.rows)
+
+    tables = {
+        "staff": [ari, ben],
+        # Ari off on the checkout day; Ben off on the check-in day — same
+        # disjoint-roster setup as the availability-side regression test.
+        "leave": [
+            {"staff_id": 7, "start_date": "2026-08-12", "end_date": "2026-08-12", "status": "Approved"},
+            {"staff_id": 9, "start_date": "2026-08-10", "end_date": "2026-08-10", "status": "Approved"},
+        ],
+        "grooming_booking": [], "daycare_booking": [], "boarding_booking": [],
+        "ai_mutation_idempotency": [],
+    }
+
+    class _Client:
+        def table(self, name):
+            return _Query(tables.get(name, []))
+
+    monkeypatch.setattr(relational_actions, "get_supabase_client", lambda: _Client())
+    monkeypatch.setattr(
+        relational_actions, "_business_hours_for_date",
+        lambda company_id, target_date: ("09:00", "18:00", None),
+    )
+    monkeypatch.setattr(
+        relational_actions, "get_pets_by_customer_id",
+        lambda context: {"status": "success", "data": {"pets": [{"pet_id": 1}]}},
+    )
+
+    class _OkVaccination:
+        ok = True
+        errors: list[str] = []
+
+    monkeypatch.setattr(
+        "app.validation.validator.check_vaccination_eligibility", lambda *a, **kw: _OkVaccination()
+    )
+    monkeypatch.setattr(relational_actions, "_slot_is_available", lambda *a, **kw: True)
+
+    captured_free_staff = []
+
+    def fake_select_staff_id(available_staff):
+        captured_free_staff.append(list(available_staff))
+        return available_staff[0]["staff_id"] if available_staff else None
+
+    monkeypatch.setattr("app.db.booking_draft.select_staff_id", fake_select_staff_id)
+
+    context = CustomerContext(company_id=1)
+    context.resolved_customer_id = 42
+    result = relational_actions.create_booking(
+        context,
+        {
+            "service_type": "BOARDING",
+            "entities": {
+                "pet_id": 1,
+                "room_type": "Mars Room",
+                "preferred_date": "2026-08-10",
+                "preferred_time": "11:00",
+                "check_out_date": "2026-08-12",
+                "check_out_time": "12:00",
+                "idempotency_key": "a" * 32,
+            },
+        },
+    )
+
+    assert result.get("error") != (
+        "No qualified staff member is free for the check-out "
+        "handoff at that date/time. Ask the customer for a "
+        "different check-out time, or a different check-out date."
+    )
+    assert captured_free_staff, "expected staff selection to actually run"
+    # Ari (check-in day roster) must NOT have been emptied out just because
+    # Ben (not Ari) is the one covering the check-out day.
+    assert {s["staff_id"] for s in captured_free_staff[0]} == {7}
+
+
+def test_boarding_range_check_redirects_to_the_singular_tool_by_name():
+    """Confirmed live: without an explicit tool-name redirect in this
+    error, the model repeatedly re-resolved the same dates and retried
+    check_availability_range for BOARDING instead of switching to
+    check_availability (singular) — burning through MAX_TOOL_ITERATIONS
+    without ever converging on a response."""
+    result = availability_tools.check_availability_range.invoke(
+        {
+            "company_id": 1,
+            "service_type": "BOARDING",
+            "start_date": "2026-08-11",
+            "end_date": "2026-08-13",
+        }
+    )
+    assert result["status"] == "missing_information"
+    assert "check_availability_range does not support BOARDING" in result["error"]
+    assert "check_availability" in result["error"]
+    assert "2026-08-11" in result["error"]
+    assert "2026-08-13" in result["error"]

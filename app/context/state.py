@@ -2,6 +2,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
+from app.context.booking_working_state import BookingWorkingState
+
 @dataclass
 class ConversationState:
     phone_number: str
@@ -90,7 +92,109 @@ class ConversationState:
     # first-turn identity prefetch used to disappear on turn two, which made
     # the model truthfully see no booking context and incorrectly tell the
     # customer that no booking existed even though Supabase had one.
+    #
+    # "Latest" here means whichever booking has the furthest-forward date
+    # overall — a future booking always outranks any past one, so whenever
+    # an upcoming booking exists, latest_booking silently hides any recent
+    # PAST visit entirely (never surfaced to a greeting). recent_booking and
+    # upcoming_booking below exist specifically so a greeting can reference
+    # both concepts instead of this one ambiguous blend.
     latest_booking: dict | None = None
+
+    # The customer's most recent COMPLETED visit (booking_date in the past,
+    # a real qualifying status) — populated by the same identity prefetch as
+    # latest_booking, kept separate so it survives even when the customer
+    # also has an upcoming booking (which would otherwise always win
+    # latest_booking's single slot).
+    recent_booking: dict | None = None
+
+    # The customer's SOONEST still-active future booking (booking_date on or
+    # after today, Scheduled/Pending) — the "next appointment" concept a
+    # greeting actually wants, as opposed to latest_booking's "furthest away"
+    # one when a customer has several upcoming bookings.
+    upcoming_booking: dict | None = None
+
+    # Real gap confirmed 2026-08-10: an existing customer's loyalty/member
+    # status was only ever looked up (a) when the customer's own message
+    # used a loyalty keyword, or (b) forced once after a booking just
+    # succeeded — so a recommendation/enquiry turn earlier in the same
+    # conversation had zero member context to reason with, even for a
+    # real Gold-tier member. Hydrated once per session (like
+    # recent_booking/upcoming_booking above), the same real read
+    # app.tools.loyalty_tools.get_loyalty_balance/reference_tools.get_loyalty
+    # already use — not a new lookup, just surfaced earlier and reused
+    # instead of re-queried every turn. None distinguishes "not yet
+    # hydrated" from a genuine non-member (loyalty_context_status
+    # "available" with loyalty_account None).
+    loyalty_account: dict | None = None
+    loyalty_context_status: str | None = None
+
+    # Phase 6 of REFACTOR_PLAN.md (app/agent/runtime.py) only — the most
+    # recent still-unconfirmed preview_booking() ref for this session.
+    # Unused by the live app/orchestrator.py path (which has its own
+    # pending_actions mechanism below). Confirmed live: without surfacing
+    # this back into AgentContext on the NEXT turn, the model has no way to
+    # recall which specific preview_ref a customer's later "yes" refers to
+    # (state.history only keeps the final text reply, never tool
+    # results/refs) and tried to reconstruct the whole booking from scratch
+    # instead of confirming the one it already made. Cleared once
+    # confirm_booking actually succeeds against it.
+    pending_preview_ref: str | None = None
+
+    # Same reasoning as pending_preview_ref, for preview_membership's
+    # member_ref (item #8 of the 2026-08-10 architecture review — membership
+    # registration follows the same preview_ref->confirm_ref pattern as
+    # booking). Cleared once confirm_membership actually succeeds.
+    pending_member_ref: str | None = None
+
+    # Phase 6 of REFACTOR_PLAN.md only — the most recent get_service_options
+    # result's options, each still holding its real option_ref, so
+    # AgentContext can re-surface them on a LATER turn. Without this, "the
+    # second one"/"the cheapest one" stated on a turn after the one that
+    # listed them would have no ref to resolve against (state.history keeps
+    # only the final text reply) and the model would have to call
+    # get_service_options again just to recover a ref it already had.
+    # Replaced wholesale on every successful get_service_options call, not
+    # merged — an old list is not a partial answer to a new one.
+    active_options: list[dict] | None = None
+
+    # Item #9 of the 2026-08-10 architecture review: the same reasoning as
+    # active_options above, for check_availability's most recent shown
+    # slot list. Without this, a customer picking "12 please" from a
+    # just-shown time list on a LATER turn had no slot_ref to resolve
+    # against — only the bare re-resolved time, with check_availability
+    # needing a full date/option context to re-derive anything at all.
+    # Replaced wholesale on every successful check_availability call.
+    active_slots: list[dict] | None = None
+
+    # Real gap confirmed live 2026-08-10: a customer picked a real service
+    # option by ordinal with zero date/time ever mentioned, and the model
+    # silently invented a date AND time and went straight to a preview —
+    # active_options/active_slots above only ever remembered what was
+    # JUST SHOWN, never what the customer actually SELECTED for the
+    # booking currently being built. See app/context/booking_working_state.py
+    # for the full rationale; app/agent/booking_state.py's change_* functions
+    # are the only intended way to mutate this.
+    booking: BookingWorkingState = field(default_factory=BookingWorkingState)
+
+    # Phase 7 of REFACTOR_PLAN.md only — the payment_ref confirm_booking
+    # minted for its own real payment_id, kept so redeem_reward on a LATER
+    # turn ("actually, can I use my voucher on that") has something real to
+    # reference without the model restating a raw payment_id itself.
+    last_created_payment_ref: str | None = None
+
+    # Phase 7 of REFACTOR_PLAN.md only — the booking_ref of the most recent
+    # unresolved cancel_booking/reschedule_booking preview (each:
+    # {"tool", "booking_ref"}). Confirmed live: without this, once
+    # cancel_booking previews a specific booking and the customer replies
+    # with just the pet's name to confirm, the model has no memory of WHICH
+    # booking_ref that preview targeted (state.history keeps only the final
+    # text reply) and calls cancel_booking again with confirm_pet_name set
+    # but booking_ref empty — which makes it re-resolve from scratch and
+    # hit "ambiguous, multiple active bookings" even though the specific
+    # target was already identified one turn ago. Cleared once the mutation
+    # actually succeeds/fails for real.
+    pending_mutation_target: dict | None = None
 
     # Exact historical booking selected for a "same as last time" request.
     # This is deliberately separate from latest_booking: the latter may be a
@@ -139,6 +243,22 @@ class ConversationState:
     # drop it before check_availability/create_booking. This is never inferred
     # from an open-ended tier such as "Above 3 Hours".
     daycare_duration_minutes: int | None = None
+
+    # Which dimension the customer actually committed to, so a later message
+    # that only edits the start/check-in time knows what to hold fixed:
+    #   "explicit_duration" — they stated an hour count ("5 hours") — keep
+    #       duration_minutes fixed, recompute the checkout/pickup time.
+    #   "explicit_range" — they stated both clock times ("12pm to 5pm") —
+    #       keep the stated end/pickup time fixed, recompute duration when
+    #       the start/check-in time is later revised on its own.
+    # None means no DAYCARE duration has been pinned down yet this booking.
+    daycare_duration_source: str | None = None
+
+    # The end/pickup clock time (HH:MM) the customer explicitly stated,
+    # captured only when daycare_duration_source == "explicit_range". Used
+    # to recompute daycare_duration_minutes if the check-in time changes
+    # without a new end time or duration also being given.
+    daycare_range_end_time: str | None = None
 
     # Explicit preference is different from "a loyalty tool happened". This
     # allows a customer who already said "no voucher / just book it" to move on

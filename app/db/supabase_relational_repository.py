@@ -80,6 +80,20 @@ class SupabaseRelationalRepository:
         context.resolved_customer_id = int(customer_id)
         return get_latest_booking_by_customer_id(context)
 
+    def get_upcoming_booking(self, company_id: int, customer_id: int, *, phone_number: str = "") -> dict:
+        from .relational_actions import get_upcoming_booking_by_customer_id
+
+        context = CustomerContext(phone_number=str(phone_number or "").strip(), company_id=company_id)
+        context.resolved_customer_id = int(customer_id)
+        return get_upcoming_booking_by_customer_id(context)
+
+    def get_recent_completed_booking(self, company_id: int, customer_id: int, *, phone_number: str = "") -> dict:
+        from .relational_actions import get_last_completed_booking_by_customer_id
+
+        context = CustomerContext(phone_number=str(phone_number or "").strip(), company_id=company_id)
+        context.resolved_customer_id = int(customer_id)
+        return get_last_completed_booking_by_customer_id(context)
+
     def get_booking_by_id(
         self, company_id: int, customer_id: int, booking_id: int, service_type: str = "GROOMING"
     ) -> dict:

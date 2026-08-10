@@ -228,6 +228,15 @@ def check_availability_range(
     customer to narrow it down to one specific day first. The range is
     automatically capped at the 14-day booking window.
 
+    NEVER call this for BOARDING, even when resolve_datetime returned a
+    date_range for the stay (e.g. "Tuesday to Thursday") — it always
+    returns missing_information for BOARDING and calling it again after
+    that, or re-resolving the same dates, will not help. Once the customer
+    has picked a room, call check_availability (singular) instead, with
+    room_type set to their pick, date set to the range's start (check-in),
+    and check_out_date set to the range's end — this is true even though a
+    date_range came back, not a single date.
+
     Pass customer_id and pet_id whenever they are known so every day is
     checked against the selected pet's other bookings. For rescheduling pass
     exclude_booking_id; for a requested staff member pass preferred_staff.
@@ -259,6 +268,10 @@ def check_availability_range(
             "error": "service_type must be GROOMING, DAYCARE, or BOARDING.",
         }
     if normalized_service == "BOARDING":
+        # Confirmed live: without an explicit tool-name redirect here, the
+        # model repeatedly re-resolved the same dates and retried this same
+        # call instead of switching tools — burning through
+        # MAX_TOOL_ITERATIONS without ever converging on a response.
         return {
             "status": "missing_information",
             "data": {
@@ -267,8 +280,11 @@ def check_availability_range(
                 "days": [],
             },
             "error": (
-                "Boarding choices require a specific check-in date, selected room, and "
-                "check-out date before final time slots can be offered."
+                "check_availability_range does not support BOARDING and never will, "
+                "regardless of what arguments are retried here. Call check_availability "
+                "(singular) instead: room_type = the room the customer picked, "
+                f"date = {start_date} (check-in), check_out_date = {end_date} (check-out). "
+                "Do not call resolve_datetime again for these same dates first."
             ),
         }
     if normalized_service == "DAYCARE" and duration_minutes in (None, ""):

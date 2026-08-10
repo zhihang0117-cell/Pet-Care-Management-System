@@ -27,7 +27,11 @@ def resolve_datetime(text: str) -> dict:
 
     If date_range comes back instead of date, use check_availability_range
     (not check_availability) — do not ask the customer to narrow a range
-    down to one specific day first.
+    down to one specific day first. EXCEPT for BOARDING: check_availability_range
+    does not support BOARDING at all — once the customer has picked a room,
+    call check_availability (singular) instead, with date_range's "start" as
+    the check-in date and "end" as check_out_date, even though a range (not
+    a single date) is what resolve_datetime actually returned.
 
     A period is a filter, not a bookable time: needs_time_selection is true
     whenever only a period came back (no exact clock time) — it means the

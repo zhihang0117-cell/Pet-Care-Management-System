@@ -9,7 +9,10 @@ from dateutil import parser as _dateutil_parser
 
 _MONTH_NAMES = (
     r"jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|"
-    r"jul(?:y)?|aug(?:ust)?|sep(?:tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?"
+    # "sept" (with the trailing t) is at least as common a casual
+    # abbreviation as "sep" — sep(?:tember)? only matched the bare 3-letter
+    # form or the full word, so "21 sept" resolved to nothing at all.
+    r"jul(?:y)?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?"
 )
 
 # Common WhatsApp-texting abbreviations/misspellings — a customer typing
@@ -21,6 +24,25 @@ _TOMORROW_WORDS = (
 )
 _TODAY_ALT = "|".join(_TODAY_WORDS)
 _TOMORROW_ALT = "|".join(_TOMORROW_WORDS)
+
+_WEEKDAY_FULL_NAMES = (
+    "monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday",
+)
+# Same WhatsApp-casual-texting reasoning as _TOMORROW_WORDS above — "next
+# wed"/"this fri" are at least as common as the full spelling and previously
+# matched nothing at all (extract_customer_date's own substring search only
+# looked for the full weekday name, so "next Wed" never even reached the
+# weekday parser below).
+_WEEKDAY_ABBREVIATIONS = {
+    "mon": "monday",
+    "tue": "tuesday", "tues": "tuesday",
+    "wed": "wednesday", "weds": "wednesday",
+    "thu": "thursday", "thur": "thursday", "thurs": "thursday",
+    "fri": "friday",
+    "sat": "saturday",
+    "sun": "sunday",
+}
+_WEEKDAY_ALT = "|".join(_WEEKDAY_FULL_NAMES) + "|" + "|".join(_WEEKDAY_ABBREVIATIONS)
 
 
 def _looks_like_abbreviation(word: str, target: str) -> bool:
@@ -99,15 +121,25 @@ def _resolve_weekday_date(reference: date, weekday_index: int, modifier: str | N
     """Resolve a weekday with calendar-week semantics.
 
     ``next`` means the named day in the next Monday-to-Sunday week, while
-    ``this`` means the named day in the current week.  An unmodified weekday
-    means its next occurrence and is always future (the same weekday today
-    rolls forward seven days).
+    ``this`` means the named day in the current week — EXCEPT when that day
+    has already passed within the current week, in which case it rolls
+    forward to the upcoming occurrence instead. Confirmed live: "this
+    Saturday" asked on a Sunday resolved to yesterday's Saturday (the
+    current ISO week's Sat is before today once the week has rolled past
+    it) — a real customer booking a FUTURE service never means "this
+    Saturday" as a day that's already gone, regardless of which day of the
+    week they're asking from. An unmodified weekday means its next
+    occurrence and is always future (the same weekday today rolls forward
+    seven days).
     """
     this_monday = reference - timedelta(days=reference.weekday())
     if modifier == "next":
         return this_monday + timedelta(days=7 + weekday_index)
     if modifier == "this":
-        return this_monday + timedelta(days=weekday_index)
+        candidate = this_monday + timedelta(days=weekday_index)
+        if candidate < reference:
+            candidate += timedelta(days=7)
+        return candidate
 
     days_ahead = (weekday_index - reference.weekday()) % 7
     return reference + timedelta(days=days_ahead or 7)
@@ -263,22 +295,14 @@ def parse_customer_date(value: str | None, *, today: date | None = None) -> date
         text = " ".join(text.split())
 
     weekday_match = re.fullmatch(
-        r"(?:(next|this)\s+)?"
-        r"(monday|tuesday|wednesday|thursday|friday|saturday|sunday)",
+        rf"(?:(next|this)\s+)?({_WEEKDAY_ALT})",
         text,
         re.I,
     )
     if weekday_match:
         modifier, weekday_text = weekday_match.groups()
-        weekday_index = (
-            "monday",
-            "tuesday",
-            "wednesday",
-            "thursday",
-            "friday",
-            "saturday",
-            "sunday",
-        ).index(weekday_text.lower())
+        canonical = _WEEKDAY_ABBREVIATIONS.get(weekday_text.lower(), weekday_text.lower())
+        weekday_index = _WEEKDAY_FULL_NAMES.index(canonical)
         return _resolve_weekday_date(reference, weekday_index, modifier)
 
     for fmt in ("%Y-%m-%d", "%d/%m/%Y", "%m/%d/%Y", "%d/%m/%y", "%m/%d/%y"):
@@ -388,7 +412,7 @@ def extract_customer_date(value: str | None, *, today: date | None = None) -> da
         # phrase's "day after" never gets seen at all.
         rf"\b(?:the\s+)?day\s+after\s+(?:{_TOMORROW_ALT})\b",
         rf"\b(?:{_TODAY_ALT}|{_TOMORROW_ALT})\b",
-        r"\b(?:(?:next|this)\s+)?(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b",
+        rf"\b(?:(?:next|this)\s+)?(?:{_WEEKDAY_ALT})\b",
         r"\b(?:hari\s+ini|esok|lusa)\b",
         r"\b(?:isnin|selasa|rabu|khamis|jumaat|sabtu|ahad)(?:\s+(?:depan|ini))?\b",
         r"\b\d{4}-\d{2}-\d{2}\b",

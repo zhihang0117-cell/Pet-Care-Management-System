@@ -37,6 +37,31 @@ _DAILY_RATE_RE = re.compile(r"/\s*day\b|\bper\s+day\b", re.IGNORECASE)
 def _clean_catalogue_label(value: str) -> str:
     label = re.sub(r"[*_`#]", "", str(value or ""))
     label = re.sub(r"^\s*(?:[-•]|\d+[.)])\s*", "", label)
+    # Confirmed live: this company's service_information.docx phrases a
+    # price line as "{Name} - the daycare provider {Name again} is priced
+    # at RM.." / "{Name} : the daycare provider {Name again} is priced at
+    # RM..." — a garbled restatement that duplicates (and confuses) the
+    # real name after "the ... provider". Left unhandled, this produced
+    # service_name values like "Hourly Care - the daycare provider Daycare
+    # Hourly Care", or — once the colon-split below ran — dropped the real
+    # name entirely, keeping only "daycare provider Daycare for stays
+    # above 3 hours". The real name is always the part BEFORE this phrase,
+    # regardless of whether a dash or colon introduces it.
+    label = re.sub(
+        r"\s*[-:–—]\s*the\s+\w+\s+provider\s+.*$",
+        "",
+        label,
+        flags=re.IGNORECASE,
+    )
+    # Same narrative-restatement problem without the "provider" wording —
+    # confirmed live for an add-on line: "Splash Pool Session Add-on - The
+    # Splash Pool Session add-on is priced at RM55". Cut at the separator
+    # only when what follows "the" actually restates the name already
+    # captured before it, so a legitimately different trailing clause is
+    # never dropped.
+    dup_match = re.match(r"^(?P<name>.+?)\s*[-:–—]\s*the\s+(?P<rest>.+)$", label, re.IGNORECASE)
+    if dup_match and dup_match.group("name").strip().casefold() in dup_match.group("rest").casefold():
+        label = dup_match.group("name")
     label = re.sub(
         r"\s*(?:[-–—:]|\bis\s+priced\s+at|\bpriced\s+at|\bis|\bcosts?)\s*$",
         "",

@@ -171,7 +171,7 @@ async function assertBookingOperationalRules(companyId, type, booking) {
   }
 
   const events = type === "grooming"
-    ? [{ date: booking.booking_date, start: booking.booking_time, endMinutes: Number(booking.duration_minutes) || 90 }]
+    ? [{ date: booking.booking_date, start: booking.booking_time, endMinutes: Number(booking.duration_minutes) || 60 }]
     : type === "daycare"
     ? [{ date: booking.booking_date, start: booking.check_in_time, end: booking.check_out_time }]
     : [

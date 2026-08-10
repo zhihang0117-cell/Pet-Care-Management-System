@@ -576,7 +576,7 @@ def _serialize_grooming_booking(row: dict) -> dict:
         "service_type": "GROOMING",
         "booking_date": row.get("booking_date"),
         "booking_time": row.get("booking_time"),
-        "duration_minutes": row.get("duration_minutes") or 90,
+        "duration_minutes": row.get("duration_minutes") or 60,
         "booking_status": row.get("booking_status"),
         "service_name": "Grooming",
         "package_name": package_name,
@@ -779,6 +779,67 @@ def _collect_last_completed_customer_booking(
     return latest
 
 
+def _collect_upcoming_customer_booking(context: CustomerContext, client) -> dict | None:
+    """Soonest still-active future booking for a customer, across every pet/
+    service. Deliberately separate from _collect_latest_customer_booking,
+    which sorts by date DESCENDING and so returns whichever booking is
+    furthest away in time (or a past one if nothing is upcoming) — neither
+    of which is "the next thing this customer has coming up", the concept a
+    greeting actually wants to reference."""
+    pets_result = get_customer_pets(context)
+    pet_ids = [pet["pet_id"] for pet in pets_result.get("data", {}).get("pets", [])]
+    if not pet_ids:
+        return None
+
+    pet_names = _pet_name_map(client, context.company_id, pet_ids)
+    today = today_business()
+    upcoming: list[dict] = []
+    for service_type in SERVICE_TYPE_TO_BOOKING_TABLE:
+        table = _service_table(service_type)
+        for row in _fetch_bookings_for_customer(client, context.company_id, pet_ids, service_type):
+            if _normalize_booking_status(row.get("booking_status")) not in {"scheduled", "pending"}:
+                continue
+            booking = _serialize_booking_row(table, row)
+            raw_date = booking.get("booking_date")
+            try:
+                booking_date = date.fromisoformat(str(raw_date))
+            except (TypeError, ValueError):
+                continue
+            if booking_date < today:
+                continue
+            booking["pet_name"] = pet_names.get(booking.get("pet_id"), "")
+            upcoming.append(booking)
+
+    if not upcoming:
+        return None
+    upcoming.sort(key=_booking_sort_key)
+    soonest = upcoming[0]
+    soonest["display_label"] = _display_label_for_booking(soonest)
+    return soonest
+
+
+def get_upcoming_booking_by_customer_id(context: CustomerContext) -> dict:
+    """Read-only lookup of the customer's soonest still-active future booking."""
+    resolve_customer_context(context)
+    if context.resolved_customer_id is None:
+        return _result("get_upcoming_booking_by_customer_id", "not_found", {})
+    try:
+        soonest = _collect_upcoming_customer_booking(context, get_supabase_client())
+        if not soonest:
+            return _result(
+                "get_upcoming_booking_by_customer_id",
+                "not_found",
+                {"customer_id": context.resolved_customer_id},
+            )
+        return _result(
+            "get_upcoming_booking_by_customer_id",
+            "success",
+            _serialize_latest_booking_payload(soonest, context.resolved_customer_id),
+        )
+    except Exception as exc:
+        return _result("get_upcoming_booking_by_customer_id", "error", {}, str(exc))
+
+
 def _active_bookings_for_customer(context: CustomerContext) -> list[dict]:
     """
     All of a customer's currently Scheduled/Pending bookings across every
@@ -807,6 +868,18 @@ def _active_bookings_for_customer(context: CustomerContext) -> list[dict]:
             bookings.append(booking)
     bookings.sort(key=_booking_sort_key)
     return bookings
+
+
+def list_active_bookings(context: CustomerContext) -> dict:
+    """Public wrapper over _active_bookings_for_customer, for
+    app/tools/reference_tools.py's get_active_bookings — reused directly
+    rather than duplicating the query, same as cancel_booking/
+    reschedule_booking's own ambiguity detection already does."""
+    resolve_customer_context(context)
+    if context.resolved_customer_id is None:
+        return _result("list_active_bookings", "not_found", {"bookings": []})
+    active = _active_bookings_for_customer(context)
+    return _result("list_active_bookings", "success", {"bookings": active})
 
 
 def _serialize_latest_booking_payload(latest: dict, customer_id: int | None) -> dict:
@@ -1163,7 +1236,30 @@ def _booking_interval(row: dict, service_type: str, date_str: str | None = None)
             return [(start, end)]
         return [(start, start + 180)]
     if service == "GROOMING":
-        return [(start, start + 90)]
+        # Real bug confirmed 2026-08-10: this used to hardcode a duration
+        # regardless of the row's own duration_minutes column — but the
+        # SQL write-side conflict check (backend/sql/
+        # booking_conflict_prevention_migration.sql's create_booking_atomic/
+        # pet_has_conflicting_booking) uses coalesce(b.duration_minutes,
+        # 90), the row's REAL stored value when one exists (the schema
+        # explicitly allows 1-1440 minutes). A grooming_booking row with a
+        # different duration would make this read-side availability check
+        # disagree with what the database actually enforces at write time
+        # — exactly the "verified available, then confirm rejects it as a
+        # conflict" failure mode. Read the real value the same way SQL
+        # does; 60 (not the SQL column's own still-90 default) is only the
+        # fallback for a row that somehow has none at all — Python's
+        # create_booking always writes an explicit value (see
+        # service_duration_minutes("GROOMING") = 60), so this should not
+        # be reachable for any row written through the app itself. The SQL
+        # schema/RPC default was deliberately left at 90 — a live
+        # migration is a separate decision, not something to change
+        # silently alongside a Python default.
+        try:
+            duration = int(row.get("duration_minutes") or 60)
+        except (TypeError, ValueError):
+            duration = 60
+        return [(start, start + duration)]
     return [(start, start + 60)]
 
 
@@ -1312,16 +1408,34 @@ def _pet_free_for_interval(
         ):
             continue
         if service_type == "BOARDING":
-            check_in = str(row.get("check_in_date") or "")
-            check_out = str(row.get("check_out_date") or "")
-            # A boarded pet is occupied for its full stay, not only during the
-            # short staff check-in/check-out events.
-            if check_in and check_out and check_in <= date_str < check_out:
+            # Real bug confirmed 2026-08-10: this used to treat a boarded
+            # pet as occupied only during its brief check-in/check-out
+            # handoff events (_booking_interval's normal 30-min windows
+            # for BOARDING), on the reasoning that being checked into a
+            # room for a multi-day stay doesn't physically stop the same
+            # pet from being walked to a grooming/daycare appointment
+            # elsewhere that day. But the SQL write-side conflict check
+            # (pet_has_conflicting_booking, called at
+            # create_booking_atomic/update_booking_atomic time — see
+            # backend/sql/booking_conflict_prevention_migration.sql) was
+            # never updated to match: it still overlaps the FULL
+            # check-in-to-check-out span against every other booking, so a
+            # mid-stay grooming/daycare slot this function verified as
+            # available would then get genuinely REJECTED by the real
+            # write — a confirmed "verified then overlap" failure, not a
+            # theoretical one. Matching SQL's stricter semantics here
+            # (rather than updating the SQL function, a live schema/RPC
+            # change) is the safe fix without touching the database.
+            check_in_date = str(row.get("check_in_date") or "")
+            check_out_date = str(row.get("check_out_date") or "")
+            if not (check_in_date and check_out_date and check_in_date <= date_str <= check_out_date):
+                continue
+            return False
+        if str(row.get("booking_date") or "") != date_str:
+            continue
+        for booked_start, booked_end in _booking_interval(row, service_type, date_str):
+            if start < booked_end and booked_start < end:
                 return False
-        elif str(row.get("booking_date") or "") == date_str:
-            for booked_start, booked_end in _booking_interval(row, service_type, date_str):
-                if start < booked_end and booked_start < end:
-                    return False
     return True
 
 
@@ -1333,15 +1447,59 @@ def _pet_free_for_boarding_stay(
     exclude_booking_id: int | None = None,
     exclude_service_type: str = "",
 ) -> bool:
-    """Whether one pet is free for the exact half-open boarding stay.
+    return (
+        _pet_boarding_conflict_row(
+            pet_bookings, check_in, check_out,
+            check_in_time=check_in_time,
+            check_out_time=check_out_time,
+            exclude_booking_id=exclude_booking_id,
+            exclude_service_type=exclude_service_type,
+        )
+        is None
+    )
+
+
+def _pet_boarding_conflict_row(
+    pet_bookings: list[dict], check_in: date, check_out: date,
+    *,
+    check_in_time: object = None,
+    check_out_time: object = None,
+    exclude_booking_id: int | None = None,
+    exclude_service_type: str = "",
+) -> dict | None:
+    """The pet's own existing booking (if any) blocking this exact boarding
+    stay, or None if the pet is free. Same rule as
+    _pet_free_for_boarding_stay, factored out so a caller that gets an empty
+    result can tell the customer WHY — "your pet already has X booked" is a
+    very different, much clearer message than a generic "nothing available",
+    and previously check_available_slots had no way to surface which one it
+    actually was.
 
     Date-only comparisons used to reject every grooming/daycare visit on the
     check-in date, even one completed before the boarding arrival.  They also
     could not validate a selected checkout endpoint.  Use timestamps whenever
     the caller has them; missing times use the date boundary for compatibility
     with date-only probes until the customer selects exact endpoints.
-    """
 
+    A pet's OTHER grooming/daycare bookings are treated as a genuine
+    interval-overlap conflict against this NEW boarding stay's full
+    [check_in, check_out) span — matching backend/sql/
+    booking_conflict_prevention_migration.sql's pet_has_conflicting_booking,
+    the real write-time check (called at create_booking_atomic time), which
+    overlaps the new booking's full span against every other booking
+    unconditionally. An earlier version of this function only treated the
+    exact check-in/check-out INSTANTS as conflict points (reasoning: "a
+    boarded pet can still be walked to a grooming appointment elsewhere
+    during its stay") — real, reasoned business intent, but the SQL
+    function was never updated to allow it, so this function verifying a
+    stay as available only for the real write to then reject it as a
+    conflict was a confirmed live failure mode, not a theoretical one.
+    Matching SQL's stricter semantics here (rather than updating the SQL
+    function, a live schema/RPC change) is the safe fix without touching
+    the database — if grooming/daycare-during-a-boarding-stay is genuinely
+    wanted long-term, that requires a coordinated SQL + Python change, not
+    a Python-only one.
+    """
     checkin_minutes = _time_to_minutes(check_in_time)
     checkout_minutes = _time_to_minutes(check_out_time)
     if checkin_minutes is None:
@@ -1393,7 +1551,7 @@ def _pet_free_for_boarding_stay(
                     minutes=existing_out_minutes if existing_out_minutes is not None else 0
                 )
                 if requested_start < existing_end and existing_start < requested_end:
-                    return False
+                    return row
         else:
             booked_date = _parse_date(row.get("booking_date"))
             if booked_date:
@@ -1407,8 +1565,8 @@ def _pet_free_for_boarding_stay(
                         booked_date.year, booked_date.month, booked_date.day
                     ) + timedelta(minutes=booked_end)
                     if requested_start < existing_end and existing_start < requested_end:
-                        return False
-    return True
+                        return row
+    return None
 
 
 def _staff_free_for_interval(
@@ -1438,6 +1596,26 @@ def _staff_free_for_interval(
         if all(end <= booked_start or start >= booked_end for booked_start, booked_end in intervals):
             free.append(staff)
     return free
+
+
+def _daycare_visit_has_continuous_staff_coverage(
+    start: int, end: int, available_staff: list[dict], bookings: list[dict], *, date_str: str
+) -> bool:
+    """True only if SOME staff member (not necessarily the same one
+    throughout) is free at every SLOT_MINUTES checkpoint across [start,
+    end) — a real coverage check, not just "someone is free at drop-off and
+    someone is free at pick-up" (which would miss a genuine gap where every
+    staff member is simultaneously busy somewhere in the middle of the
+    visit). Confirmed live and by an existing regression test: a
+    single-staff roster with one real conflict mid-visit must still reject
+    that start time even when both handoff endpoints are individually free."""
+    cursor = start
+    while cursor < end:
+        step_end = min(cursor + SLOT_MINUTES, end)
+        if not _staff_free_for_interval(cursor, step_end, available_staff, bookings, date_str=date_str):
+            return False
+        cursor = step_end
+    return True
 
 
 def _slot_has_available_staff(
@@ -1552,10 +1730,14 @@ def _boarding_checkout_roster_and_bookings(
 def _boarding_window_is_staffed(
     start_minutes: int, width: int, roster: list[dict], bookings: list[dict], *, date_str: str
 ) -> bool:
-    """True if ANY qualified staff member — not necessarily a specific one
-    — is free for this width-minute boarding check-in/check-out window.
-    Business need is "someone qualified is on duty", same as GROOMING/
-    DAYCARE; never "the same specific person on both ends of the stay"."""
+    """True if any qualified staff member is free for one boarding event.
+
+    This is deliberately only a single-event helper.  A BOARDING row stores
+    one ``staff_id`` and the database conflict RPC validates that same staff
+    member at both check-in and check-out.  Callers checking a full stay must
+    therefore intersect the check-in and check-out free-staff sets rather
+    than using this boolean for each endpoint independently.
+    """
     return bool(
         _staff_free_for_interval(
             start_minutes, start_minutes + width, roster, bookings, date_str=date_str
@@ -1715,18 +1897,31 @@ def check_available_slots(context: CustomerContext, intent_json: dict) -> dict:
         )
     if choosing_check_out and not fixed_check_in_time:
         missing_constraints.append("check_in_time")
+    # Explicit product decision: the customer stating only ONE side (a
+    # check-in time for DAYCARE, or a room for BOARDING) should see real
+    # check-in options immediately, not be blocked until they've also
+    # stated the other side. Confirmed live: forcing "how long will you
+    # stay?" before showing a single time, immediately followed by that
+    # same check-in time turning out unavailable once duration WAS known,
+    # reads to the customer as the system flatly contradicting itself one
+    # turn later. preliminary_checkin_only below computes real (but only
+    # partially validated) check-in times instead of hard-blocking; the
+    # full validation (room capacity / full-visit staff coverage) still
+    # happens once the other side is known — see the preliminary_checkin_only
+    # branch further down.
+    preliminary_checkin_only = False
     if service_type == "BOARDING":
         if not room_type:
             missing_constraints.append("room_type")
-        if not check_out_date_text:
-            missing_constraints.append("check_out_date")
+        elif not check_out_date_text:
+            preliminary_checkin_only = True
     elif (
         service_type == "DAYCARE"
         and not choosing_check_out
         and requested_duration in (None, "")
         and not requested_check_out_time
     ):
-        missing_constraints.append("check_out_time_or_duration_minutes")
+        preliminary_checkin_only = True
     if missing_constraints:
         return _result(
             "check_available_slots",
@@ -1745,7 +1940,7 @@ def check_available_slots(context: CustomerContext, intent_json: dict) -> dict:
         )
 
     parsed_check_out_date = _parse_date(check_out_date_text) if check_out_date_text else None
-    if service_type == "BOARDING" and (
+    if service_type == "BOARDING" and not preliminary_checkin_only and (
         parsed_check_out_date is None or parsed_check_out_date <= preferred_date
     ):
         return _result(
@@ -1842,6 +2037,55 @@ def check_available_slots(context: CustomerContext, intent_json: dict) -> dict:
 
         from .availability_service import service_duration_minutes
 
+        if preliminary_checkin_only:
+            # Real check-in/drop-off times, staff-verified for a short
+            # handoff window only — deliberately NOT the full validation
+            # (BOARDING room capacity across the whole stay; DAYCARE staff
+            # coverage for the full visit length), since the other side
+            # (check_out_date / duration or pickup time) isn't known yet.
+            # The customer picks one of these, states the other side, and
+            # a SECOND check_availability call (this same branch once
+            # check_out_date/duration is known, or selection_target=
+            # CHECK_OUT) does the real, complete validation before
+            # anything here is treated as bookable.
+            handoff_width = service_duration_minutes("BOARDING")
+            close_minutes_preview = _time_to_minutes(close_time)
+            preliminary_slots = []
+            for slot in _time_slots_for_day(open_time, close_time):
+                slot_start = _time_to_minutes(slot)
+                if slot_start is None or close_minutes_preview is None:
+                    continue
+                drop_off_end = min(slot_start + handoff_width, close_minutes_preview)
+                staff_for_slot = _staff_free_for_interval(
+                    slot_start, drop_off_end, available_staff, bookings, date_str=date_str
+                )
+                staff_for_slot = _staff_free_after_holds(
+                    staff_for_slot, shared_holds, company_id=context.company_id,
+                    date_str=date_str, start=slot_start, end=drop_off_end, holder=holder,
+                )
+                if staff_for_slot and _pet_free_for_interval(
+                    pet_bookings, date_str, slot_start, drop_off_end,
+                    exclude_booking_id=exclude_booking_id, exclude_service_type=service_type,
+                ):
+                    preliminary_slots.append(slot)
+            still_needs = ["check_out_date"] if service_type == "BOARDING" else ["check_out_time_or_duration_minutes"]
+            return _result(
+                "check_available_slots",
+                "success",
+                {
+                    "service_type": service_type,
+                    "booking_date": date_str,
+                    "available_slots": preliminary_slots,
+                    "preliminary": True,
+                    "still_needs": still_needs,
+                    "room_type": room_type or None,
+                    "available_staff": [
+                        {"staff_id": row.get("staff_id"), "staff_name": row.get("staff_name")}
+                        for row in available_staff
+                    ],
+                },
+            )
+
         if choosing_check_out:
             checkin_minutes = _time_to_minutes(fixed_check_in_time)
             open_minutes = _time_to_minutes(open_time)
@@ -1867,10 +2111,19 @@ def check_available_slots(context: CustomerContext, intent_json: dict) -> dict:
 
             capacity_status = None
             if service_type == "DAYCARE":
-                # Each endpoint is safe only if at least one qualified staff
-                # member is free continuously from the fixed drop-off through
-                # that pickup. A 17:30 pickup can therefore be offered even
-                # when 17:30 would be too late to START a multi-hour visit.
+                # A visit is offerable when SOME staff member is on duty at
+                # every point across it (checked at SLOT_MINUTES
+                # granularity, not just the two handoff endpoints — see
+                # _daycare_visit_has_continuous_staff_coverage), not only
+                # when one specific person is free continuously from
+                # drop-off through pickup. That older rule made any
+                # sufficiently long visit combined with ANY staff member
+                # having so much as one unrelated booking that day
+                # mathematically unofferable, regardless of real staffing
+                # capacity — confirmed live (a real 6-hour request returned
+                # zero slots all day even though total staffing that day was
+                # ample). The staff actually held/recorded for the booking
+                # is still whoever is free at drop-off specifically.
                 checkout_staff_candidates: dict[str, list[dict]] = {}
                 check_out_choices = []
                 for candidate in _time_slots_for_day(
@@ -1879,13 +2132,14 @@ def check_available_slots(context: CustomerContext, intent_json: dict) -> dict:
                     candidate_minutes = _time_to_minutes(candidate)
                     if candidate_minutes is None or candidate_minutes <= checkin_minutes:
                         continue
-                    free_for_visit = _staff_free_for_interval(
-                        checkin_minutes,
-                        candidate_minutes,
-                        available_staff,
-                        bookings,
-                        date_str=date_str,
+                    has_coverage = _daycare_visit_has_continuous_staff_coverage(
+                        checkin_minutes, candidate_minutes, available_staff, bookings, date_str=date_str,
                     )
+                    drop_off_width = service_duration_minutes("BOARDING")
+                    free_for_visit = _staff_free_for_interval(
+                        checkin_minutes, min(checkin_minutes + drop_off_width, candidate_minutes),
+                        available_staff, bookings, date_str=date_str,
+                    ) if has_coverage else []
                     free_for_visit = _staff_free_after_holds(
                         free_for_visit,
                         shared_holds,
@@ -1924,18 +2178,33 @@ def check_available_slots(context: CustomerContext, intent_json: dict) -> dict:
                         client, context, parsed_check_out_date, service_type, preferred_staff
                     )
                     width = service_duration_minutes("BOARDING")
-                    # ANY qualified staff free for check-in AND ANY qualified
-                    # staff (not necessarily the same one) free for
-                    # check-out — see _boarding_window_is_staffed. This is
-                    # the CHECK_OUT-selection path; the parallel CHECK_IN-
-                    # selection path below shares the same two helpers now,
-                    # after having the identical same-staff bug independently
-                    # (requiring one person free on both, sometimes days/
-                    # weeks apart, when this business only ever needed
-                    # someone qualified on duty each day).
-                    checkin_staffed = _boarding_window_is_staffed(
-                        checkin_minutes, width, available_staff, bookings, date_str=date_str
+                    # The persisted booking has one staff_id.  Keep the
+                    # read-side promise aligned with the final database write:
+                    # the assigned person must be free for BOTH handoff
+                    # events, rather than independently finding one person at
+                    # check-in and another at check-out and promising a stay
+                    # create_booking/create_booking_atomic will reject.
+                    checkin_staff = _staff_free_for_interval(
+                        checkin_minutes,
+                        checkin_minutes + width,
+                        available_staff,
+                        bookings,
+                        date_str=date_str,
                     )
+                    checkin_staff = _staff_free_after_holds(
+                        checkin_staff,
+                        shared_holds,
+                        company_id=context.company_id,
+                        date_str=date_str,
+                        start=checkin_minutes,
+                        end=checkin_minutes + width,
+                        holder=holder,
+                    )
+                    checkin_staff_ids = {
+                        int(row["staff_id"])
+                        for row in checkin_staff
+                        if row.get("staff_id") is not None
+                    }
                     check_out_choices = []
                     for candidate in _time_slots_for_day(checkout_open, checkout_close):
                         checkout_minutes = _time_to_minutes(candidate)
@@ -1944,11 +2213,28 @@ def check_available_slots(context: CustomerContext, intent_json: dict) -> dict:
                             or checkout_minutes + width > checkout_close_minutes
                         ):
                             continue
-                        checkout_staffed = _boarding_window_is_staffed(
-                            checkout_minutes, width, checkout_roster, checkout_bookings,
+                        checkout_staff = _staff_free_for_interval(
+                            checkout_minutes,
+                            checkout_minutes + width,
+                            checkout_roster,
+                            checkout_bookings,
                             date_str=checkout_date_value,
                         )
-                        if checkin_staffed and checkout_staffed:
+                        checkout_staff = _staff_free_after_holds(
+                            checkout_staff,
+                            shared_holds,
+                            company_id=context.company_id,
+                            date_str=checkout_date_value,
+                            start=checkout_minutes,
+                            end=checkout_minutes + width,
+                            holder=holder,
+                        )
+                        checkout_staff_ids = {
+                            int(row["staff_id"])
+                            for row in checkout_staff
+                            if row.get("staff_id") is not None
+                        }
+                        if checkin_staff_ids & checkout_staff_ids:
                             check_out_choices.append(candidate)
 
                 exclude_booking_id_raw = str(
@@ -2073,7 +2359,21 @@ def check_available_slots(context: CustomerContext, intent_json: dict) -> dict:
 
         duration_minutes = service_duration_minutes(service_type)
         parsed_requested_duration = None
-        if requested_duration not in (None, ""):
+        # Real gap confirmed live 2026-08-10 (post-V1-decommission Boarding
+        # smoke test): this validated (and rejected out-of-range) ANY
+        # duration_minutes regardless of service_type, even though the
+        # branch two lines below only ever APPLIES it for GROOMING/DAYCARE
+        # — BOARDING's real length comes from check_in/check_out dates, not
+        # this parameter, so it was never going to be used either way. The
+        # model reasonably computed a multi-day stay's length in minutes
+        # (e.g. a 3-night stay = 4320) and passed it, got hard-rejected by
+        # a 24h cap that was never actually about BOARDING, retried twice
+        # more before landing on 1440, and by then had burned enough of
+        # MAX_AGENT_STEPS that a real, successful preview_booking result
+        # never made it into the final customer-facing reply. Scoped the
+        # same way the "does anything with it" branch already was: only
+        # validate when the value will actually be used.
+        if requested_duration not in (None, "") and service_type in {"GROOMING", "DAYCARE"}:
             try:
                 parsed_requested_duration = int(requested_duration)
             except (TypeError, ValueError):
@@ -2090,8 +2390,7 @@ def check_available_slots(context: CustomerContext, intent_json: dict) -> dict:
                     {"duration_minutes": requested_duration},
                     "duration_minutes must be between 1 and 1440 minutes",
                 )
-            if service_type in {"GROOMING", "DAYCARE"}:
-                duration_minutes = parsed_requested_duration
+            duration_minutes = parsed_requested_duration
         # Set only for DAYCARE when the customer's check-in time is still a
         # period word (e.g. "morning") rather than an exact clock time but a
         # real check_out_time is already known — every candidate start then
@@ -2165,9 +2464,32 @@ def check_available_slots(context: CustomerContext, intent_json: dict) -> dict:
             if slot_duration is None:
                 continue
             slot_end = slot_start + slot_duration
-            staff_for_slot = _staff_free_for_interval(
-                slot_start, slot_end, available_staff, bookings, date_str=date_str
-            )
+            if service_type == "DAYCARE":
+                # A daycare visit is supervised by whoever is on duty, not
+                # one specific person glued to that pet for the whole visit.
+                # Requires SOME staff member on duty at every point across
+                # the visit (checked at SLOT_MINUTES granularity — see
+                # _daycare_visit_has_continuous_staff_coverage — not just
+                # the two handoff endpoints, which would miss a genuine gap
+                # where every staff member is simultaneously busy somewhere
+                # in the middle). Confirmed live: requiring ONE staff member
+                # free for the entire visit made a real 6-hour daycare
+                # request return zero slots all day, even though every
+                # staff member's actual commitments that day totaled well
+                # under a full day. The staff actually held/recorded for
+                # the booking is still whoever is free at drop-off.
+                has_coverage = _daycare_visit_has_continuous_staff_coverage(
+                    slot_start, slot_end, available_staff, bookings, date_str=date_str
+                )
+                handoff_width = service_duration_minutes("BOARDING")
+                staff_for_slot = _staff_free_for_interval(
+                    slot_start, min(slot_start + handoff_width, slot_end),
+                    available_staff, bookings, date_str=date_str,
+                ) if has_coverage else []
+            else:
+                staff_for_slot = _staff_free_for_interval(
+                    slot_start, slot_end, available_staff, bookings, date_str=date_str
+                )
             staff_for_slot = _staff_free_after_holds(
                 staff_for_slot,
                 shared_holds,
@@ -2188,16 +2510,15 @@ def check_available_slots(context: CustomerContext, intent_json: dict) -> dict:
                 free_slots.append(slot)
                 slot_staff_candidates[slot] = staff_for_slot
 
-        # A boarding slot is valid once ANY qualified staff member is free
-        # for check-in AND ANY qualified staff member (not necessarily the
-        # same one) is free for check-out — a stay can span days or weeks,
-        # so requiring one single staff member to be rostered on both the
-        # start and end date is far stronger than this business actually
-        # needs (a normal weekly rest day landing on the checkout date used
-        # to make an otherwise fully-staffable stay show as fully booked).
-        # When checkout time has not been selected, prove that at least one
-        # real checkout endpoint exists instead of inventing a checkout at
-        # the same clock time as check-in.
+        # A boarding row has one staff_id, and the final SQL conflict check
+        # uses it for both the check-in and check-out handoff windows.  A
+        # slot is consequently valid only when at least one *same* qualified
+        # staff member can cover both events.  Previously this read path used
+        # separate "someone is free" checks, then create_booking intersected
+        # the two staff lists and rejected a slot we had already shown as
+        # available.  Keep the read and write semantics identical until the
+        # schema models separate check-in/check-out staff assignments.
+        pet_conflict_row: dict | None = None
         if service_type == "BOARDING" and parsed_check_out_date is not None:
             checkout_open, checkout_close, checkout_closed_reason = _business_hours_for_date(
                 context.company_id, parsed_check_out_date
@@ -2227,10 +2548,11 @@ def check_available_slots(context: CustomerContext, intent_json: dict) -> dict:
                     checkin_start = _time_to_minutes(slot)
                     if checkin_start is None:
                         continue
-                    # free_slots already guarantees at least one qualified
-                    # staff member is free for check-in (that's how it was
-                    # built above) — only the check-out side still needs
-                    # proving here.
+                    checkin_staff_ids = {
+                        int(row["staff_id"])
+                        for row in slot_staff_candidates.get(slot, [])
+                        if row.get("staff_id") is not None
+                    }
                     for checkout_candidate in checkout_candidates:
                         checkout_start = _time_to_minutes(checkout_candidate)
                         if (
@@ -2239,11 +2561,31 @@ def check_available_slots(context: CustomerContext, intent_json: dict) -> dict:
                             or checkout_start + boarding_width > checkout_close_minutes
                         ):
                             continue
-                        checkout_staff_free = _boarding_window_is_staffed(
-                            checkout_start, boarding_width, checkout_roster, checkout_bookings,
+                        checkout_staff = _staff_free_for_interval(
+                            checkout_start,
+                            checkout_start + boarding_width,
+                            checkout_roster,
+                            checkout_bookings,
                             date_str=parsed_check_out_date.isoformat(),
                         )
-                        if checkout_staff_free and _pet_free_for_boarding_stay(
+                        checkout_staff = _staff_free_after_holds(
+                            checkout_staff,
+                            shared_holds,
+                            company_id=context.company_id,
+                            date_str=parsed_check_out_date.isoformat(),
+                            start=checkout_start,
+                            end=checkout_start + boarding_width,
+                            holder=holder,
+                        )
+                        checkout_staff_ids = {
+                            int(row["staff_id"])
+                            for row in checkout_staff
+                            if row.get("staff_id") is not None
+                        }
+                        common_staff_ids = checkin_staff_ids & checkout_staff_ids
+                        if not common_staff_ids:
+                            continue
+                        conflict_row = _pet_boarding_conflict_row(
                             pet_bookings,
                             preferred_date,
                             parsed_check_out_date,
@@ -2251,9 +2593,28 @@ def check_available_slots(context: CustomerContext, intent_json: dict) -> dict:
                             check_out_time=checkout_candidate,
                             exclude_booking_id=exclude_booking_id,
                             exclude_service_type=service_type,
-                        ):
-                            jointly_available_slots.append(slot)
-                            break
+                        )
+                        if conflict_row is not None:
+                            # Staff/room were both free for this combination —
+                            # only the pet's own other booking is blocking it.
+                            # Remember the first one seen so a totally empty
+                            # result can still tell the customer WHY, instead
+                            # of a generic "nothing available" that reads as
+                            # the business being fully booked.
+                            if pet_conflict_row is None:
+                                pet_conflict_row = conflict_row
+                            continue
+                        # The later short-lived hold must use a person
+                        # who is free at both endpoints too. Otherwise it
+                        # could reserve a check-in-only staff member and
+                        # recreate the read/write mismatch just fixed.
+                        slot_staff_candidates[slot] = [
+                            row for row in slot_staff_candidates.get(slot, [])
+                            if row.get("staff_id") is not None
+                            and int(row["staff_id"]) in common_staff_ids
+                        ]
+                        jointly_available_slots.append(slot)
+                        break
                 free_slots = jointly_available_slots
 
         capacity_status = None
@@ -2372,6 +2733,34 @@ def check_available_slots(context: CustomerContext, intent_json: dict) -> dict:
             result_data["slot_held"] = hold_info
         if capacity_status is not None:
             result_data["room_capacity"] = capacity_status
+        if not free_slots and pet_conflict_row is not None:
+            # Staff and room were both genuinely free — the ONLY reason
+            # nothing came back is this pet's own other booking. Surface it
+            # explicitly so the model tells the customer the real reason
+            # ("Milo already has a stay booked Aug 8-11") instead of a
+            # generic "everything is booked" that reads as the whole
+            # business being full when it isn't.
+            conflict_service = str(pet_conflict_row.get("_service_type") or "").upper()
+            if conflict_service == "BOARDING":
+                conflict_summary = {
+                    "service_type": "BOARDING",
+                    "booking_id": pet_conflict_row.get("boarding_booking_id"),
+                    "check_in_date": pet_conflict_row.get("check_in_date"),
+                    "check_in_time": pet_conflict_row.get("check_in_time"),
+                    "check_out_date": pet_conflict_row.get("check_out_date"),
+                    "check_out_time": pet_conflict_row.get("check_out_time"),
+                    "room_type": pet_conflict_row.get("room_type"),
+                }
+            else:
+                conflict_summary = {
+                    "service_type": conflict_service,
+                    "booking_id": pet_conflict_row.get(
+                        "grooming_booking_id" if conflict_service == "GROOMING" else "daycare_booking_id"
+                    ),
+                    "booking_date": pet_conflict_row.get("booking_date"),
+                    "booking_time": pet_conflict_row.get("booking_time") or pet_conflict_row.get("check_in_time"),
+                }
+            result_data["pet_already_booked"] = conflict_summary
 
         return _result("check_available_slots", "success", result_data)
     except Exception as exc:
@@ -3179,17 +3568,38 @@ def create_booking(context: CustomerContext, intent_json: dict) -> dict:
                     co_bookings = _cross_service_staff_bookings(
                         client, context.company_id, co_roster_ids, co_date_str
                     )
-                free_at_checkout_ids = {
-                    r.get("staff_id")
-                    for r in _staff_free_for_interval(
-                        checkout_minutes_boarding,
-                        checkout_minutes_boarding + boarding_width,
-                        co_roster,
-                        co_bookings,
-                        date_str=co_date_str,
+                # ANY qualified staff free for check-in AND ANY qualified
+                # staff (not necessarily the same one) free for check-out —
+                # matches check_available_slots's own fix for the identical
+                # rule (a stay can span days/weeks; requiring one specific
+                # person on duty at both ends is stronger than this business
+                # needs). Confirmed live: this write-side copy still had the
+                # old same-staff intersection after the read-side (what
+                # actually offers the slot to the customer) was fixed,
+                # producing exactly "shown as available, then rejected on
+                # confirm" — free_staff (check-in candidates) must stay
+                # unfiltered here; only checkout coverage needs to exist.
+                free_at_checkout = _staff_free_for_interval(
+                    checkout_minutes_boarding,
+                    checkout_minutes_boarding + boarding_width,
+                    co_roster,
+                    co_bookings,
+                    date_str=co_date_str,
+                )
+                if not free_at_checkout:
+                    return _result(
+                        "create_booking",
+                        "error",
+                        {
+                            "check_out_date": resolved_checkout_date_str,
+                            "check_out_time": checkout_time_raw,
+                        },
+                        (
+                            "No qualified staff member is free for the check-out "
+                            "handoff at that date/time. Ask the customer for a "
+                            "different check-out time, or a different check-out date."
+                        ),
                     )
-                }
-                free_staff = [r for r in free_staff if r.get("staff_id") in free_at_checkout_ids]
         if preferred_staff_raw:
             chosen = _match_preferred_staff(preferred_staff_raw, free_staff)
             if chosen is None:
