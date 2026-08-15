@@ -24,6 +24,24 @@ test("booking and payment CRUD uses atomic database functions", async () => {
   assert.match(sql, /Reject or refund the linked point redemption/);
 });
 
+test("booking cancellation routes through the dedicated atomic RPC, not the generic one", async () => {
+  // Real gap confirmed live 2026-08-11 ("kanban不能换status" — the
+  // Kanban board's drag-to-Cancelled, and the booking edit form's status
+  // dropdown, both silently failed): the live database now rejects any
+  // update_booking_atomic call whose patch sets booking_status to
+  // "Cancelled" ("Use cancel_booking_atomic to cancel a booking", P0001),
+  // requiring this dedicated RPC instead — same fix already applied to
+  // the Python AI backend's cancel_booking. Not asserted against a
+  // committed SQL migration (unlike update_booking_atomic/create_booking_
+  // atomic/delete_booking_atomic above) because cancel_booking_atomic
+  // itself isn't in any committed migration — it exists only in the live
+  // database, discovered by direct testing, not by reading a migration
+  // file — so this only locks in the JS side of the fix.
+  const service = await read("../src/lib/bookingService.js");
+  assert.match(service, /rpc\("cancel_booking_atomic"/);
+  assert.match(service, /booking_status === "Cancelled"/);
+});
+
 test("protected state transitions cannot use generic CRUD updates", async () => {
   const leave = await read("../src/routes/leaveRequests.js");
   const enquiry = await read("../src/routes/chatMessages.js");

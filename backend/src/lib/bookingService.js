@@ -368,6 +368,35 @@ export async function updateBooking(type, companyId, bookingId, body) {
     await assertBoardingRoomPriceMatches(companyId, next.room_type, next.price_per_night);
   }
 
+  // Real gap confirmed live 2026-08-11 ("kanban不能换status"): the live
+  // database now REJECTS any update_booking_atomic call that sets
+  // booking_status to "Cancelled" ("Use cancel_booking_atomic to cancel a
+  // booking", P0001) — a dedicated RPC that also voids/refunds the linked
+  // payment atomically, same fix already applied to the Python AI
+  // backend's cancel_booking. Undocumented in any committed migration;
+  // the Kanban board's drag-to-Cancelled (and the booking edit form's
+  // status dropdown) both go through this same updateBooking() and were
+  // silently broken for that one specific transition. Deliberately
+  // short-circuits here rather than trying to also apply other field
+  // changes in the same request: cancel_booking_atomic takes no patch of
+  // its own, and editing other booking details in the same action as
+  // cancelling it isn't a coherent operation to begin with (nor would it
+  // survive the payment-must-be-unsettled check below, since cancelling
+  // just settled it) — any other fields sent alongside booking_status:
+  // "Cancelled" are intentionally ignored.
+  if (payload.booking_status === "Cancelled" && existing.booking_status !== "Cancelled") {
+    const { data: cancelled, error: cancelError } = await supabase.rpc("cancel_booking_atomic", {
+      p_company_id: companyId,
+      p_booking_type: type,
+      p_booking_id: Number(bookingId),
+    });
+    if (cancelError) {
+      cancelError.status = 400;
+      throw cancelError;
+    }
+    return cancelled;
+  }
+
   const currentPaymentDetails = paymentPayloadForBooking(type, existing);
   const nextPayment = paymentPayloadForBooking(type, next);
   const pricingChanged = ["service", "base_price", "add_ons", "final_amount"]
