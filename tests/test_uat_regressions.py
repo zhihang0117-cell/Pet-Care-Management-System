@@ -340,6 +340,71 @@ def test_daycare_price_grounding_corrects_a_stale_self_quoted_price():
     assert PawfectOrchestrator._ground_daycare_price_response(grooming_reply, grooming_trace) is grooming_reply
 
 
+def test_register_loyalty_member_calls_the_dedicated_atomic_rpc_not_a_manual_id_insert(monkeypatch):
+    """Real gap confirmed live 2026-08-11 ("检查我的crud on...loyalty"):
+    register_loyalty_member used to compute the next loyalty_id itself
+    (_next_table_id: SELECT MAX(loyalty_id)+1) and insert directly. That
+    manual id, once written, never advances the table's own underlying
+    sequence — every one of these writes left the real sequence a little
+    further behind the table's true max. Confirmed live: a plain insert
+    relying on the loyaltymember table's own column default (no explicit
+    loyalty_id — exactly what register_loyalty_member_atomic does
+    instead) collided with an already-existing row THREE TIMES in a row
+    before finally succeeding, on a company with a grand total of 25
+    members. Locks in that the write now goes through the atomic RPC
+    instead."""
+    calls = []
+
+    class _LoyaltyMemberQuery:
+        def select(self, *_args):
+            return self
+
+        def eq(self, *_args):
+            return self
+
+        def limit(self, *_args):
+            return self
+
+        def execute(self):
+            return SimpleNamespace(data=[])  # not an existing member yet
+
+    class _RPC:
+        def __init__(self, name, params):
+            self.name = name
+            self.params = params
+
+        def execute(self):
+            calls.append((self.name, self.params))
+            return SimpleNamespace(data={
+                "member": {"loyalty_id": 29, "points_balance": 0, "tier": "Bronze"},
+                "already_member": False,
+            })
+
+    class _Client:
+        def table(self, name):
+            assert name == "loyaltymember"
+            return _LoyaltyMemberQuery()
+
+        def rpc(self, name, params):
+            return _RPC(name, params)
+
+    monkeypatch.setattr("app.db.relational_actions.get_supabase_client", lambda: _Client())
+    context = CustomerContext(company_id=1)
+    context.resolved_customer_id = 110
+
+    from app.db.relational_actions import register_loyalty_member
+
+    result = register_loyalty_member(context, confirmed=True)
+
+    assert result["status"] == "success"
+    assert result["data"]["loyalty_id"] == 29
+    assert result["data"]["already_member"] is False
+    assert calls == [(
+        "register_loyalty_member_atomic",
+        {"p_company_id": 1, "p_customer_id": 110},
+    )]
+
+
 def test_sql_blocks_full_daycare_interval_and_links_redemption_to_payment():
     root = Path(__file__).resolve().parents[1]
     conflict_sql = (root / "backend/sql/booking_conflict_prevention_migration.sql").read_text()

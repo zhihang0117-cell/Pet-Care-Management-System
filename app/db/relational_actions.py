@@ -3379,26 +3379,40 @@ def register_loyalty_member(context: CustomerContext, confirmed: bool = False) -
             ),
         )
     try:
+        # Real gap confirmed live 2026-08-11 ("检查我的crud on...
+        # loyalty"): this used to compute the next loyalty_id itself
+        # (_next_table_id: SELECT MAX(loyalty_id)+1) and insert directly.
+        # That manual id, once written, never advances the table's own
+        # underlying sequence (an explicit value on insert bypasses a
+        # column default's nextval() entirely) — every one of these writes
+        # left the real sequence a little further behind the table's true
+        # max. Confirmed live: a plain insert relying on the column's own
+        # default (no explicit loyalty_id — exactly what
+        # register_loyalty_member_atomic does) collided with an
+        # already-existing row THREE TIMES in a row before finally
+        # succeeding, on a company with a grand total of 25 members —
+        # this table's sequence was already that far drifted. The atomic
+        # RPC is also idempotent on its own (confirmed live: calling it
+        # twice for the same customer returns already_member=true the
+        # second time, same loyalty_id, no duplicate) — the
+        # check_loyalty_points pre-check above still decides whether to
+        # ask for confirmation at all (never silently enrol someone), but
+        # the actual write is this RPC's job now, not manual id math.
         client = get_supabase_client()
-        loyalty_id = _next_table_id(client, "loyaltymember", "loyalty_id")
-        row = {
-            "company_id": context.company_id,
-            "loyalty_id": loyalty_id,
-            "customer_id": context.resolved_customer_id,
-            "tier": "Bronze",
-            "points_balance": 0,
-            "redemption_made": 0,
-        }
-        inserted = client.table("loyaltymember").insert(row).execute().data or []
-        record = inserted[0] if inserted else row
+        result = client.rpc(
+            "register_loyalty_member_atomic",
+            {"p_company_id": context.company_id, "p_customer_id": context.resolved_customer_id},
+        ).execute()
+        data = result.data or {}
+        member = data.get("member") or {}
         return _result(
             "register_loyalty_member",
             "success",
             {
-                "loyalty_id": record.get("loyalty_id"),
-                "points_balance": record.get("points_balance"),
-                "tier": record.get("tier"),
-                "already_member": False,
+                "loyalty_id": member.get("loyalty_id"),
+                "points_balance": member.get("points_balance"),
+                "tier": member.get("tier"),
+                "already_member": bool(data.get("already_member")),
             },
         )
     except Exception as exc:
