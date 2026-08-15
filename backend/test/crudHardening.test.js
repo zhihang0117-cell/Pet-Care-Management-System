@@ -24,6 +24,32 @@ test("booking and payment CRUD uses atomic database functions", async () => {
   assert.match(sql, /Reject or refund the linked point redemption/);
 });
 
+test("daily overview's pending daycare card excludes already-done bookings", async () => {
+  // Real gap confirmed live 2026-08-11 ("为什么会显示done了的booking，
+  // 应该include所有pending action的booking"): 'done' is the terminal,
+  // fully-complete booking status (same state machine as grooming/
+  // boarding — nothing transitions out of it), not an intermediate
+  // "checked in, awaiting pickup" state. The Pending Daycare action card
+  // (and its click-through detail modal) counted 'done' bookings as
+  // "pending pickup", showing already-completed bookings as needing
+  // staff attention. Fixed to match the boarding card's already-correct
+  // pattern just above it: anything that hasn't reached done/no_show/
+  // cancelled still has a pending action.
+  const frontend = await read("../../web/common.js");
+  const pendingDaycareSection = frontend.slice(
+    frontend.indexOf("if (filter === 'all' || filter === 'daycare')"),
+    frontend.indexOf("cards.push({\n    key: 'pendingRedemption'"),
+  );
+  assert.doesNotMatch(pendingDaycareSection, /status === 'done'/);
+  assert.match(pendingDaycareSection, /status !== 'done' && b\.status !== 'no_show' && b\.status !== 'cancelled'/);
+
+  const detailSection = frontend.slice(
+    frontend.indexOf("cardKey === 'pendingDaycare'"),
+    frontend.indexOf("openRealServiceLoadDetail"),
+  );
+  assert.doesNotMatch(detailSection, /status === 'done'/);
+});
+
 test("booking cancellation routes through the dedicated atomic RPC, not the generic one", async () => {
   // Real gap confirmed live 2026-08-11 ("kanban不能换status" — the
   // Kanban board's drag-to-Cancelled, and the booking edit form's status

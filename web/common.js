@@ -2282,14 +2282,24 @@ function buildRealActionCards(filter) {
   }
 
   if (filter === 'all' || filter === 'daycare') {
+    // Real gap confirmed live 2026-08-11 ("为什么会显示done了的booking，
+    // 应该include所有pending action的booking"): 'done' is DAYCARE's
+    // terminal, fully-complete status (same as grooming/boarding — see
+    // the live-verified status state machine: nothing transitions OUT of
+    // 'done'), not an intermediate "checked in, awaiting pickup" state —
+    // there is no separate status for that. A 'done' booking has no
+    // pending action left, so counting it here (as "pending pickup") was
+    // simply wrong — it showed already-completed bookings as needing
+    // staff attention. Mirrors the boarding card just above, which
+    // already gets this right: everything that hasn't reached a terminal
+    // status (done/no_show/cancelled) still has a pending action.
     const daycareBookings = bookingRecords.filter(b => b.type === 'daycare' && b.date === todayStr);
-    const checkInsDue = daycareBookings.filter(b => b.status === 'pending' || b.status === 'scheduled').length;
-    const pendingPickup = daycareBookings.filter(b => b.status === 'done').length;
+    const pendingAction = daycareBookings.filter(b => b.status !== 'done' && b.status !== 'no_show' && b.status !== 'cancelled').length;
 
     cards.push({
       key: 'pendingDaycare',
-      icon: 'dog-play.png', label: 'Pending Daycare', value: checkInsDue + pendingPickup,
-      sub: `${checkInsDue} drop-off(s), ${pendingPickup} pickup(s) today`, tone: 'alert'
+      icon: 'dog-play.png', label: 'Pending Daycare', value: pendingAction,
+      sub: `${pendingAction} booking(s) needing action today`, tone: 'alert'
     });
   }
 
@@ -2956,10 +2966,11 @@ function openRealCardDetail(cardKey) {
     const items = [...checkIns, ...checkOuts];
     openDetailModal('Pending Boarding', `${checkIns.length} arrival(s) and ${checkOuts.length} departure(s) to confirm today.`, items.map(realBookingDetailRow).join(''), cta);
   } else if (cardKey === 'pendingDaycare') {
-    const checkIns = bookingRecords.filter(b => b.type === 'daycare' && b.date === todayStr && (b.status === 'pending' || b.status === 'scheduled'));
-    const pickups = bookingRecords.filter(b => b.type === 'daycare' && b.date === todayStr && b.status === 'done');
-    const items = [...checkIns, ...pickups];
-    openDetailModal('Pending Daycare', `${checkIns.length} drop-off(s) and ${pickups.length} pickup(s) today.`, items.map(realBookingDetailRow).join(''), cta);
+    // Same fix as buildRealActionCards' pendingDaycare card above — 'done'
+    // is the terminal, fully-complete status (nothing pending left), not
+    // an intermediate "awaiting pickup" one.
+    const items = bookingRecords.filter(b => b.type === 'daycare' && b.date === todayStr && b.status !== 'done' && b.status !== 'no_show' && b.status !== 'cancelled');
+    openDetailModal('Pending Daycare', `${items.length} booking(s) needing action on ${formatShortDate(todayStr)}.`, items.map(realBookingDetailRow).join(''), cta);
   }
 }
 
