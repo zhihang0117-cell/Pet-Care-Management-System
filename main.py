@@ -41,7 +41,10 @@ _INTERNAL_API_KEY = os.getenv("INTERNAL_API_KEY", "").strip()
 _CHAT_API_KEY = os.getenv("CHAT_API_KEY", "").strip()
 
 
-def _resolve_chat_company(x_chat_key: str = Header(default="")) -> int:
+def _resolve_chat_company(
+    x_chat_key: str = Header(default=""),
+    x_debug_company_id: str = Header(default=""),
+) -> int:
     """
     Authenticate /chat AND derive which company it's for from the presented
     key — never from a client-supplied company_id field, which would be the
@@ -61,6 +64,18 @@ def _resolve_chat_company(x_chat_key: str = Header(default="")) -> int:
     local eval-console testing may opt into no-auth via PAWFECT_DEBUG_MODE.
     """
     from app.db.customer_context import get_relational_company_id, resolve_company_id_from_chat_key
+
+    # Let the local eval console switch tenant context without weakening the
+    # production credential boundary. This override is ignored unless the
+    # service was explicitly started in debug mode.
+    if DEBUG_MODE and x_debug_company_id.strip():
+        try:
+            company_id = int(x_debug_company_id.strip())
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail="X-Debug-Company-Id must be a positive integer") from exc
+        if company_id < 1:
+            raise HTTPException(status_code=422, detail="X-Debug-Company-Id must be a positive integer")
+        return company_id
 
     presented = x_chat_key.strip()
     if presented:

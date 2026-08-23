@@ -63,6 +63,8 @@ test("eval console has a persistent structured tool-call inspector", async () =>
   assert.match(consoleHtml, /execution_order/);
   assert.match(consoleHtml, /agent_state/);
   assert.match(consoleHtml, /X-Chat-Key/);
+  assert.match(consoleHtml, /id="companyId"/);
+  assert.match(consoleHtml, /X-Debug-Company-Id/);
 });
 
 test("confirmation documents have a resend tool and a typed console attachment contract", async () => {

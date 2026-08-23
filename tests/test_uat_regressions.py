@@ -19,6 +19,7 @@ from app.db.time_normalization import extract_duration_minutes, extract_time_fro
 from app.documents import service as document_service
 from app.orchestrator import PawfectOrchestrator
 from app.tools import booking_tools
+import main as api_main
 
 
 def test_phone_identity_never_matches_a_short_suffix():
@@ -31,6 +32,17 @@ def test_phone_identity_never_matches_a_short_suffix():
         pass
     else:
         raise AssertionError("short phone fragments must be rejected")
+
+
+def test_eval_console_company_override_is_debug_only(monkeypatch):
+    monkeypatch.setattr(api_main, "DEBUG_MODE", True)
+    assert api_main._resolve_chat_company("", "42") == 42
+
+    monkeypatch.setattr(api_main, "DEBUG_MODE", False)
+    monkeypatch.setattr(api_main, "_CHAT_API_KEY", "legacy-key")
+    monkeypatch.setattr("app.db.customer_context.get_relational_company_id", lambda: 7)
+    monkeypatch.setattr("app.db.customer_context.resolve_company_id_from_chat_key", lambda _key: None)
+    assert api_main._resolve_chat_company("legacy-key", "42") == 7
 
 
 def test_next_weekday_rolls_a_full_week_forward_like_a_human_would():

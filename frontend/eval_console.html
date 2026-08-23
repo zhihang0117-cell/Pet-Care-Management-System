@@ -444,6 +444,10 @@
         <input id="testPhone" type="text" value="+60 12-345 6701">
       </div>
       <div class="field">
+        <label>Company ID <span style="font-weight:400;text-transform:none;">(local debug only)</span></label>
+        <input id="companyId" type="text" inputmode="numeric" placeholder="Uses backend default when blank">
+      </div>
+      <div class="field">
         <button id="resetSessionBtn" class="secondary block">↺ Reset session for this phone</button>
       </div>
 
@@ -560,7 +564,9 @@ document.getElementById('testPhone').addEventListener('input', () => {
 async function callChat(phone, message) {
   const headers = { 'Content-Type': 'application/json' };
   const chatKey = document.getElementById('chatApiKey').value.trim();
+  const companyId = document.getElementById('companyId').value.trim();
   if (chatKey) headers['X-Chat-Key'] = chatKey;
+  if (companyId) headers['X-Debug-Company-Id'] = companyId;
   const res = await fetch(apiBase() + '/chat', {
     method: 'POST',
     headers,
